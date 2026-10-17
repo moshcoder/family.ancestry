@@ -25,8 +25,8 @@ needs [one setting](https://pit.world/connect).
   every detail you keep (emails, phones, addresses, birthdays, links, notes), vCard
   import/export, and a private **Inbox**. See [Network](#network).
 - **People** with dates, places, notes and stories, photos, and a life timeline.
-- **Every kind of family.** Partners plus children (birth, adopted, step, foster), the
-  GEDCOM way. Add a **brother or sister** directly: full (even when nobody knows the
+- **Every kind of family.** Partners (married, partners, or boyfriend / girlfriend) plus
+  children (birth, adopted, step, foster), the GEDCOM way. Add a **brother or sister** directly: full (even when nobody knows the
   parents), half through a chosen parent, adopted, foster, or step through a step-parent.
   Add a **grandparent** when the parent between is unknown (an "Unknown" parent holds the
   place). And bonds that are not descent: **raised by**, guardian, godparent, caregiver,
@@ -36,7 +36,8 @@ needs [one setting](https://pit.world/connect).
   photos and stories. They never appear as anyone's parent or child, nor in GEDCOM.
 - **Pedigree** (3–6 generations, Ahnentafel numbers) and **descendant** charts.
 - **"How are we related?"** in words: *first cousin once removed*, *mother-in-law*,
-  *half-sister*, *stepbrother*, *adoptive mother*, *grandfather (by adoption)*.
+  *half-sister*, *stepbrother*, *adoptive mother*, *grandfather (by adoption)*. Only a
+  marriage makes an in-law: a daughter's boyfriend is *daughter's boyfriend*.
 - **Sources and citations**, so you know where every fact came from.
 - **GEDCOM 5.5.1 import and export.** Bring your tree from Ancestry, FamilySearch,
   MyHeritage, Gramps or RootsMagic, and take it with you. Exports can hide living people.

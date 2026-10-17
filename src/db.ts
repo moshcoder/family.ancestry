@@ -78,7 +78,10 @@ export type Business = {
 export type BusinessRole = { id: string; tree_id: string; business_id: string; person_id: string; role: string; title: string | null; start_date: string | null; end_date: string | null; note: string | null; created_at: number }
 export type SiblingKind = 'full' | 'half' | 'step' | 'adoptive' | 'foster'
 export type Sibling = { person: Person; kind: SiblingKind; via: Person | null }
-export type PathStep = { person: Person; step: 'self' | 'parent' | 'child' | 'partner'; relation?: string }
+/** `union` is the partnership's kind on a partner step: married, partners or dating. */
+export type PathStep = { person: Person; step: 'self' | 'parent' | 'child' | 'partner'; relation?: string; union?: string }
+/** What a partnership can be. Divorced is a marriage with an end date. */
+export const UNION_KINDS = ['married', 'partners', 'dating'] as const
 export type Descendant = { person: Person; unions: { partner: Person | null; children: Descendant[] }[] }
 
 export const PERSON_FIELDS = ['given', 'surname', 'sex', 'birth_date', 'birth_place', 'death_date', 'death_place', 'living', 'notes', 'species'] as const
@@ -753,7 +756,7 @@ export class Store {
    */
   relationship(treeId: string, a: string, b: string, maxSteps = 12): PathStep[] | null {
     if (!this.person(treeId, a) || !this.person(treeId, b)) return null
-    type Hop = { step: 'parent' | 'child' | 'partner'; relation?: string }
+    type Hop = { step: 'parent' | 'child' | 'partner'; relation?: string; union?: string }
     const prev = new Map<string, Hop & { from: string }>()
     const depth = new Map<string, number>([[a, 0]])
     const queue = [a]
@@ -766,7 +769,7 @@ export class Store {
       const next: [string, Hop][] = [
         ...this.parentFamilies(treeId, id).flatMap((f) => f.parents.map((p) => [p.id, { step: 'parent', relation: f.relation }] as [string, Hop])),
         ...this.spouseFamilies(treeId, id).flatMap((u) => [
-          ...(u.partner ? [[u.partner.id, { step: 'partner' }] as [string, Hop]] : []),
+          ...(u.partner ? [[u.partner.id, { step: 'partner', union: u.family.kind }] as [string, Hop]] : []),
           ...this.childLinksOf(treeId, u.family.id).map((c) => [c.person_id, { step: 'child', relation: c.relation }] as [string, Hop]),
         ]),
       ].sort((x, y) => rank(x[1].relation) - rank(y[1].relation))
@@ -781,7 +784,7 @@ export class Store {
     const path: PathStep[] = []
     for (let id: string | undefined = b; id; id = prev.get(id)?.from) {
       const hop = prev.get(id)
-      path.unshift({ person: this.person(treeId, id)!, step: hop?.step ?? 'self', ...(hop?.relation ? { relation: hop.relation } : {}) })
+      path.unshift({ person: this.person(treeId, id)!, step: hop?.step ?? 'self', ...(hop?.relation ? { relation: hop.relation } : {}), ...(hop?.union ? { union: hop.union } : {}) })
     }
     return path
   }

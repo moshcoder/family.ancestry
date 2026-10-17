@@ -142,6 +142,42 @@ describe('parents we do not know, and who raised you', () => {
   })
 })
 
+describe('boyfriends and girlfriends', () => {
+  test('only a marriage makes an in-law', () => {
+    const { store, tree, add, rel, words } = setup()
+    const dad = add('Dad', 'M')
+    const daughter = rel(dad.id, { as: 'child', given: 'Daughter', sex: 'F' })
+    const boyfriend = rel(daughter.id, { as: 'partner', kind: 'dating', given: 'Boyfriend', sex: 'M' })
+    expect(store.spouseFamilies(tree.id, daughter.id).find((u) => u.partner?.id === boyfriend.id)!.family.kind).toBe('dating')
+    expect(words(dad.id, boyfriend.id)).toBe("daughter's boyfriend")
+    expect(words(daughter.id, boyfriend.id)).toBe('boyfriend')
+    expect(words(boyfriend.id, daughter.id)).toBe('girlfriend')
+    expect(words(boyfriend.id, dad.id)).toBe("girlfriend's father")
+
+    // Partners who never married are partners, not in-laws either.
+    const son = rel(dad.id, { as: 'child', given: 'Son', sex: 'M' })
+    const partner = rel(son.id, { as: 'partner', kind: 'partners', given: 'Partner', sex: 'F' })
+    expect(words(dad.id, partner.id)).toBe("son's partner")
+
+    // When they marry, the words follow.
+    const fam = store.spouseFamilies(tree.id, daughter.id).find((u) => u.partner?.id === boyfriend.id)!.family
+    store.updateFamily(tree.id, fam.id, { kind: 'married' })
+    expect(words(dad.id, boyfriend.id)).toBe('son-in-law')
+  })
+
+  test('GEDCOM keeps dating through a round trip', () => {
+    const { store, tree, add, rel, user } = setup()
+    const her = add('Her', 'F')
+    rel(her.id, { as: 'partner', kind: 'dating', given: 'Him', sex: 'M' })
+    const ged = exportGedcom(store, tree.id)
+    expect(ged).toContain('1 TYPE dating')
+    expect(ged).not.toContain('1 MARR')
+    const copy = store.createTree(user.id, 'Copy')
+    importGedcom(store, copy.id, ged)
+    expect(store.families(copy.id).map((f) => f.kind)).toEqual(['dating'])
+  })
+})
+
 describe('pets', () => {
   test('pets have owners, never parents or partners', () => {
     const { store, tree, add, rel } = setup()

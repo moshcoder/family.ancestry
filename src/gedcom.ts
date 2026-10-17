@@ -376,6 +376,8 @@ export function exportGedcom(store: Store, treeId: string, options: ExportOption
         if (f.start_date) out.push(`2 DATE ${gedSafe(f.start_date)}`)
         if (f.start_place) out.push(`2 PLAC ${gedSafe(f.start_place)}`)
       }
+      // Not a marriage: say what it is (dating, partners), which import reads back from TYPE.
+      else if (f.kind && f.kind !== 'partners') out.push(`1 TYPE ${gedSafe(f.kind)}`)
       if (f.end_date) out.push('1 DIV', ...(f.end_date === 'Divorced' ? [] : [`2 DATE ${gedSafe(f.end_date)}`]))
     }
     for (const l of links.filter((l) => l.family_id === f.id)) out.push(`1 CHIL ${pid.get(l.person_id)}`)

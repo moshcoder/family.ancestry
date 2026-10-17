@@ -5,7 +5,8 @@
  * A blood relationship is a climb to a common ancestor and a descent from it:
  * `up` parent steps, then `down` child steps. Everything else in English kinship
  * is a function of those two numbers. A partner step at either end makes it an
- * in-law (or a spouse, when it is the only step).
+ * in-law (or a spouse, when it is the only step), but only a marriage does: a
+ * daughter's boyfriend is "daughter's boyfriend", not a son-in-law.
  *
  * A parent or child step that is not by birth (adopted, step, foster) qualifies
  * the word: "adoptive mother", "stepson", "grandfather (by adoption)". Whether a
@@ -50,6 +51,14 @@ const QUALIFIER: Record<string, { parent: [string, string, string]; child: [stri
   foster: { parent: ['foster father', 'foster mother', 'foster parent'], child: ['foster son', 'foster daughter', 'foster child'], tail: 'foster' },
 }
 
+/** The word for a partner, by the partnership's kind. No kind (a hand-built path) is a marriage. */
+function partnerWord(union: string | undefined, sex: string): string {
+  if (union === 'dating') return gendered(sex, 'boyfriend', 'girlfriend', 'partner')
+  if (union && union !== 'married') return 'partner'
+  return gendered(sex, 'husband', 'wife', 'partner')
+}
+const married = (s: Step) => !s.union || s.union === 'married'
+
 const SIBLING: Record<SiblingKind, [string, string, string]> = {
   full: ['brother', 'sister', 'sibling'],
   half: ['half-brother', 'half-sister', 'half-sibling'],
@@ -88,7 +97,10 @@ function describeBlood(path: Step[] | null): string {
     const q = QUALIFIER[path[1]!.relation ?? '']
     if (q) return gendered(target.sex, ...(steps[0] === 'parent' ? q.parent : q.child))
   }
-  if (steps.length === 1 && steps[0] === 'partner') return gendered(target.sex, 'husband or partner', 'wife or partner', 'partner')
+  if (steps.length === 1 && steps[0] === 'partner') {
+    if (married(path[1]!)) return gendered(target.sex, 'husband or partner', 'wife or partner', 'partner')
+    return partnerWord(path[1]!.union, target.sex)
+  }
 
   // Strip a leading partner (your spouse's relatives) and a trailing one (a relative's spouse).
   let lead = 0
@@ -119,8 +131,15 @@ function describeBlood(path: Step[] | null): string {
   // With a trailing partner step the blood relative is the second-to-last person, so their sex picks the word.
   const relative = tail ? path[path.length - 2]!.person : target
   const term = bloodTerm(up, down, relative.sex)
-  const spouseWord = gendered(target.sex, 'husband', 'wife', 'partner')
+  const leadStep = path[1]!
+  const tailStep = path[path.length - 1]!
+  const spouseWord = partnerWord(tail ? tailStep.union : undefined, target.sex)
   if (!lead && !tail) return term
+  // Not married at one end: no in-law words, just say whose boyfriend or partner it is.
+  if ((lead && !married(leadStep)) || (tail && !married(tailStep))) {
+    const leadWord = lead ? `${partnerWord(leadStep.union, leadStep.person.sex)}'s ` : ''
+    return `${leadWord}${term}${tail ? `'s ${spouseWord}` : ''}`
+  }
   if (lead && !tail && up <= 1 && down <= 1) {
     if (up === 1 && down === 0) return `${gendered(target.sex, 'father', 'mother', 'parent')}-in-law`
     if (up === 1 && down === 1) return `${gendered(target.sex, 'brother', 'sister', 'sibling')}-in-law`

@@ -4,9 +4,9 @@
  */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { BONDS, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
+import { BONDS, UNION_KINDS, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.5.0'
+export const VERSION = '0.5.1'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -199,6 +199,11 @@ export function personForm(ctx: Ctx, action: string, p: Partial<Person> | null, 
   <button>${esc(label)}</button></form>`
 }
 
+const UNION_LABEL: Record<string, string> = { married: 'married', partners: 'partners', dating: 'boyfriend / girlfriend' }
+const unionLabel = (kind: string) => UNION_LABEL[kind] ?? kind
+/** The kinds a partnership can be, with an imported one (a civil union, say) kept as it was. */
+const unionOptions = (current: string) =>
+  [...UNION_KINDS, ...((UNION_KINDS as readonly string[]).includes(current) ? [] : [current])].map((k) => `<option value="${esc(k)}"${k === current ? ' selected' : ''}>${esc(unionLabel(k))}</option>`).join('')
 const RELATION_OPTIONS = `<option value="birth">birth</option><option value="adopted">adopted</option><option value="step">step</option><option value="foster">foster</option>`
 const SEX_SELECT = `<label>Sex<select name="sex"><option value="U">Unknown</option><option value="F">Female</option><option value="M">Male</option><option value="X">Other</option></select></label>`
 
@@ -215,7 +220,7 @@ function relativeForm(ctx: Ctx, tree: Tree, person: Person, kind: RelativeKind, 
       ? `<label>With<select name="family_id">${families.map((f) => `<option value="${f.family.id}">${f.partner ? esc(fullName(f.partner)) : 'unknown partner'}</option>`).join('')}<option value="">no partner / unknown</option></select></label>`
       : ''
   const relation = kind === 'parent' || kind === 'child' || kind === 'grandparent' ? `<label>Relationship<select name="relation">${RELATION_OPTIONS}</select></label>` : ''
-  const kindSelect = kind === 'partner' ? `<label>As<select name="kind"><option value="married">married</option><option value="partners">partners</option><option value="divorced">divorced</option></select></label>` : ''
+  const kindSelect = kind === 'partner' ? `<label>As<select name="kind"><option value="married">married</option><option value="partners">partners</option><option value="dating">boyfriend / girlfriend</option><option value="divorced">divorced</option></select></label>` : ''
   const siblingSelect =
     kind === 'sibling'
       ? `<label>Kind<select name="sibling"><option value="full">full (same parents${parents.length ? '' : ', even if unknown'})</option>${parents.length ? '<option value="half">half (one parent shared)</option>' : ''}<option value="adopted">adopted into the family</option><option value="foster">foster</option>${stepParents.length ? '<option value="step">step (a step-parent\'s child)</option>' : ''}</select></label>${
@@ -315,7 +320,7 @@ export function personPage(ctx: Ctx, tree: Tree, role: Role, v: PersonView): str
   ].filter(([, val]) => val)
   const timeline = [
     ...(p.birth_date || p.birth_place ? [{ type: 'Birth', date: p.birth_date, place: p.birth_place, description: null, id: '' }] : []),
-    ...v.unions.filter((u) => u.family.start_date || u.family.start_place).map((u) => ({ type: u.family.kind === 'married' ? 'Marriage' : 'Partnership', date: u.family.start_date, place: u.family.start_place, description: u.partner ? `with ${fullName(u.partner)}` : null, id: '' })),
+    ...v.unions.filter((u) => u.family.start_date || u.family.start_place).map((u) => ({ type: u.family.kind === 'married' ? 'Marriage' : u.family.kind === 'dating' ? 'Started dating' : 'Partnership', date: u.family.start_date, place: u.family.start_place, description: u.partner ? `with ${fullName(u.partner)}` : null, id: '' })),
     ...v.events,
     ...(p.death_date || p.death_place ? [{ type: 'Death', date: p.death_date, place: p.death_place, description: null, id: '' }] : []),
   ]
@@ -342,7 +347,7 @@ ${pet ? '' : `<div class="cols">
     }</section>
 <section><h2>Partners and children</h2>${
       v.unions.length
-        ? v.unions.map((u) => `<div class="union"><div class="line">${u.partner ? personLink(tree.id, u.partner) : '<span class="muted">unknown partner</span>'} <span class="tag">${esc(u.family.kind)}${u.family.start_date ? ` ${esc(u.family.start_date)}` : ''}${u.family.end_date ? ` · ended ${esc(u.family.end_date)}` : ''}</span></div>${u.children.length ? `<ul>${u.children.map((c) => `<li>${personLink(tree.id, c)}</li>`).join('')}</ul>` : ''}${edit ? `<details class="mini"><summary>edit</summary><form method="post" action="/t/${tree.id}/f/${u.family.id}" class="pform">${csrfField(ctx)}<div class="grid3"><label>Kind<input name="kind" value="${esc(u.family.kind)}"></label><label>Date<input name="start_date" value="${esc(u.family.start_date ?? '')}"></label><label>Place<input name="start_place" value="${esc(u.family.start_place ?? '')}"></label></div><label>Ended<input name="end_date" value="${esc(u.family.end_date ?? '')}"></label><button>Save</button></form><form method="post" action="/t/${tree.id}/f/${u.family.id}/delete" data-confirm="Remove this partnership? The people stay in the tree.">${csrfField(ctx)}<button class="danger small">Remove partnership</button></form></details>` : ''}</div>`).join('')
+        ? v.unions.map((u) => `<div class="union"><div class="line">${u.partner ? personLink(tree.id, u.partner) : '<span class="muted">unknown partner</span>'} <span class="tag">${esc(unionLabel(u.family.kind))}${u.family.start_date ? ` ${esc(u.family.start_date)}` : ''}${u.family.end_date ? ` · ended ${esc(u.family.end_date)}` : ''}</span></div>${u.children.length ? `<ul>${u.children.map((c) => `<li>${personLink(tree.id, c)}</li>`).join('')}</ul>` : ''}${edit ? `<details class="mini"><summary>edit</summary><form method="post" action="/t/${tree.id}/f/${u.family.id}" class="pform">${csrfField(ctx)}<div class="grid3"><label>Kind<select name="kind">${unionOptions(u.family.kind)}</select></label><label>Date<input name="start_date" value="${esc(u.family.start_date ?? '')}"></label><label>Place<input name="start_place" value="${esc(u.family.start_place ?? '')}"></label></div><label>Ended<input name="end_date" value="${esc(u.family.end_date ?? '')}"></label><button>Save</button></form><form method="post" action="/t/${tree.id}/f/${u.family.id}/delete" data-confirm="Remove this partnership? The people stay in the tree.">${csrfField(ctx)}<button class="danger small">Remove partnership</button></form></details>` : ''}</div>`).join('')
         : '<p class="muted">None recorded.</p>'
     }</section>
 </div>`}
