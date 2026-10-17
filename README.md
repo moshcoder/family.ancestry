@@ -30,7 +30,9 @@ needs [one setting](https://pit.world/connect).
   parents), half through a chosen parent, adopted, foster, or step through a step-parent.
   Add a **grandparent** when the parent between is unknown (an "Unknown" parent holds the
   place). And bonds that are not descent: **raised by**, guardian, godparent, caregiver,
-  chosen family, neighbor, so grandparents who raised you are both. All of it round-trips through
+  chosen family, and the rest of a life: friend, best friend, neighbor, roommate, coworker,
+  business partner, employer, client, family doctor, classmate, teacher, mentor. Grandparents
+  who raised you are both. All of it round-trips through
   GEDCOM (`PEDI`, `ASSO`/`RELA`).
 - **Pets** (Family plan): the dogs, cats and horses that were family too, with owners,
   photos and stories. They never appear as anyone's parent or child, nor in GEDCOM.

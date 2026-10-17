@@ -115,6 +115,25 @@ describe('parents we do not know, and who raised you', () => {
     expect(words(kid.id, gran.id)).toBe('grandmother (by adoption)')
   })
 
+  test('friends, neighbors, work and school: each reads right from both sides and survives GEDCOM', () => {
+    const { store, tree, add, user } = setup()
+    const me = add('Me')
+    const boss = add('Boss')
+    const prof = add('Prof')
+    const doc = add('Doc')
+    store.addBond(tree.id, me.id, boss.id, 'employer')
+    store.addBond(tree.id, me.id, prof.id, 'teacher')
+    store.addBond(tree.id, me.id, doc.id, 'doctor')
+    store.addBond(tree.id, me.id, add('Pal').id, 'best_friend')
+    expect(store.bondsFor(tree.id, me.id).map((b) => `${b.label} ${b.other.given}`)).toEqual(['Employer Boss', 'Teacher Prof', 'Family doctor Doc', 'Best friend Pal'])
+    expect(store.bondsFor(tree.id, boss.id).map((b) => b.label)).toEqual(['Employee'])
+    expect(store.bondsFor(tree.id, prof.id).map((b) => b.label)).toEqual(['Student'])
+    const copy = store.createTree(user.id, 'Copy')
+    importGedcom(store, copy.id, exportGedcom(store, tree.id))
+    const me2 = store.people(copy.id).find((p) => p.given === 'Me')!
+    expect(store.bondsFor(copy.id, me2.id).map((b) => b.kind)).toEqual(['employer', 'teacher', 'doctor', 'best_friend'])
+  })
+
   test('godparents and guardians, kept out of the bloodline', () => {
     const { store, tree, add, user } = setup()
     const kid = add('Kid')
