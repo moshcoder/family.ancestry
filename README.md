@@ -41,6 +41,10 @@ needs [one setting](https://pit.world/connect).
 - **Sources and citations**, so you know where every fact came from.
 - **GEDCOM 5.5.1 import and export.** Bring your tree from Ancestry, FamilySearch,
   MyHeritage, Gramps or RootsMagic, and take it with you. Exports can hide living people.
+- **Family photo album**, free: every photo in the tree on one page (`/t/:tree/photos`), and
+  albums ("Christmas 1985") that any verified member adds to, viewers included. Pick a whole
+  batch at once; the page sends them one by one and shrinks anything over 8 MB. Tag who is in
+  a photo and it shows on their page too.
 - **Family businesses**, free: "Ettinger Plumbing" as its own entry, with its founders,
   owners, partners, investors and employees (titles and years), founded/closed dates,
   place, website, notes and photos. On each person's page and in search; never in a
@@ -77,6 +81,8 @@ ancestry business role "Ettinger Plumbing" Robert owner --title "Master plumber"
 ancestry businesses plumbing              # ancestry business "Ettinger Plumbing" shows its people
 ancestry business link "Ettinger Plumbing" "Ettinger office"   # to one of your contacts (or --create)
 ancestry search ettinger                  # people and businesses
+ancestry upload ~/Pictures/xmas85/*.jpg --album "Christmas 1985" --of Rose
+ancestry albums                           # ancestry photos --album "Christmas 1985"
 ancestry local plumber                    # who the people you know use
 ancestry local add "Joe's Plumbing" --category Plumber --town Sacramento --note "Came on a Sunday"
 ancestry pedigree Robert -g 4
@@ -101,7 +107,7 @@ server (your own, or `http://127.0.0.1:8792`).
 `list_trees`, `search_people`, `get_person`, `add_person`, `update_person`,
 `link_relative` (parent, partner, child, sibling, grandparent), `add_bond`, `add_pet`,
 `family_plan`, `search_businesses`, `get_business`, `add_business`, `update_business`,
-`add_business_role`, `remove_business_role`, `link_business_contact`, `local_recommendations`, `recommend_business`, `add_event`, `pedigree`, `descendants`, `relationship`,
+`add_business_role`, `remove_business_role`, `link_business_contact`, `list_albums`, `list_photos`, `create_album`, `add_photo`, `update_photo`, `local_recommendations`, `recommend_business`, `add_event`, `pedigree`, `descendants`, `relationship`,
 `export_gedcom`, `import_gedcom`, `invite_to_tree`, `tree_members`, and for the
 network `list_contacts`, `get_contact`, `add_contact`, `update_contact`,
 `connect_contact`, `inbox`, `read_conversation`, `send_message`. The assistant acts
@@ -133,6 +139,10 @@ as you: it sees the trees you see, and changes only the ones you can edit.
 | `POST /api/v1/trees/:tree/businesses/:id/people`, `DELETE .../business-roles/:role` | someone's role (`{person_id or given+surname, role: founder\|owner\|partner\|investor\|officer\|manager\|employee\|apprentice\|other, title?, start_date?, end_date?, note?}`) |
 | `POST /api/v1/trees/:tree/businesses/:id/contact` | link one of your Network contacts (`{contact_id}`, `null` unlinks, `{create: true}` adds it); private to you |
 | `GET /api/v1/trees/:tree/search?q=` | people and businesses at once |
+| `GET/POST /api/v1/trees/:tree/albums`, `GET/PATCH/DELETE .../albums/:id` | photo albums (`{title, description?, cover_id?}`); an album's GET carries its photos |
+| `GET /api/v1/trees/:tree/photos?album=&before=` | photos, newest first |
+| `POST /api/v1/trees/:tree/photos` | add photos: multipart `file` (up to 20) or JSON `{filename, data_base64}`, with `caption?`, `album_id?` or `album_title?`, `person_id?` |
+| `GET/PATCH/DELETE /api/v1/trees/:tree/photos/:id` | one photo (`{caption?, person_id?, album_id?}`) |
 | `GET /api/v1/local?q=&category=`, `POST /api/v1/local`, `DELETE /api/v1/local/:id` | recommendations from people you know; recommend (`{name, category, town?, phone?, website?, note?}` or `{contact_id}`) |
 | `GET/POST /api/v1/contacts?q=&circle=` | your network: list / add |
 | `GET/PATCH/DELETE /api/v1/contacts/:id` | one contact |
@@ -170,6 +180,20 @@ Plumbing", `DATE FROM .. TO ..`) marked `2 _BUS @B1@`, so other programs still s
 it; our import skips a marked OCCU and rebuilds the role from `_BUS`, so a round trip
 never doubles anything. A privacy export keeps the business and leaves out what living
 people did.
+
+## Photo album
+
+`src/album.ts`. Photos stay in the one SQLite file (`media`, now with `album_id` and
+`uploaded_by`); `albums` is a table of its own. **Verified member** = any member of the tree
+(owner, editor, viewer) who signed in with their own email; a pit.world-only account has a
+placeholder `@pit.invalid` address, so it can look but not add until it signs in with an
+email. The uploader and the tree's editors may caption, retag, move or delete a photo;
+whoever started an album and the editors may rename or delete it (photos stay). Files are
+judged by their bytes (JPEG, PNG, GIF, WebP, AVIF), 8 MB each, 500 a day per person.
+
+`family.tree` is ours too: any request whose Host is in `ANCESTRY_REDIRECT_HOSTS` (default
+`family.tree` on the official site) gets a 301 to the same path on family.ancestry, or on
+family.ancestry.pit.world when it came through the relay.
 
 ## Local
 

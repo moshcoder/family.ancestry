@@ -104,5 +104,64 @@
     })
   }
 
+  // The family album: send photos one at a time, so a big batch is never one huge request, and show progress.
+  // A photo over 8 MB is scaled down in the browser first (longest side 4096px, JPEG).
+  const MAX_PHOTO = 8 * 1024 * 1024
+  const shrink = async (file) => {
+    if (file.size <= MAX_PHOTO || !window.createImageBitmap) return file
+    try {
+      const bitmap = await createImageBitmap(file)
+      const scale = Math.min(1, 4096 / Math.max(bitmap.width, bitmap.height))
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.round(bitmap.width * scale)
+      canvas.height = Math.round(bitmap.height * scale)
+      canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.88))
+      return blob ? new File([blob], file.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' }) : file
+    } catch {
+      return file
+    }
+  }
+  for (const form of document.querySelectorAll('form[data-album-upload]')) {
+    const status = form.querySelector('[data-upload-status]')
+    form.addEventListener('submit', async (event) => {
+      const input = form.querySelector('input[type=file]')
+      const files = [...(input.files || [])]
+      if (!files.length || !window.fetch || !window.FormData) return
+      event.preventDefault()
+      const button = form.querySelector('button')
+      button.disabled = true
+      status.hidden = false
+      const fields = new FormData(form)
+      fields.delete('file')
+      let album = null
+      let done = 0
+      const refused = []
+      for (const file of files) {
+        status.textContent = `Uploading ${done + 1} of ${files.length}…`
+        const body = new FormData()
+        for (const [k, v] of fields) body.append(k, v)
+        if (album) {
+          body.set('album_id', album.id)
+          body.delete('album_title')
+        }
+        body.append('file', await shrink(file))
+        try {
+          const res = await fetch(form.action, { method: 'POST', body, credentials: 'same-origin', headers: { accept: 'application/json' } })
+          const data = await res.json().catch(() => ({}))
+          if (data.album) album = data.album
+          if (data.saved && data.saved.length) done += data.saved.length
+          for (const r of data.refused || []) refused.push(r)
+          if (data.error) refused.push(`${file.name}: ${data.error}`)
+        } catch (error) {
+          refused.push(`${file.name}: ${error.message}`)
+        }
+      }
+      const note = `${done} photo${done === 1 ? '' : 's'} added${refused.length ? `; not added: ${refused.join('; ')}` : ''}`
+      const where = album ? new URL(album.url).pathname : location.pathname
+      location.href = `${where}?ok=${encodeURIComponent(note)}`
+    })
+  }
+
   if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {})
 })()

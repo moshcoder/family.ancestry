@@ -22,6 +22,7 @@ import { Network } from './network.js'
 import { mountNetwork } from './network-routes.js'
 import { Local, mountLocal } from './local.js'
 import { mountBusinesses, personBusinesses, personBusinessesOut } from './business.js'
+import { mountAlbums } from './album.js'
 import { addonsPanel, profileInvite } from './network-html.js'
 
 type Env = { Variables: { user: User | null; csrf: string; via: 'session' | 'token' | null } }
@@ -36,7 +37,7 @@ const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp
  * the Moshpit name for people who are not on Moshpit DNS. Links we email to someone
  * else (invites) use it, because we cannot know which internet they are on.
  */
-export type AppOptions = { store: Store; auth: Auth; site: string; publicSite?: string; publicDir?: string; net?: Network; plan?: PlanConfig; fetcher?: typeof fetch; pitWorld?: PitWorldSignIn | null }
+export type AppOptions = { store: Store; auth: Auth; site: string; publicSite?: string; publicDir?: string; net?: Network; plan?: PlanConfig; fetcher?: typeof fetch; pitWorld?: PitWorldSignIn | null; redirectHosts?: string[] }
 
 /** Sign in with pit.world: the one account for every *.pit.world site. The secret is HMAC-SHA256(PIT_BRIDGE_KEY, our relay host), which pit.world derives too. */
 export type PitWorldSignIn = { secret: string; base?: string; fetch?: typeof fetch }
@@ -85,7 +86,7 @@ function limiter(limit: number, windowMs: number) {
 /** "Jane Doe (1901–1980) #abc123" from the datalist -> abc123. */
 export const pickId = (value: unknown): string | null => String(value ?? '').match(/#([A-Za-z0-9_-]{6,})\s*$/)?.[1] ?? (/^[A-Za-z0-9_-]{6,}$/.test(String(value ?? '').trim()) ? String(value).trim() : null)
 
-export function createApp({ store, auth, site, publicSite = site, publicDir = join(import.meta.dir, '..', 'public'), net = new Network(store), plan = planFromEnv({}), fetcher = fetch, pitWorld = null }: AppOptions) {
+export function createApp({ store, auth, site, publicSite = site, publicDir = join(import.meta.dir, '..', 'public'), net = new Network(store), plan = planFromEnv({}), fetcher = fetch, pitWorld = null, redirectHosts = [] }: AppOptions) {
   // A request relayed by pit.world says so in X-Forwarded-Host; a sign-in link for it must open there too.
   // Only the one configured address is believed, so a forged header can at worst pick that address.
   const publicHost = new URL(publicSite).host
@@ -103,6 +104,19 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   const messageLimit = limiter(120, 60 * 60_000)
   const secure = (c: Context) => (c.req.header('x-forwarded-proto') ?? new URL(c.req.url).protocol.replace(':', '')) === 'https'
   const ip = (c: Context) => c.req.header('x-real-ip') ?? c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? 'local'
+
+  // Other names for the site (family.tree): one permanent redirect to the same path here. Asked through
+  // pit.world's relay (family.tree.pit.world), it goes to our relay address instead, so a visitor without
+  // Moshpit DNS stays on a host their browser can open.
+  const aliases = new Set(redirectHosts.map((h) => h.toLowerCase()))
+  if (aliases.size)
+    app.use('*', async (c, next) => {
+      const host = (c.req.header('host') ?? '').toLowerCase().replace(/:\d+$/, '')
+      if (!aliases.has(host)) return next()
+      const relayed = c.req.header('x-forwarded-host')?.toLowerCase() === `${host}.pit.world`
+      const url = new URL(c.req.url)
+      return c.redirect(`${relayed ? publicSite : site}${url.pathname}${url.search}`, 301)
+    })
 
   app.use('*', async (c, next) => {
     const bearer = c.req.header('authorization')?.match(/^Bearer\s+(\S+)$/i)?.[1]
@@ -657,7 +671,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     const file = body.file
     const back = `/t/${t.tree.id}/p/${c.req.param('person')}`
     if (!(file instanceof File) || !IMAGE_TYPES.has(file.type) || file.size > MAX_PHOTO) return c.redirect(`${back}?ok=${encodeURIComponent('Photos must be JPEG, PNG, GIF, WebP or AVIF, under 8 MB.')}`)
-    store.addMedia(t.tree.id, c.req.param('person'), { filename: file.name, mime: file.type, data: new Uint8Array(await file.arrayBuffer()), caption: body.caption ?? null })
+    store.addMedia(t.tree.id, c.req.param('person'), { filename: file.name, mime: file.type, data: new Uint8Array(await file.arrayBuffer()), caption: body.caption ?? null, uploadedBy: t.user.id })
     return c.redirect(back)
   })
   const mediaBack = (treeId: string, m: { person_id: string | null; business_id?: string | null } | null) => (m?.person_id ? `/t/${treeId}/p/${m.person_id}` : m?.business_id ? `/t/${treeId}/b/${m.business_id}` : `/t/${treeId}`)
@@ -1066,6 +1080,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   mountLocal(app, api, { local: new Local(store, net), ctx, form })
   // Free on every tree; never behind the Family plan.
   mountBusinesses(app, api, { store, net, site, ctx, form, treeFor, pickId, image: { types: IMAGE_TYPES, max: MAX_PHOTO } })
+  mountAlbums(app, api, { store, site, ctx, form, treeFor, image: { types: IMAGE_TYPES, max: MAX_PHOTO } })
   app.route('/api/v1', api)
 
   app.notFound((c) => (c.req.path.startsWith('/api/') ? c.json({ error: 'not found' }, 404) : c.html(html.messagePage(ctx(c), 'Not found', 'There is nothing at this address.'), 404)))
@@ -1262,7 +1277,9 @@ export function serve() {
   // Ours lives at family.ancestry, relayed by pit.world; a self-hosted copy on an ordinary domain needs no relay.
   const publicSite = (process.env.ANCESTRY_PUBLIC_SITE ?? (new URL(site).hostname === 'family.ancestry' ? 'https://family.ancestry.pit.world' : site)).replace(/\/+$/, '')
   const pitWorld = process.env.PIT_BRIDGE_SECRET ? { secret: process.env.PIT_BRIDGE_SECRET, ...(process.env.PIT_WORLD_URL ? { base: process.env.PIT_WORLD_URL } : {}) } : null
-  const app = createApp({ store, auth, site, publicSite, plan: planFromEnv(), pitWorld })
+  // Names that only redirect here. family.tree is ours too: ANCESTRY_REDIRECT_HOSTS="" turns it off.
+  const redirectHosts = (process.env.ANCESTRY_REDIRECT_HOSTS ?? (new URL(site).hostname === 'family.ancestry' ? 'family.tree' : '')).split(/[\s,]+/).filter(Boolean)
+  const app = createApp({ store, auth, site, publicSite, plan: planFromEnv(), pitWorld, redirectHosts })
   const port = Number(process.env.PORT ?? 8792)
   startRingRefresh()
   Bun.serve({ port, hostname: process.env.HOST ?? '127.0.0.1', fetch: app.fetch, maxRequestBodySize: 30 * 1024 * 1024 })
