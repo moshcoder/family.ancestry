@@ -20,9 +20,10 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
   ancestry show <person>            everything about one person
   ancestry add --given G --surname S [--sex F|M] [--born DATE] [--birthplace P]
                [--died DATE] [--deathplace P] [--living]
-               [--parent-of ID | --child-of ID | --partner-of ID | --sibling-of ID | --grandparent-of ID]
+               [--parent-of ID | --child-of ID | --partner-of ID | --sibling-of ID | --grandparent-of ID |
+                --great-grandparent-of ID | --grandchild-of ID | --aunt-uncle-of ID | --niece-nephew-of ID | --cousin-of ID]
                [--relation birth|adopted|step|foster] [--sibling full|half|adopted|foster|step]
-               [--kind married|partners|dating|divorced]   (for --partner-of; dating = boyfriend/girlfriend)
+               [--kind married|engaged|partners|dating|divorced]   (for --partner-of; dating = boyfriend/girlfriend)
                [--via PARENT] [--raised]   (--raised: they raised that person)
   ancestry bond <person> <kind> <other>   kind: friend, best_friend, neighbor, roommate, coworker,
                                     business_partner, employer, client, doctor, classmate, teacher,
@@ -545,12 +546,12 @@ export async function runCli(argv: string[]): Promise<number> {
       case 'add': {
         const tree = await pickTree(client, f.tree)
         const fields = personFields(f)
-        const rel = (['parent-of', 'child-of', 'partner-of', 'sibling-of', 'grandparent-of'] as const).find((k) => typeof f[k] === 'string')
+        const rel = (['parent-of', 'child-of', 'partner-of', 'sibling-of', 'grandparent-of', 'great-grandparent-of', 'grandchild-of', 'aunt-uncle-of', 'niece-nephew-of', 'cousin-of'] as const).find((k) => typeof f[k] === 'string')
         if (rel) {
           // "add --parent-of X" adds a parent TO X; "--child-of X" adds a child to X.
           Object.assign(fields, {
             relative_of: await pickPerson(client, tree.id, str(f[rel])),
-            as: rel.replace('-of', ''),
+            as: rel.replace('-of', '').replace(/-/g, '_'),
             relation: str(f.relation) ?? 'birth',
             kind: str(f.kind),
             sibling: str(f.sibling),
