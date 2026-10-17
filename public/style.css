@@ -215,3 +215,8 @@ ul.plain { list-style: none; padding: 0; }
 .pl.biz { font-style: italic; }
 fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px 2px; margin: 8px 0; }
 fieldset legend { font-weight: 600; padding: 0 4px; }
+
+/* listed families */
+.hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
+ul.families { list-style: none; padding: 0; }
+ul.families li { padding: 10px 0; border-bottom: 1px solid var(--line, #ddd); }

@@ -340,6 +340,26 @@ export class AncestryClient {
   invites(tree: string) {
     return this.request<{ invites: { id: string; email: string | null; role: string; person_id: string | null; expires_at: number }[] }>(`/api/v1/trees/${enc(tree)}/invites`).then((r) => r.invites)
   }
+  // ---- listed families: found, never seen ----
+  families(q = '') {
+    return this.request<{ families: { id: string; name: string; listing: string | null }[] }>(`/api/v1/families?q=${encodeURIComponent(q)}`).then((r) => r.families)
+  }
+  askToJoin(tree: string, body: { name: string; email: string; circle?: string; note?: string }) {
+    return this.request<{ result: string }>(`/api/v1/families/${enc(tree)}/request`, { method: 'POST', json: body }).then((r) => r.result)
+  }
+  listing(tree: string) {
+    return this.request<{ listed: boolean; listing: string | null; url: string }>(`/api/v1/trees/${enc(tree)}/listing`)
+  }
+  setListing(tree: string, body: { listed?: boolean; listing?: string | null }) {
+    return this.request<{ listed: boolean; listing: string | null; url: string }>(`/api/v1/trees/${enc(tree)}/listing`, { method: 'POST', json: body })
+  }
+  joinRequests(tree: string) {
+    return this.request<{ requests: { id: string; name: string; email: string; circle: string; note: string | null; created_at: number }[] }>(`/api/v1/trees/${enc(tree)}/requests`).then((r) => r.requests)
+  }
+  answerJoinRequest(tree: string, id: string, answer: 'invite' | 'decline') {
+    return this.request<{ result?: string; ok?: boolean }>(`/api/v1/trees/${enc(tree)}/requests/${enc(id)}/${answer}`, { method: 'POST', json: {} })
+  }
+
   members(tree: string) {
     return this.request<{ members: { user_id: string; email: string; name: string | null; role: string; person_id: string | null }[] }>(`/api/v1/trees/${enc(tree)}/members`).then((r) => r.members)
   }

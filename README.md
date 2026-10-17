@@ -147,6 +147,9 @@ as you: it sees the trees you see, and changes only the ones you can edit.
 | `GET/PATCH/DELETE /api/v1/trees/:tree/photos/:id` | one photo (`{caption?, person_id?, album_id?}`) |
 | `GET /api/v1/local?q=&category=`, `POST /api/v1/local`, `DELETE /api/v1/local/:id` | recommendations from people you know; recommend (`{name, category, town?, phone?, website?, note?}` or `{contact_id}`) |
 | `GET/POST /api/v1/contacts?q=&circle=` | your network: list / add (`{connect: true, note_to_them?}` also asks them to connect) |
+| `GET /api/v1/families?q=`, `POST /api/v1/families/:tree/request` | listed families (id, name, note); ask one for an invite (`{name, email, circle?, note?}`, always 202) |
+| `GET/POST /api/v1/trees/:tree/listing` | the tree's public listing (`{listed, listing}`, owner) |
+| `GET /api/v1/trees/:tree/requests`, `POST .../requests/:id/invite\|decline` | people asking to join (owners and editors) |
 | `POST /api/v1/trees/:tree/people/:person/contact` | someone in the tree into your network (`{circle?, email?, relationship?, connect?, note?}`); one contact per person |
 | `GET/PATCH/DELETE /api/v1/contacts/:id` | one contact |
 | `POST /api/v1/contacts/:id/connect` | ask them to connect (`{note?}`) |
@@ -213,6 +216,22 @@ Pages carry one [crawlproof](https://crawlproof.com) unit: a fluid text link in 
 footer everywhere, and a 300×250 on Local and Network. It is a cross-origin frame
 (`/api/ads/frame`), so the CSP gains one `frame-src` and nothing else: no ad script,
 no cookie. `CRAWLPROOF_AD_SLOT` sets the slot; `off` removes the units.
+
+## Listed families
+
+A tree can be found without being seen. On the Members page the owner can list it at
+`/families`: strangers see the tree's name and a note the owner writes, and nothing from
+inside it (no people, no names, no counts, no members, not who owns it). The tree stays
+private; non-members still get a 404.
+
+Anyone can ask for an invite with a name, an email (theirs or a relative's) and how they
+know the family (family, friend, neighbor, business). The visitor always gets the same
+answer, so a request never reveals whether an address is already in the tree. Requests wait
+on the Members page; an owner or editor sends the ordinary viewer invite or declines, and
+declining sends nothing. Limits: 5 requests an hour per address, 3 a day per email, 50 a day
+per tree, plus a hidden field for bots. Code: `src/listing.ts`. CLI: `ancestry listing on
+--note "..."`, `ancestry requests [invite|decline <id>]`, `ancestry families`, `ancestry ask`.
+MCP: `list_families`, `ask_to_join`, `tree_listing`, `join_requests`, `answer_join_request`.
 
 ## Network
 

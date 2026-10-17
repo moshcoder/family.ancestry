@@ -23,6 +23,7 @@ import { mountNetwork } from './network-routes.js'
 import { Local, mountLocal } from './local.js'
 import { mountBusinesses, personBusinesses, personBusinessesOut } from './business.js'
 import { mountAlbums } from './album.js'
+import { listingPanel, Listings, mountListings } from './listing.js'
 import { changesTree, lifeEventForm, lifeKey, recordLifeEvent, timeline as lifeTimeline } from './life.js'
 import { addonsPanel, inviteFriendBox, personNetworkBox, profileInvite } from './network-html.js'
 
@@ -103,6 +104,12 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   /** How many addresses one paste may hold, for this tree. */
   const pasteMax = (tree: Tree) => (hasPlan(plan, store, tree) ? 500 : 20)
   const messageLimit = limiter(120, 60 * 60_000)
+  // Asking a listed family for an invite: a few an hour from one address, a few a day per email, a busy day per tree.
+  const askIpLimit = limiter(5, 60 * 60_000)
+  const askEmailLimit = limiter(3, 24 * 60 * 60_000)
+  const askTreeLimit = limiter(50, 24 * 60 * 60_000)
+  const askLimit = (key: string) => (key.startsWith('ip:') ? askIpLimit(key) : key.startsWith('email:') ? askEmailLimit(key) : askTreeLimit(key))
+  const listings = new Listings(store)
   const secure = (c: Context) => (c.req.header('x-forwarded-proto') ?? new URL(c.req.url).protocol.replace(':', '')) === 'https'
   const ip = (c: Context) => c.req.header('x-real-ip') ?? c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? 'local'
 
@@ -749,7 +756,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
 
   // members + invites
   const membersView = (c: Context, t: { tree: Tree; role: Role }, links: html.InviteLink[] = [], flash: string | null = null) =>
-    c.html(html.membersPage(ctx(c, flash ? { flash } : {}), t.tree, t.role, store.members(t.tree.id), links, { pending: canEdit(t.role) ? store.pendingInvites(t.tree.id) : [], profiles: store.profiles(t.tree.id), people: (id) => store.person(t.tree.id, id), max: pasteMax(t.tree), plan: hasPlan(plan, store, t.tree) }))
+    c.html(html.membersPage(ctx(c, flash ? { flash } : {}), t.tree, t.role, store.members(t.tree.id), links, { pending: canEdit(t.role) ? store.pendingInvites(t.tree.id) : [], profiles: store.profiles(t.tree.id), people: (id) => store.person(t.tree.id, id), max: pasteMax(t.tree), plan: hasPlan(plan, store, t.tree), listing: listingPanel(ctx(c), t.tree, t.role, listings.settings(t.tree.id), canEdit(t.role) ? listings.waiting(t.tree.id) : [], publicSite) }))
   app.get('/t/:tree/members', (c) => {
     const t = treeFor(c)
     if (t.error) return t.error
@@ -1104,6 +1111,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   mountLocal(app, api, { local: new Local(store, net), ctx, form })
   // Free on every tree; never behind the Family plan.
   mountBusinesses(app, api, { store, net, site, ctx, form, treeFor, pickId, image: { types: IMAGE_TYPES, max: MAX_PHOTO } })
+  mountListings(app, api, { store, listings, net, site: publicSite, ctx, form, treeFor, mail: (m) => auth.mail(m), ip, limit: askLimit, inviteToTree })
   mountAlbums(app, api, { store, site, ctx, form, treeFor, image: { types: IMAGE_TYPES, max: MAX_PHOTO } })
   app.route('/api/v1', api)
 

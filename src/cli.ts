@@ -60,6 +60,10 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
                                     email invites; --file (or -) reads a pasted list;
                                     --as invites them to be that person
   ancestry members                  who is in the tree, and pending invites
+  ancestry listing [on|off] [--note TEXT]   list the tree at /families: its name and your note, never the tree
+  ancestry requests [invite|decline <id>]   people asking a listed tree for an invite
+  ancestry families [search]        listed families you could ask to join
+  ancestry ask <family-id> --name N --email E [--as family|friends|neighbors|business] [--note TEXT]
 
   ancestry contacts [search] [--circle family|friends|neighbors|business]
   ancestry contact add --name N [--email E] [--phone P] [--circle C] [--relationship R]
@@ -665,6 +669,35 @@ export async function runCli(argv: string[]): Promise<number> {
         const body = rest.length ? { person_id: await pickPerson(client, tree.id, rest.join(' ')) } : personFields(f)
         const p = await client.claim(tree.id, body)
         print(p, () => `You are ${p.name} (${p.id}) in ${tree.name}. Keep it up to date: ancestry edit ${p.id} ...`)
+        return 0
+      }
+      case 'listing': {
+        const tree = await pickTree(client, f.tree)
+        const on = rest[0] === 'on' ? true : rest[0] === 'off' ? false : undefined
+        const l = on === undefined && f.note === undefined ? await client.listing(tree.id) : await client.setListing(tree.id, { listed: on, listing: str(f.note) })
+        print(l, () => (l.listed ? `Listed: ${l.url}${l.listing ? `\n  ${l.listing}` : ''}` : 'Not listed. ancestry listing on --note "The Smiths of Ohio" lists it.'))
+        return 0
+      }
+      case 'requests': {
+        const tree = await pickTree(client, f.tree)
+        if (rest[0] === 'invite' || rest[0] === 'decline') {
+          if (!rest[1]) throw new Error(`ancestry requests ${rest[0]} <id>`)
+          const r = await client.answerJoinRequest(tree.id, rest[1], rest[0])
+          print(r, () => r.result ?? 'Declined. They are not told.')
+          return 0
+        }
+        const reqs = await client.joinRequests(tree.id)
+        print(reqs, () => (reqs.length ? reqs.map((r) => `${r.id}  ${r.name} <${r.email}>  ${r.circle}${r.note ? `  "${r.note}"` : ''}`).join('\n') : 'Nobody is asking to join.'))
+        return 0
+      }
+      case 'families': {
+        const fams = await client.families(rest.join(' '))
+        print(fams, () => (fams.length ? fams.map((t) => `${t.id}  ${t.name}${t.listing ? `  ${t.listing}` : ''}`).join('\n') : 'No listed family matches.'))
+        return 0
+      }
+      case 'ask': {
+        if (!rest[0] || typeof f.name !== 'string' || typeof f.email !== 'string') throw new Error('ancestry ask <family-id> --name N --email E [--as friends] [--note TEXT]')
+        console.log(await client.askToJoin(rest[0], { name: f.name, email: f.email, circle: str(f.as), note: str(f.note) }))
         return 0
       }
       case 'members': {
