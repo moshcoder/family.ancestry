@@ -1,0 +1,28 @@
+{
+  "name": "family-ancestry-desktop",
+  "productName": "family.ancestry",
+  "version": "0.1.0",
+  "description": "family.ancestry for macOS, Windows and Linux: your family's private tree, with the Moshpit name resolved for you.",
+  "license": "MIT",
+  "author": "Profullstack, Inc. <hello@profullstack.com>",
+  "homepage": "https://github.com/moshcoder/family.ancestry",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --publish never"
+  },
+  "devDependencies": {
+    "electron": "^44.8.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.profullstack.family.ancestry",
+    "productName": "family.ancestry",
+    "artifactName": "family-ancestry-${version}-${os}-${arch}.${ext}",
+    "files": ["main.js", "moshpit-root-ca.crt", "icon.png", "package.json"],
+    "directories": { "output": "dist" },
+    "mac": { "category": "public.app-category.lifestyle", "target": ["dmg", "zip"], "icon": "icon.png" },
+    "win": { "target": ["nsis"], "icon": "icon.png" },
+    "linux": { "target": ["AppImage", "deb"], "category": "Office", "icon": "icon.png", "maintainer": "Profullstack, Inc. <hello@profullstack.com>" }
+  }
+}

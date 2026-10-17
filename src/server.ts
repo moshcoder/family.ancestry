@@ -1,0 +1,772 @@
+/**
+ * The family.ancestry server: pages for people, /api/v1 for programs.
+ *
+ *   bun src/server.ts            PORT (8792), ANCESTRY_DATA_DIR, ANCESTRY_SITE,
+ *                                RESEND_API_KEY + MAIL_FROM for sign-in links
+ */
+import { Hono, type Context } from 'hono'
+import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
+import { join } from 'node:path'
+import { Store, canEdit, fullName, newId, type Person, type Role, type Tree, type User } from './db.js'
+import { Auth, SESSION_COOKIE, consoleMailer, resendMailer, safeNext, validEmail, type Mailer } from './auth.js'
+import { exportGedcom, importGedcom, describeImport } from './gedcom.js'
+import { describePath } from './relate.js'
+import * as html from './html.js'
+
+type Env = { Variables: { user: User | null; csrf: string; via: 'session' | 'token' | null } }
+
+const CSRF_COOKIE = 'fa_csrf'
+const MAX_PHOTO = 8 * 1024 * 1024
+const MAX_GEDCOM = 25 * 1024 * 1024
+const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif'])
+
+export type AppOptions = { store: Store; auth: Auth; site: string; publicDir?: string }
+
+/** Tiny fixed-window limiter, per key. Enough to stop a script from mailing a stranger 1,000 sign-in links. */
+function limiter(limit: number, windowMs: number) {
+  const hits = new Map<string, { n: number; reset: number }>()
+  return (key: string) => {
+    const now = Date.now()
+    if (hits.size > 10_000) for (const [k, v] of hits) if (v.reset < now) hits.delete(k)
+    const entry = hits.get(key)
+    if (!entry || entry.reset < now) {
+      hits.set(key, { n: 1, reset: now + windowMs })
+      return true
+    }
+    entry.n++
+    return entry.n <= limit
+  }
+}
+
+/** "Jane Doe (1901–1980) #abc123" from the datalist -> abc123. */
+export const pickId = (value: unknown): string | null => String(value ?? '').match(/#([A-Za-z0-9_-]{6,})\s*$/)?.[1] ?? (/^[A-Za-z0-9_-]{6,}$/.test(String(value ?? '').trim()) ? String(value).trim() : null)
+
+export function createApp({ store, auth, site, publicDir = join(import.meta.dir, '..', 'public') }: AppOptions) {
+  const app = new Hono<Env>()
+  const linkLimit = limiter(10, 15 * 60_000)
+  const secure = (c: Context) => (c.req.header('x-forwarded-proto') ?? new URL(c.req.url).protocol.replace(':', '')) === 'https'
+  const ip = (c: Context) => c.req.header('x-real-ip') ?? c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? 'local'
+
+  app.use('*', async (c, next) => {
+    const bearer = c.req.header('authorization')?.match(/^Bearer\s+(\S+)$/i)?.[1]
+    const tokenUser = bearer ? auth.tokenUser(bearer) : null
+    const sessionUser = tokenUser ? null : auth.sessionUser(getCookie(c, SESSION_COOKIE))
+    c.set('user', tokenUser ?? sessionUser)
+    c.set('via', tokenUser ? 'token' : sessionUser ? 'session' : null)
+    let csrf = getCookie(c, CSRF_COOKIE)
+    if (!csrf || !/^[A-Za-z0-9_-]{16,64}$/.test(csrf)) {
+      csrf = newId(16)
+      setCookie(c, CSRF_COOKIE, csrf, { path: '/', httpOnly: true, sameSite: 'Lax', secure: secure(c), maxAge: 60 * 60 * 24 * 365 })
+    }
+    c.set('csrf', csrf)
+
+    // Cross-site writes are refused. A bearer token cannot be sent by a browser on its own, so it is exempt.
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method) && c.get('via') !== 'token') {
+      const fetchSite = c.req.header('sec-fetch-site')
+      if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none') return c.text('cross-site request refused', 403)
+      const type = c.req.header('content-type') ?? ''
+      if (type.includes('application/x-www-form-urlencoded') || type.includes('multipart/form-data')) {
+        const body = await c.req.parseBody({ all: false }).catch(() => ({}) as Record<string, unknown>)
+        ;(c as any).formBody = body
+        if (body._csrf !== csrf) return c.html(html.messagePage(ctx(c), 'That form expired', 'Go back, reload the page and try again.'), 403)
+      } else if (c.req.path.startsWith('/api/') || c.req.path.startsWith('/auth/passkey')) {
+        const origin = c.req.header('origin')
+        if (origin && new URL(origin).host !== new URL(c.req.url).host && new URL(origin).host !== new URL(site).host) return c.json({ error: 'cross-site request refused' }, 403)
+      }
+    }
+    await next()
+    c.header('x-content-type-options', 'nosniff')
+    c.header('referrer-policy', 'same-origin')
+    c.header('x-frame-options', 'DENY')
+    if ((c.res.headers.get('content-type') ?? '').includes('text/html')) {
+      c.header('content-security-policy', "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' http://127.0.0.1:* http://localhost:*")
+      c.header('cache-control', 'no-store')
+    }
+  })
+
+  const form = async (c: Context): Promise<Record<string, any>> => (c as any).formBody ?? (await c.req.parseBody().catch(() => ({})))
+  const ctx = (c: Context, extra: Partial<html.Ctx> = {}): html.Ctx => ({ user: c.get('user'), csrf: c.get('csrf'), flash: c.req.query('ok') ?? null, ...extra })
+  const signIn = (c: Context, user: User) => {
+    setCookie(c, SESSION_COOKIE, auth.createSession(user.id), { path: '/', httpOnly: true, sameSite: 'Lax', secure: secure(c), maxAge: 60 * 60 * 24 * 90 })
+  }
+
+  /** The tree and the caller's role in it, or a response that ends the request. */
+  type TreeAccess = { error: Response; tree?: never; role?: never; user?: never } | { error?: undefined; tree: Tree; role: Role; user: User }
+  const treeFor = (c: Context, need: 'view' | 'edit' | 'owner' = 'view'): TreeAccess => {
+    const user = c.get('user')
+    const tree = store.tree(c.req.param('tree')!)
+    const role = tree ? store.role(tree.id, user?.id) : null
+    const api = c.req.path.startsWith('/api/')
+    const fail = (status: 401 | 403 | 404, message: string) => (api ? c.json({ error: message }, status) : status === 401 ? c.redirect(`/signin?next=${encodeURIComponent(c.req.path)}`) : c.html(html.messagePage(ctx(c), status === 404 ? 'Not found' : 'Not allowed', message), status))
+    if (!user) return { error: fail(401, 'sign in first') as Response }
+    // A tree you are not a member of is indistinguishable from one that does not exist.
+    if (!tree || !role) return { error: fail(404, 'No such tree, or it has not been shared with you.') as Response }
+    if (need === 'edit' && !canEdit(role)) return { error: fail(403, 'You can view this tree but not change it. Ask its owner to make you an editor.') as Response }
+    if (need === 'owner' && role !== 'owner') return { error: fail(403, 'Only the owner can do that.') as Response }
+    return { tree, role: role as Role, user }
+  }
+
+  // ---- static + health --------------------------------------------------
+
+  app.get('/health', (c) => c.json({ ok: true, version: html.VERSION }))
+  const statics: Record<string, string> = {
+    '/style.css': 'text/css; charset=utf-8',
+    '/app.js': 'text/javascript; charset=utf-8',
+    '/sw.js': 'text/javascript; charset=utf-8',
+    '/manifest.webmanifest': 'application/manifest+json',
+    '/favicon.svg': 'image/svg+xml',
+    '/icon-192.png': 'image/png',
+    '/icon-512.png': 'image/png',
+    '/icon-maskable-512.png': 'image/png',
+    '/apple-touch-icon.png': 'image/png',
+    '/moshpit-root-ca.crt': 'application/x-x509-ca-cert',
+    '/offline.html': 'text/html; charset=utf-8',
+  }
+  for (const [path, type] of Object.entries(statics)) {
+    app.get(path, async (c) => {
+      const file = Bun.file(join(publicDir, path))
+      if (!(await file.exists())) return c.notFound()
+      const cache = path === '/sw.js' || path === '/manifest.webmanifest' ? 'no-cache' : c.req.query('v') ? 'public, max-age=31536000, immutable' : 'public, max-age=3600'
+      return new Response(file, { headers: { 'content-type': type, 'cache-control': cache } })
+    })
+  }
+
+  // ---- pages: signed out ------------------------------------------------
+
+  app.get('/', (c) => (c.get('user') ? c.redirect('/trees') : c.html(html.homePage(ctx(c)))))
+  app.get('/about', (c) => c.html(html.aboutPage(ctx(c))))
+  app.get('/connect', (c) => c.html(html.connectPage(ctx(c), site)))
+  app.get('/signin', (c) => c.html(html.signInPage(ctx(c), safeNext(c.req.query('next')))))
+  app.get('/signup', (c) => c.html(html.signInPage(ctx(c), safeNext(c.req.query('next')))))
+
+  app.post('/auth/link', async (c) => {
+    const body = await form(c)
+    const email = validEmail(body.email)
+    if (!email) return c.html(html.signInPage(ctx(c, { error: 'That does not look like an email address.' }), safeNext(body.next)), 400)
+    // Same answer whether the address is new, known, or rate-limited.
+    if (linkLimit(`ip:${ip(c)}`) && linkLimit(`email:${email}`)) await auth.sendLink(email, safeNext(body.next))
+    return c.html(html.checkEmailPage(ctx(c)))
+  })
+
+  app.get('/auth/verify', (c) => {
+    const result = auth.consumeLink(c.req.query('token') ?? '')
+    if (!result) return c.html(html.messagePage(ctx(c), 'That link has expired', 'Sign-in links work once, for 20 minutes. Ask for a new one.', '<p><a class="btn" href="/signin">Sign in</a></p>'), 400)
+    signIn(c, result.user)
+    return c.redirect(result.next ?? '/trees')
+  })
+
+  app.post('/auth/signout', (c) => {
+    auth.endSession(getCookie(c, SESSION_COOKIE))
+    deleteCookie(c, SESSION_COOKIE, { path: '/' })
+    return c.redirect('/')
+  })
+
+  // ---- passkeys ---------------------------------------------------------
+
+  app.post('/auth/passkey/register/options', async (c) => {
+    const user = c.get('user')
+    if (!user) return c.json({ error: 'sign in first' }, 401)
+    const { options, challengeId } = await auth.registrationOptions(user)
+    setCookie(c, 'fa_chal', challengeId, { path: '/auth/passkey', httpOnly: true, sameSite: 'Strict', secure: secure(c), maxAge: 300 })
+    return c.json(options)
+  })
+  app.post('/auth/passkey/register/verify', async (c) => {
+    const user = c.get('user')
+    if (!user) return c.json({ error: 'sign in first' }, 401)
+    const body = (await c.req.json().catch(() => null)) as any
+    const ok = body && (await auth.finishRegistration(user, getCookie(c, 'fa_chal'), body.response ?? body, body.label ?? null))
+    deleteCookie(c, 'fa_chal', { path: '/auth/passkey' })
+    return ok ? c.json({ ok: true }) : c.json({ error: 'that passkey could not be verified' }, 400)
+  })
+  app.post('/auth/passkey/login/options', async (c) => {
+    const { options, challengeId } = await auth.authenticationOptions()
+    setCookie(c, 'fa_chal', challengeId, { path: '/auth/passkey', httpOnly: true, sameSite: 'Strict', secure: secure(c), maxAge: 300 })
+    return c.json(options)
+  })
+  app.post('/auth/passkey/login/verify', async (c) => {
+    const body = (await c.req.json().catch(() => null)) as any
+    const user = body ? await auth.finishAuthentication(getCookie(c, 'fa_chal'), body) : null
+    deleteCookie(c, 'fa_chal', { path: '/auth/passkey' })
+    if (!user) return c.json({ error: 'that passkey was not recognised' }, 401)
+    signIn(c, user)
+    return c.json({ ok: true, next: safeNext(body.next) ?? '/trees' })
+  })
+
+  // ---- CLI sign-in (authorization code + PKCE) ---------------------------
+
+  app.get('/cli/authorize', (c) => {
+    const q = c.req.query()
+    if (!c.get('user')) return c.redirect(`/signin?next=${encodeURIComponent(`/cli/authorize?${new URLSearchParams(q)}`)}`)
+    if (q.code_challenge_method && q.code_challenge_method !== 'S256') return c.html(html.messagePage(ctx(c), 'Not supported', 'Only S256 PKCE challenges are accepted.'), 400)
+    if (!Auth.loopback(q.redirect_uri ?? '') || !/^[A-Za-z0-9_-]{43,128}$/.test(q.code_challenge ?? '')) return c.html(html.messagePage(ctx(c), 'Bad request', 'This sign-in link is malformed. Run ancestry login again.'), 400)
+    return c.html(html.cliAuthorizePage(ctx(c), { challenge: q.code_challenge!, redirect: q.redirect_uri!, state: q.state ?? '', label: (q.label ?? 'ancestry CLI').slice(0, 80) }))
+  })
+  app.post('/cli/authorize', async (c) => {
+    const user = c.get('user')
+    if (!user) return c.redirect('/signin')
+    const body = await form(c)
+    try {
+      const code = auth.issueCliCode(user.id, String(body.code_challenge), String(body.redirect_uri), String(body.label ?? 'ancestry CLI'))
+      const url = new URL(String(body.redirect_uri))
+      url.searchParams.set('code', code)
+      url.searchParams.set('state', String(body.state ?? ''))
+      return c.redirect(url.toString())
+    } catch (error) {
+      return c.html(html.messagePage(ctx(c), 'Could not sign in the CLI', (error as Error).message), 400)
+    }
+  })
+  app.post('/api/v1/cli/token', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as any
+    const token = auth.redeemCliCode(String(body.code ?? ''), String(body.code_verifier ?? ''), String(body.redirect_uri ?? ''))
+    return token ? c.json({ access_token: token, token_type: 'Bearer' }) : c.json({ error: 'invalid_grant' }, 400)
+  })
+
+  // ---- pages: trees -----------------------------------------------------
+
+  const needUser = (c: Context) => (c.get('user') ? null : c.redirect(`/signin?next=${encodeURIComponent(c.req.path)}`))
+
+  app.get('/trees', (c) => needUser(c) ?? c.html(html.treesPage(ctx(c), store.treesFor(c.get('user')!.id))))
+  app.post('/trees', async (c) => {
+    if (needUser(c)) return needUser(c)!
+    const body = await form(c)
+    const tree = store.createTree(c.get('user')!.id, String(body.name ?? ''), body.description ? String(body.description) : null)
+    return c.redirect(`/t/${tree.id}`)
+  })
+  app.post('/trees/import', async (c) => {
+    if (needUser(c)) return needUser(c)!
+    const body = await form(c)
+    const file = body.file as File | undefined
+    if (!(file instanceof File) || file.size > MAX_GEDCOM) return c.html(html.treesPage(ctx(c, { error: 'Choose a GEDCOM file under 25 MB.' }), store.treesFor(c.get('user')!.id)), 400)
+    const tree = store.createTree(c.get('user')!.id, String(body.name || file.name.replace(/\.(ged|gedcom)$/i, '') || 'Imported tree'))
+    try {
+      const result = importGedcom(store, tree.id, await file.text())
+      return c.redirect(`/t/${tree.id}?ok=${encodeURIComponent(`Imported ${describeImport(result)}.`)}`)
+    } catch (error) {
+      store.deleteTree(tree.id)
+      return c.html(html.treesPage(ctx(c, { error: `Could not import that file: ${(error as Error).message}` }), store.treesFor(c.get('user')!.id)), 400)
+    }
+  })
+
+  app.get('/t/:tree', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    const q = (c.req.query('q') ?? '').slice(0, 200)
+    return c.html(
+      html.treePage(ctx(c), t.tree, t.role, {
+        stats: store.stats(t.tree.id),
+        home: t.tree.home_person_id ? store.person(t.tree.id, t.tree.home_person_id) : null,
+        people: q ? store.search(t.tree.id, q, 200) : store.people(t.tree.id, 500),
+        surnames: store.surnames(t.tree.id),
+        query: q,
+      }),
+    )
+  })
+  app.post('/t/:tree/settings', async (c) => {
+    const t = treeFor(c, 'owner')
+    if (t.error) return t.error
+    const body = await form(c)
+    store.updateTree(t.tree.id, { name: String(body.name ?? t.tree.name), description: body.description ? String(body.description) : null })
+    return c.redirect(`/t/${t.tree.id}?ok=Saved`)
+  })
+  app.post('/t/:tree/delete', (c) => {
+    const t = treeFor(c, 'owner')
+    if (t.error) return t.error
+    store.deleteTree(t.tree.id)
+    return c.redirect('/trees?ok=Tree%20deleted')
+  })
+  app.post('/t/:tree/home', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const body = await form(c)
+    store.updateTree(t.tree.id, { home_person_id: String(body.person_id) })
+    return c.redirect(`/t/${t.tree.id}/p/${body.person_id}?ok=Home%20person%20set`)
+  })
+  app.post('/t/:tree/import', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const file = (await form(c)).file
+    if (!(file instanceof File) || file.size > MAX_GEDCOM) return c.redirect(`/t/${t.tree.id}`)
+    try {
+      const result = importGedcom(store, t.tree.id, await file.text())
+      return c.redirect(`/t/${t.tree.id}?ok=${encodeURIComponent(`Imported ${describeImport(result)}.`)}`)
+    } catch (error) {
+      return c.html(html.messagePage(ctx(c), 'Import failed', (error as Error).message), 400)
+    }
+  })
+  app.get('/t/:tree/export.ged', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    // Viewers get the privacy-safe export; editors may ask for everything.
+    const privacy = c.req.query('full') !== '1' || !canEdit(t.role)
+    const name = t.tree.name.replace(/[^A-Za-z0-9 _.-]+/g, '').trim() || 'family'
+    return new Response(exportGedcom(store, t.tree.id, { privacy }), { headers: { 'content-type': 'text/vnd.familysearch.gedcom; charset=utf-8', 'content-disposition': `attachment; filename="${name}.ged"` } })
+  })
+
+  // people
+  app.post('/t/:tree/people', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const p = store.addPerson(t.tree.id, await form(c))
+    return c.redirect(`/t/${t.tree.id}/p/${p.id}`)
+  })
+  app.get('/t/:tree/p/:person', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    const person = store.person(t.tree.id, c.req.param('person'))
+    if (!person) return c.html(html.messagePage(ctx(c), 'Not found', 'Nobody by that id in this tree.'), 404)
+    return c.html(
+      html.personPage(ctx(c), t.tree, t.role, {
+        person,
+        parents: store.parentFamilies(t.tree.id, person.id),
+        unions: store.spouseFamilies(t.tree.id, person.id),
+        events: store.events(t.tree.id, person.id),
+        citations: store.citationsFor(t.tree.id, person.id),
+        media: store.mediaFor(t.tree.id, person.id),
+        sources: store.sources(t.tree.id),
+        everyone: canEdit(t.role) ? store.people(t.tree.id, 5000) : [],
+      }),
+    )
+  })
+  app.post('/t/:tree/p/:person', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const body = await form(c)
+    if (!('living' in body)) body.living = '0'
+    store.updatePerson(t.tree.id, c.req.param('person'), body)
+    return c.redirect(`/t/${t.tree.id}/p/${c.req.param('person')}?ok=Saved`)
+  })
+  app.post('/t/:tree/p/:person/delete', (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    store.deletePerson(t.tree.id, c.req.param('person'))
+    return c.redirect(`/t/${t.tree.id}?ok=Deleted`)
+  })
+  app.post('/t/:tree/p/:person/relative', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const body = await form(c)
+    try {
+      const other = addRelative(store, t.tree.id, c.req.param('person'), body)
+      return c.redirect(`/t/${t.tree.id}/p/${c.req.param('person')}?ok=${encodeURIComponent(`Added ${fullName(other)}`)}`)
+    } catch (error) {
+      return c.redirect(`/t/${t.tree.id}/p/${c.req.param('person')}?ok=${encodeURIComponent(`Not added: ${(error as Error).message}`)}`)
+    }
+  })
+  app.post('/t/:tree/p/:person/unlink', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const body = await form(c)
+    store.removeChild(String(body.family_id), c.req.param('person'))
+    return c.redirect(`/t/${t.tree.id}/p/${c.req.param('person')}`)
+  })
+  app.post('/t/:tree/f/:family', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const body = await form(c)
+    store.updateFamily(t.tree.id, c.req.param('family'), { kind: body.kind, start_date: body.start_date, start_place: body.start_place, end_date: body.end_date })
+    return c.redirect(c.req.header('referer')?.startsWith(site) ? c.req.header('referer')! : `/t/${t.tree.id}`)
+  })
+  app.post('/t/:tree/f/:family/delete', (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    store.deleteFamily(t.tree.id, c.req.param('family'))
+    return c.redirect(`/t/${t.tree.id}?ok=Partnership%20removed`)
+  })
+  app.post('/t/:tree/p/:person/events', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const body = await form(c)
+    store.addEvent(t.tree.id, c.req.param('person'), { type: String(body.type ?? ''), date: body.date, place: body.place, description: body.description })
+    return c.redirect(`/t/${t.tree.id}/p/${c.req.param('person')}`)
+  })
+  app.post('/t/:tree/e/:event/delete', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const body = await form(c)
+    store.deleteEvent(t.tree.id, c.req.param('event'))
+    return c.redirect(`/t/${t.tree.id}/p/${body.person_id}`)
+  })
+
+  // sources + citations
+  app.get('/t/:tree/sources', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    return c.html(html.sourcesPage(ctx(c), t.tree, t.role, store.sources(t.tree.id)))
+  })
+  app.post('/t/:tree/sources', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const body = await form(c)
+    store.addSource(t.tree.id, { title: String(body.title ?? ''), author: body.author, url: body.url, citation: body.citation })
+    return c.redirect(`/t/${t.tree.id}/sources`)
+  })
+  app.post('/t/:tree/sources/:source/delete', (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    store.deleteSource(t.tree.id, c.req.param('source'))
+    return c.redirect(`/t/${t.tree.id}/sources`)
+  })
+  app.post('/t/:tree/p/:person/cite', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const body = await form(c)
+    let sourceId = String(body.source_id ?? '')
+    if (!sourceId && body.title) sourceId = store.addSource(t.tree.id, { title: String(body.title), url: body.url }).id
+    if (sourceId) store.cite(t.tree.id, sourceId, c.req.param('person'), body.page ?? null)
+    return c.redirect(`/t/${t.tree.id}/p/${c.req.param('person')}`)
+  })
+  app.post('/t/:tree/p/:person/uncite', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    store.uncite(String((await form(c)).source_id), c.req.param('person'))
+    return c.redirect(`/t/${t.tree.id}/p/${c.req.param('person')}`)
+  })
+
+  // media
+  app.post('/t/:tree/p/:person/media', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const body = await form(c)
+    const file = body.file
+    const back = `/t/${t.tree.id}/p/${c.req.param('person')}`
+    if (!(file instanceof File) || !IMAGE_TYPES.has(file.type) || file.size > MAX_PHOTO) return c.redirect(`${back}?ok=${encodeURIComponent('Photos must be JPEG, PNG, GIF, WebP or AVIF, under 8 MB.')}`)
+    store.addMedia(t.tree.id, c.req.param('person'), { filename: file.name, mime: file.type, data: new Uint8Array(await file.arrayBuffer()), caption: body.caption ?? null })
+    return c.redirect(back)
+  })
+  app.get('/t/:tree/media/:media', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    const m = store.mediaData(t.tree.id, c.req.param('media'))
+    if (!m) return c.notFound()
+    return new Response(new Uint8Array(m.data), { headers: { 'content-type': IMAGE_TYPES.has(m.mime) ? m.mime : 'application/octet-stream', 'cache-control': 'private, max-age=86400', 'content-security-policy': "default-src 'none'", 'x-content-type-options': 'nosniff' } })
+  })
+  app.post('/t/:tree/media/:media/primary', (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const m = store.mediaInfo(t.tree.id, c.req.param('media'))
+    if (m?.person_id) store.setPhoto(t.tree.id, m.person_id, m.id)
+    return c.redirect(m?.person_id ? `/t/${t.tree.id}/p/${m.person_id}` : `/t/${t.tree.id}`)
+  })
+  app.post('/t/:tree/media/:media/delete', (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const m = store.mediaInfo(t.tree.id, c.req.param('media'))
+    store.deleteMedia(t.tree.id, c.req.param('media'))
+    return c.redirect(m?.person_id ? `/t/${t.tree.id}/p/${m.person_id}` : `/t/${t.tree.id}`)
+  })
+
+  // charts
+  const gens = (value: string | undefined, fallback: number, max: number) => Math.min(max, Math.max(2, Number(value) || fallback))
+  app.get('/t/:tree/pedigree/:person', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    const g = gens(c.req.query('g'), 4, 6)
+    const people = store.pedigree(t.tree.id, c.req.param('person'), g)
+    if (!people.get(1)) return c.notFound()
+    return c.html(html.pedigreePage(ctx(c), t.tree, people.get(1)!, people, g))
+  })
+  app.get('/t/:tree/descendants/:person', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    const g = gens(c.req.query('g'), 3, 8)
+    const d = store.descendants(t.tree.id, c.req.param('person'), g)
+    if (!d) return c.notFound()
+    return c.html(html.descendantsPage(ctx(c), t.tree, d, g))
+  })
+  app.get('/t/:tree/relate', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    const everyone = store.people(t.tree.id, 5000)
+    const a = store.person(t.tree.id, c.req.query('a') ?? '') ?? (t.tree.home_person_id ? store.person(t.tree.id, t.tree.home_person_id) : null) ?? everyone[0] ?? null
+    const b = store.person(t.tree.id, c.req.query('b') ?? '')
+    const path = a && b ? store.relationship(t.tree.id, a.id, b.id) : null
+    return c.html(html.relatePage(ctx(c), t.tree, everyone, a, b, a && b ? { words: describePath(path), path } : null))
+  })
+
+  // members + invites
+  app.get('/t/:tree/members', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    return c.html(html.membersPage(ctx(c), t.tree, t.role, store.members(t.tree.id), null))
+  })
+  app.post('/t/:tree/invites', async (c) => {
+    const t = treeFor(c, 'owner')
+    if (t.error) return t.error
+    const body = await form(c)
+    const role = body.role === 'editor' ? 'editor' : 'viewer'
+    const email = validEmail(body.email)
+    const token = store.createInvite(t.tree.id, t.user.id, role, email)
+    const url = `${site}/invite/${token}`
+    const mailed = Boolean(email && linkLimit(`invite:${t.user.id}`))
+    if (mailed) await sendInvite(email!, t.tree.name, t.user, url, role)
+    return c.html(html.membersPage(ctx(c, { flash: mailed ? `Invite emailed to ${email}.` : null }), t.tree, t.role, store.members(t.tree.id), url))
+  })
+  app.post('/t/:tree/members/:user', async (c) => {
+    const t = treeFor(c, 'owner')
+    if (t.error) return t.error
+    const role = (await form(c)).role === 'editor' ? 'editor' : 'viewer'
+    if (store.role(t.tree.id, c.req.param('user')) && store.role(t.tree.id, c.req.param('user')) !== 'owner') store.setMember(t.tree.id, c.req.param('user'), role)
+    return c.redirect(`/t/${t.tree.id}/members`)
+  })
+  app.post('/t/:tree/members/:user/remove', (c) => {
+    const t = treeFor(c, 'owner')
+    if (t.error) return t.error
+    store.removeMember(t.tree.id, c.req.param('user'))
+    return c.redirect(`/t/${t.tree.id}/members`)
+  })
+  app.get('/invite/:token', (c) => {
+    const invite = store.invite(c.req.param('token'))
+    const tree = invite ? store.tree(invite.tree_id) : null
+    if (!invite || !tree) return c.html(html.messagePage(ctx(c), 'Invite expired', 'This invite was already used or has expired. Ask for a new one.'), 404)
+    return c.html(html.invitePage(ctx(c), tree, invite.role, c.req.param('token')))
+  })
+  app.post('/invite/:token', (c) => {
+    const user = c.get('user')
+    if (!user) return c.redirect(`/signin?next=${encodeURIComponent(c.req.path)}`)
+    const treeId = store.acceptInvite(c.req.param('token'), user.id)
+    return treeId ? c.redirect(`/t/${treeId}?ok=Welcome`) : c.html(html.messagePage(ctx(c), 'Invite expired', 'This invite was already used or has expired.'), 404)
+  })
+
+  // settings
+  const settings = (c: Context, newToken: string | null = null) => c.html(html.settingsPage(ctx(c), { passkeys: auth.passkeys(c.get('user')!.id), tokens: auth.tokens(c.get('user')!.id), newToken }))
+  app.get('/settings', (c) => needUser(c) ?? settings(c))
+  app.post('/settings/name', async (c) => {
+    if (needUser(c)) return needUser(c)!
+    store.setUserName(c.get('user')!.id, String((await form(c)).name ?? ''))
+    return c.redirect('/settings?ok=Saved')
+  })
+  app.post('/settings/tokens', async (c) => {
+    if (needUser(c)) return needUser(c)!
+    return settings(c, auth.createToken(c.get('user')!.id, String((await form(c)).label ?? '') || 'token'))
+  })
+  app.post('/settings/tokens/:id/delete', (c) => {
+    if (needUser(c)) return needUser(c)!
+    auth.revokeToken(c.get('user')!.id, c.req.param('id'))
+    return c.redirect('/settings')
+  })
+  app.post('/settings/passkeys/:id/delete', (c) => {
+    if (needUser(c)) return needUser(c)!
+    auth.removePasskey(c.get('user')!.id, decodeURIComponent(c.req.param('id')))
+    return c.redirect('/settings')
+  })
+
+  // ---- /api/v1 ----------------------------------------------------------
+
+  const api = new Hono<Env>()
+  const apiUser = (c: Context) => c.get('user')
+  const bad = (c: Context, error: unknown, status: 400 | 404 = 400) => c.json({ error: error instanceof Error ? error.message : String(error) }, status)
+  const json = async (c: Context): Promise<Record<string, any>> => ((await c.req.json().catch(() => ({}))) as Record<string, any>) ?? {}
+  const personOut = (treeId: string, p: Person, full = false) => {
+    const base = { ...p, name: fullName(p), url: `${site}/t/${treeId}/p/${p.id}` }
+    if (!full) return base
+    return {
+      ...base,
+      parents: store.parentFamilies(treeId, p.id).map((f) => ({ family_id: f.family.id, relation: f.relation, parents: f.parents.map((x) => ({ id: x.id, name: fullName(x) })), siblings: f.siblings.map((x) => ({ id: x.id, name: fullName(x) })) })),
+      unions: store.spouseFamilies(treeId, p.id).map((u) => ({ family_id: u.family.id, kind: u.family.kind, start_date: u.family.start_date, start_place: u.family.start_place, end_date: u.family.end_date, partner: u.partner ? { id: u.partner.id, name: fullName(u.partner) } : null, children: u.children.map((x) => ({ id: x.id, name: fullName(x) })) })),
+      events: store.events(treeId, p.id),
+      sources: store.citationsFor(treeId, p.id),
+      photos: store.mediaFor(treeId, p.id).map((m) => ({ ...m, url: `${site}/t/${treeId}/media/${m.id}` })),
+    }
+  }
+
+  api.use('*', async (c, next) => {
+    if (c.req.path === '/api/v1/cli/token') return next()
+    if (!apiUser(c)) return c.json({ error: 'sign in first: send Authorization: Bearer <token> (ancestry login makes one)' }, 401)
+    await next()
+  })
+  api.get('/me', (c) => c.json({ user: apiUser(c), trees: store.treesFor(apiUser(c)!.id) }))
+  api.get('/trees', (c) => c.json({ trees: store.treesFor(apiUser(c)!.id) }))
+  api.post('/trees', async (c) => {
+    const body = await json(c)
+    return c.json({ tree: store.createTree(apiUser(c)!.id, String(body.name ?? 'Family tree'), body.description ?? null) }, 201)
+  })
+  api.get('/trees/:tree', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    return c.json({ tree: t.tree, role: t.role, stats: store.stats(t.tree.id), surnames: store.surnames(t.tree.id).slice(0, 50) })
+  })
+  api.delete('/trees/:tree', (c) => {
+    const t = treeFor(c, 'owner')
+    if (t.error) return t.error
+    store.deleteTree(t.tree.id)
+    return c.json({ ok: true })
+  })
+  api.get('/trees/:tree/people', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    const q = c.req.query('q') ?? ''
+    const limit = Math.min(1000, Number(c.req.query('limit')) || 100)
+    return c.json({ people: (q ? store.search(t.tree.id, q, limit) : store.people(t.tree.id, limit)).map((p) => personOut(t.tree.id, p)) })
+  })
+  api.post('/trees/:tree/people', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const body = await json(c)
+    try {
+      if (body.relative_of && body.as) return c.json({ person: personOut(t.tree.id, addRelative(store, t.tree.id, String(body.relative_of), body), true) }, 201)
+      return c.json({ person: personOut(t.tree.id, store.addPerson(t.tree.id, body), true) }, 201)
+    } catch (error) {
+      return bad(c, error)
+    }
+  })
+  api.get('/trees/:tree/people/:person', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    const p = store.person(t.tree.id, c.req.param('person'))
+    return p ? c.json({ person: personOut(t.tree.id, p, true) }) : bad(c, 'no such person', 404)
+  })
+  api.patch('/trees/:tree/people/:person', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const p = store.updatePerson(t.tree.id, c.req.param('person'), await json(c))
+    return p ? c.json({ person: personOut(t.tree.id, p, true) }) : bad(c, 'no such person', 404)
+  })
+  api.delete('/trees/:tree/people/:person', (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    store.deletePerson(t.tree.id, c.req.param('person'))
+    return c.json({ ok: true })
+  })
+  api.post('/trees/:tree/people/:person/events', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const body = await json(c)
+    try {
+      return c.json({ event: store.addEvent(t.tree.id, c.req.param('person'), { type: String(body.type ?? 'Event'), date: body.date, place: body.place, description: body.description }) }, 201)
+    } catch (error) {
+      return bad(c, error)
+    }
+  })
+  api.get('/trees/:tree/pedigree/:person', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    const map = store.pedigree(t.tree.id, c.req.param('person'), gens(c.req.query('generations'), 4, 8))
+    return c.json({ ancestors: [...map.entries()].map(([n, p]) => ({ n, generation: Math.floor(Math.log2(n)), id: p.id, name: fullName(p), birth_date: p.birth_date, death_date: p.death_date, sex: p.sex })) })
+  })
+  api.get('/trees/:tree/descendants/:person', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    const d = store.descendants(t.tree.id, c.req.param('person'), gens(c.req.query('generations'), 3, 10))
+    return d ? c.json({ descendants: d }) : bad(c, 'no such person', 404)
+  })
+  api.get('/trees/:tree/relate', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    const path = store.relationship(t.tree.id, c.req.query('a') ?? '', c.req.query('b') ?? '')
+    return c.json({ relationship: describePath(path), path: path?.map((s) => ({ step: s.step, id: s.person.id, name: fullName(s.person) })) ?? null })
+  })
+  api.post('/trees/:tree/import', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const text = await c.req.text()
+    if (text.length > MAX_GEDCOM) return bad(c, 'GEDCOM over 25 MB')
+    try {
+      return c.json({ imported: importGedcom(store, t.tree.id, text) })
+    } catch (error) {
+      return bad(c, error)
+    }
+  })
+  api.get('/trees/:tree/export', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    return c.text(exportGedcom(store, t.tree.id, { privacy: c.req.query('privacy') === '1' || !canEdit(t.role) }))
+  })
+  api.get('/trees/:tree/sources', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    return c.json({ sources: store.sources(t.tree.id) })
+  })
+  api.post('/trees/:tree/sources', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const body = await json(c)
+    const source = store.addSource(t.tree.id, { title: String(body.title ?? ''), author: body.author, url: body.url, citation: body.citation })
+    if (body.person_id) store.cite(t.tree.id, source.id, String(body.person_id), body.page ?? null)
+    return c.json({ source }, 201)
+  })
+  app.route('/api/v1', api)
+
+  app.notFound((c) => (c.req.path.startsWith('/api/') ? c.json({ error: 'not found' }, 404) : c.html(html.messagePage(ctx(c), 'Not found', 'There is nothing at this address.'), 404)))
+  app.onError((error, c) => {
+    console.error(error)
+    return c.req.path.startsWith('/api/') ? c.json({ error: 'server error' }, 500) : c.html(html.messagePage(ctx(c), 'Something broke', 'That did not work. Try again in a moment.'), 500)
+  })
+
+  async function sendInvite(email: string, treeName: string, from: User, url: string, role: string) {
+    try {
+      await auth.mail({
+        to: email,
+        subject: `${from.name ?? from.email} invited you to the ${treeName} family tree`,
+        text: `${from.name ?? from.email} invited you to ${treeName} on family.ancestry, as ${role === 'editor' ? 'an editor' : 'a viewer'}.\n\nJoin: ${url}\n\nThe link works once and expires in 14 days.`,
+        html: `<p><b>${html.esc(from.name ?? from.email)}</b> invited you to <b>${html.esc(treeName)}</b> on family.ancestry, as ${role === 'editor' ? 'an editor' : 'a viewer'}.</p><p><a href="${html.esc(url)}" style="display:inline-block;padding:10px 18px;background:#3d6b4f;color:#fff;border-radius:6px;text-decoration:none">Join the tree</a></p><p style="color:#666;font-size:13px">${html.esc(url)}<br>The link works once and expires in 14 days.</p>`,
+      })
+    } catch (error) {
+      console.error(`[invite] mail failed: ${(error as Error).message}`)
+    }
+  }
+
+  return app
+}
+
+/**
+ * Add a parent, partner or child to `personId`: an existing person (body.existing
+ * or body.existing_id) or a new one from the person fields. Returns the relative.
+ */
+export function addRelative(store: Store, treeId: string, personId: string, body: Record<string, any>): Person {
+  const person = store.person(treeId, personId)
+  if (!person) throw new Error('no such person')
+  const as = String(body.as)
+  if (!['parent', 'partner', 'child'].includes(as)) throw new Error('as must be parent, partner or child')
+  const existingId = pickId(body.existing_id ?? body.existing)
+  const hasNew = Boolean(String(body.given ?? '').trim() || String(body.surname ?? '').trim())
+  if (!existingId && !hasNew) throw new Error('pick someone in the tree or give a name')
+  return store.tx(() => {
+    const other = existingId ? store.person(treeId, existingId) : store.addPerson(treeId, body)
+    if (!other) throw new Error('that person is not in this tree')
+    if (other.id === person.id) throw new Error('a person cannot be their own relative')
+    const relation = ['birth', 'adopted', 'step', 'foster'].includes(String(body.relation)) ? String(body.relation) : 'birth'
+    if (as === 'parent') {
+      // Join the person's existing birth family if it has a free slot, else start one.
+      const fams = store.parentFamilies(treeId, person.id).filter((f) => f.relation === relation)
+      const open = fams.find((f) => !f.family.partner1_id || !f.family.partner2_id)
+      if (open) store.setPartner(treeId, open.family.id, other.id)
+      else {
+        // The new parent's existing family with no other partner may already hold siblings; reuse it.
+        const single = store.spouseFamilies(treeId, other.id).find((u) => !u.partner)
+        const fam = single?.family ?? store.createFamily(treeId, other.id, null, { kind: 'partners' })
+        store.addChild(treeId, fam.id, person.id, relation)
+      }
+    } else if (as === 'partner') {
+      const single = store.spouseFamilies(treeId, person.id).find((u) => !u.partner)
+      const kind = ['married', 'partners', 'divorced'].includes(String(body.kind)) ? String(body.kind) : 'married'
+      if (single) {
+        store.setPartner(treeId, single.family.id, other.id)
+        store.updateFamily(treeId, single.family.id, { kind: kind === 'divorced' ? 'married' : kind, end_date: kind === 'divorced' ? 'Divorced' : undefined })
+      } else store.createFamily(treeId, person.id, other.id, { kind: kind === 'divorced' ? 'married' : kind, end_date: kind === 'divorced' ? 'Divorced' : null })
+    } else {
+      let familyId = body.family_id ? String(body.family_id) : ''
+      if (familyId && !store.family(treeId, familyId)) familyId = ''
+      if (!familyId) {
+        const single = store.spouseFamilies(treeId, person.id).find((u) => !u.partner)
+        familyId = single?.family.id ?? store.createFamily(treeId, person.id, null, { kind: 'partners' }).id
+      }
+      store.addChild(treeId, familyId, other.id, relation)
+    }
+    return store.person(treeId, other.id)!
+  })
+}
+
+/** Run the server from the environment (used by `bun src/server.ts`, `ancestry serve` and the desktop app). */
+export function serve() {
+  const dataDir = process.env.ANCESTRY_DATA_DIR ?? join(process.env.HOME ?? '.', '.local', 'share', 'family-ancestry')
+  const site = (process.env.ANCESTRY_SITE ?? 'https://family.ancestry').replace(/\/+$/, '')
+  const store = new Store(join(dataDir, 'family.db'))
+  const mailer: Mailer = process.env.RESEND_API_KEY ? resendMailer(process.env.RESEND_API_KEY, process.env.MAIL_FROM ?? 'family.ancestry <hello@pit.world>') : consoleMailer
+  const auth = new Auth(store, mailer, site)
+  const app = createApp({ store, auth, site })
+  const port = Number(process.env.PORT ?? 8792)
+  Bun.serve({ port, hostname: process.env.HOST ?? '127.0.0.1', fetch: app.fetch, maxRequestBodySize: 30 * 1024 * 1024 })
+  console.log(`family.ancestry ${html.VERSION} on http://${process.env.HOST ?? '127.0.0.1'}:${port} (${site}, data ${dataDir}${process.env.RESEND_API_KEY ? '' : ', mail to console'})`)
+}
+
+if (import.meta.main) serve()
