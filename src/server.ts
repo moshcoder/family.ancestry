@@ -172,7 +172,10 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   /** The words for how b is to a, with half- and step-siblings named properly. */
   const relate = (treeId: string, a: string, b: string) => {
     const path = store.relationship(treeId, a, b)
-    return { path, words: describeRelation(path, store.siblings(treeId, a).find((s) => s.person.id === b)) }
+    const sibling = store.siblings(treeId, a).find((s) => s.person.id === b)
+    // No family line between them: a bond says what they are to each other (a friend, a godparent).
+    const bond = !path && !sibling ? store.bondsFor(treeId, a).find((x) => x.other.id === b && x.kind !== 'pet') : null
+    return { path, words: bond ? bond.label.toLowerCase() : describeRelation(path, sibling) }
   }
 
   const form = async (c: Context): Promise<Record<string, any>> => (c as any).formBody ?? (await c.req.parseBody().catch(() => ({})))

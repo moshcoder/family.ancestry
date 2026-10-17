@@ -110,6 +110,7 @@ export const BONDS: Record<string, { as: string; back: string }> = {
   godparent: { as: 'Godparent', back: 'Godchild' },
   caregiver: { as: 'Caregiver', back: 'Cared for' },
   chosen_family: { as: 'Chosen family', back: 'Chosen family' },
+  friend: { as: 'Friend', back: 'Friend' },
   neighbor: { as: 'Neighbor', back: 'Neighbor' },
   pet: { as: 'Owner', back: 'Pet' },
 }
