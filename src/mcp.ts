@@ -94,6 +94,17 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
   }
   const roleFields = { role, title: z.string().max(120).optional(), start_date: z.string().max(200).optional(), end_date: z.string().max(200).optional(), note: z.string().max(500).optional() }
 
+  server.tool('list_albums', "The family's photo albums in a tree, with how many photos each holds, and whether the user may add photos (any member who signed in with their email).", { tree_id: z.string() }, async ({ tree_id }: any) => json(await client.albums(tree_id)))
+  server.tool('list_photos', 'Photos in a tree, newest first: all of them, or one album (album_id from list_albums). Each has its caption, who is in it (person_id), who shared it, and a link.', { tree_id: z.string(), album_id: z.string().optional(), limit: z.number().int().min(1).max(500).optional() }, async ({ tree_id, album_id, limit }: any) => json((await client.photos(tree_id, album_id ?? '', limit ?? 100)).map((p) => ({ id: p.id, caption: p.caption, filename: p.filename, person_id: p.person_id, album_id: p.album_id, shared_by: p.uploader, date: new Date(p.created_at).toISOString().slice(0, 10), page: p.page }))))
+  server.tool('create_album', 'Start a photo album in a tree ("Christmas 1985"). Any member who signed in with their email can.', { tree_id: z.string(), title: z.string().min(1).max(200), description: z.string().max(2000).optional() }, async ({ tree_id, title, description }: any) => json(await client.addAlbum(tree_id, title, description)))
+  server.tool(
+    'add_photo',
+    'Add one photo to the family album: the image bytes as base64 (JPEG, PNG, GIF, WebP or AVIF, up to 8 MB), with an optional caption, album (album_id, or album_title to use or start one by name) and who is in it (person_id). Only photos the user gave you.',
+    { tree_id: z.string(), filename: z.string().max(200), data_base64: z.string().max(12_000_000), caption: z.string().max(1000).optional(), album_id: z.string().optional(), album_title: z.string().max(200).optional(), person_id: z.string().optional() },
+    async ({ tree_id, filename, data_base64, ...fields }: any) => json(await client.uploadPhoto(tree_id, filename, new Uint8Array(Buffer.from(data_base64, 'base64')), fields)),
+  )
+  server.tool('update_photo', "Change a photo's caption, who is in it, or its album. Only whoever shared it, or an editor, can.", { tree_id: z.string(), photo_id: z.string(), caption: z.string().max(1000).nullable().optional(), person_id: z.string().nullable().optional(), album_id: z.string().nullable().optional() }, async ({ tree_id, photo_id, ...fields }: any) => json(await client.updatePhoto(tree_id, photo_id, fields)))
+
   server.tool('search_businesses', 'Search the family businesses in a tree (companies, farms, shops) by name, trade, town, year, or the name of someone in it. Empty query lists them all.', { tree_id: z.string(), query: z.string().max(200).default('') }, async ({ tree_id, query }: any) => json((await client.businesses(tree_id, query, 200)).map((b) => ({ id: b.id, name: b.name, category: b.category, founded: b.founded, closed: b.closed, place: b.place, people: b.people.map((r) => `${r.label}: ${r.name}`) }))))
   server.tool('get_business', 'One business: what it did, when, where, its website, notes, and its founders, owners, partners, investors and staff (with role ids).', { tree_id: z.string(), business_id: z.string() }, async ({ tree_id, business_id }: any) => text(formatBusiness(await client.business(tree_id, business_id))))
   server.tool(

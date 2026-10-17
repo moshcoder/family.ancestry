@@ -296,6 +296,31 @@ export class AncestryClient {
     return this.request<{ people: { id: string; name: string; kind: string; birth_date: string | null; death_date: string | null; url: string }[]; businesses: BusinessSummary[] }>(`/api/v1/trees/${enc(tree)}/search?q=${encodeURIComponent(q)}&limit=${limit}`)
   }
 
+  // ---- the family photo album ---------------------------------------------
+
+  albums(tree: string) {
+    return this.request<{ albums: AlbumSummary[]; can_upload: boolean }>(`/api/v1/trees/${enc(tree)}/albums`)
+  }
+  album(tree: string, id: string, limit = 200) {
+    return this.request<{ album: AlbumSummary; photos: PhotoSummary[] }>(`/api/v1/trees/${enc(tree)}/albums/${enc(id)}?limit=${limit}`)
+  }
+  addAlbum(tree: string, title: string, description?: string) {
+    return this.request<{ album: AlbumSummary }>(`/api/v1/trees/${enc(tree)}/albums`, { method: 'POST', json: { title, description } }).then((r) => r.album)
+  }
+  photos(tree: string, album = '', limit = 200) {
+    return this.request<{ photos: PhotoSummary[]; can_upload: boolean }>(`/api/v1/trees/${enc(tree)}/photos?album=${encodeURIComponent(album)}&limit=${limit}`).then((r) => r.photos)
+  }
+  /** One photo: its bytes, plus {caption?, album_id? | album_title?, person_id?}. */
+  uploadPhoto(tree: string, filename: string, data: Uint8Array, fields: { caption?: string; album_id?: string; album_title?: string; person_id?: string } = {}) {
+    return this.request<{ saved: PhotoSummary[]; refused: string[]; album: AlbumSummary | null }>(`/api/v1/trees/${enc(tree)}/photos`, { method: 'POST', json: { ...fields, filename, data_base64: Buffer.from(data).toString('base64') } })
+  }
+  updatePhoto(tree: string, id: string, fields: { caption?: string | null; person_id?: string | null; album_id?: string | null }) {
+    return this.request<{ photo: PhotoSummary }>(`/api/v1/trees/${enc(tree)}/photos/${enc(id)}`, { method: 'PATCH', json: fields }).then((r) => r.photo)
+  }
+  deletePhoto(tree: string, id: string) {
+    return this.request<{ ok: boolean }>(`/api/v1/trees/${enc(tree)}/photos/${enc(id)}`, { method: 'DELETE' })
+  }
+
   // ---- local recommendations ----------------------------------------------
 
   local(q = '', category?: string) {
@@ -378,6 +403,8 @@ export type BusinessSummary = {
   url: string
   people: { role_id: string; id: string; name: string; role: string; label: string; title: string | null; start_date: string | null; end_date: string | null; note?: string | null }[]
 }
+export type AlbumSummary = { id: string; title: string; description: string | null; created_by: string; cover_id: string | null; created_at: number; photos?: number; cover?: string | null; url: string }
+export type PhotoSummary = { id: string; filename: string; mime: string; size: number; caption: string | null; person_id: string | null; business_id?: string | null; album_id?: string | null; uploaded_by?: string | null; uploader?: string | null; created_at: number; url: string; page: string }
 export type BusinessDetail = BusinessSummary & { photos: { id: string; url: string; caption: string | null }[]; contact: { id: string; name: string } | null }
 export type UserSummary = { id: string; name: string | null; email: string }
 export type MessageSummary = { id: string; sender_id: string; recipient_id: string; body: string; created_at: number }

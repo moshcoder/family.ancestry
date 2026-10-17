@@ -21,6 +21,8 @@ export const sha256 = (value: string) => createHash('sha256').update(value).dige
 export type Role = 'owner' | 'editor' | 'viewer'
 export const ROLES: Role[] = ['owner', 'editor', 'viewer']
 export const canEdit = (role: Role | null | undefined) => role === 'owner' || role === 'editor'
+/** Signed in with an email of their own (a magic link proved it), not only through pit.world. */
+export const emailVerified = (user: Pick<User, 'email'> | null | undefined) => Boolean(user?.email) && !user!.email.endsWith('@pit.invalid')
 
 export type User = { id: string; email: string; name: string | null; created_at: number }
 export type Tree = { id: string; name: string; description: string | null; owner_id: string; home_person_id: string | null; created_at: number; plan_paid_at: number | null }
@@ -57,7 +59,9 @@ export type Family = {
 }
 export type Event = { id: string; tree_id: string; person_id: string; type: string; date: string | null; place: string | null; description: string | null; created_at: number }
 export type Source = { id: string; tree_id: string; title: string; author: string | null; url: string | null; citation: string | null; created_at: number }
-export type Media = { id: string; tree_id: string; person_id: string | null; business_id?: string | null; filename: string; mime: string; size: number; caption: string | null; created_at: number }
+export type Media = { id: string; tree_id: string; person_id: string | null; business_id?: string | null; album_id?: string | null; uploaded_by?: string | null; filename: string; mime: string; size: number; caption: string | null; created_at: number }
+/** A named set of photos in a tree: "Christmas 1985", "Grandma's 90th". */
+export type Album = { id: string; tree_id: string; title: string; description: string | null; created_by: string; cover_id: string | null; created_at: number }
 export type Invite = { id: string; tree_id: string; role: 'editor' | 'viewer'; email: string | null; person_id: string | null; note: string | null; created_by: string; created_at: number; expires_at: number; used_by: string | null }
 export type Association = { id: string; tree_id: string; person_id: string; other_id: string; kind: string; note: string | null; created_at: number }
 export type Payment = { ref: string; tree_id: string; user_id: string; amount_cents: number; currency: string; chain: string | null; status: string; created_at: number; updated_at: number }
@@ -250,6 +254,11 @@ CREATE TABLE IF NOT EXISTS media (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS media_person ON media(person_id);
+CREATE TABLE IF NOT EXISTS albums (
+  id TEXT PRIMARY KEY, tree_id TEXT NOT NULL REFERENCES trees(id) ON DELETE CASCADE,
+  title TEXT NOT NULL, description TEXT, created_by TEXT NOT NULL, cover_id TEXT, created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS albums_tree ON albums(tree_id);
 CREATE TABLE IF NOT EXISTS associations (
   id TEXT PRIMARY KEY, tree_id TEXT NOT NULL REFERENCES trees(id) ON DELETE CASCADE,
   person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
@@ -345,6 +354,11 @@ export class Store {
     // 0.5.0: photos of a business.
     const mediaCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('media')").all().map((c) => c.name)
     if (!mediaCols.includes('business_id')) this.db.run('ALTER TABLE media ADD COLUMN business_id TEXT REFERENCES businesses(id) ON DELETE SET NULL')
+    // 0.6.0: the family photo album. Who uploaded a photo, and which album it is in.
+    if (!mediaCols.includes('album_id')) this.db.run('ALTER TABLE media ADD COLUMN album_id TEXT REFERENCES albums(id) ON DELETE SET NULL')
+    if (!mediaCols.includes('uploaded_by')) this.db.run('ALTER TABLE media ADD COLUMN uploaded_by TEXT')
+    this.db.run('CREATE INDEX IF NOT EXISTS media_album ON media(album_id)')
+    this.db.run('CREATE INDEX IF NOT EXISTS media_tree_created ON media(tree_id, created_at)')
   }
 
   tx<T>(fn: () => T): T {
@@ -1015,7 +1029,7 @@ export class Store {
   }
 
   businessMedia(treeId: string, businessId: string): Media[] {
-    return this.db.query<Media, [string, string]>('SELECT id,tree_id,person_id,business_id,filename,mime,size,caption,created_at FROM media WHERE tree_id = ? AND business_id = ? ORDER BY created_at').all(treeId, businessId)
+    return this.db.query<Media, [string, string]>('SELECT id,tree_id,person_id,business_id,album_id,uploaded_by,filename,mime,size,caption,created_at FROM media WHERE tree_id = ? AND business_id = ? ORDER BY created_at').all(treeId, businessId)
   }
 
   setBusinessPhoto(treeId: string, businessId: string, mediaId: string | null) {
@@ -1128,16 +1142,17 @@ export class Store {
     return this.db.query<any, [string]>('SELECT c.* FROM citations c JOIN sources s ON s.id = c.source_id WHERE s.tree_id = ?').all(treeId)
   }
 
-  addMedia(treeId: string, personId: string | null, file: { filename: string; mime: string; data: Uint8Array; caption?: string | null }): Media {
+  addMedia(treeId: string, personId: string | null, file: { filename: string; mime: string; data: Uint8Array; caption?: string | null; albumId?: string | null; uploadedBy?: string | null }): Media {
     if (personId && !this.person(treeId, personId)) throw new Error('person is not in this tree')
+    if (file.albumId && !this.album(treeId, file.albumId)) throw new Error('no such album in this tree')
     const id = newId()
-    this.db.query('INSERT INTO media (id,tree_id,person_id,filename,mime,size,caption,data,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(id, treeId, personId, clean(file.filename, 200) ?? 'photo', file.mime, file.data.byteLength, clean(file.caption, 1000), file.data, this.now())
+    this.db.query('INSERT INTO media (id,tree_id,person_id,album_id,uploaded_by,filename,mime,size,caption,data,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id, treeId, personId, file.albumId ?? null, file.uploadedBy ?? null, clean(file.filename, 200) ?? 'photo', file.mime, file.data.byteLength, clean(file.caption, 1000), file.data, this.now())
     if (personId) this.db.query('UPDATE people SET photo_id = coalesce(photo_id, ?) WHERE id = ?').run(id, personId)
     return this.mediaInfo(treeId, id)!
   }
 
   mediaInfo(treeId: string, id: string): Media | null {
-    return this.db.query<Media, [string, string]>('SELECT id,tree_id,person_id,business_id,filename,mime,size,caption,created_at FROM media WHERE tree_id = ? AND id = ?').get(treeId, id) ?? null
+    return this.db.query<Media, [string, string]>('SELECT id,tree_id,person_id,business_id,album_id,uploaded_by,filename,mime,size,caption,created_at FROM media WHERE tree_id = ? AND id = ?').get(treeId, id) ?? null
   }
 
   mediaData(treeId: string, id: string): (Media & { data: Uint8Array }) | null {
@@ -1145,13 +1160,14 @@ export class Store {
   }
 
   mediaFor(treeId: string, personId: string): Media[] {
-    return this.db.query<Media, [string, string]>('SELECT id,tree_id,person_id,filename,mime,size,caption,created_at FROM media WHERE tree_id = ? AND person_id = ? ORDER BY created_at').all(treeId, personId)
+    return this.db.query<Media, [string, string]>('SELECT id,tree_id,person_id,business_id,album_id,uploaded_by,filename,mime,size,caption,created_at FROM media WHERE tree_id = ? AND person_id = ? ORDER BY created_at').all(treeId, personId)
   }
 
   deleteMedia(treeId: string, id: string) {
     this.tx(() => {
       this.db.query('UPDATE people SET photo_id = NULL WHERE tree_id = ? AND photo_id = ?').run(treeId, id)
       this.db.query('UPDATE businesses SET photo_id = NULL WHERE tree_id = ? AND photo_id = ?').run(treeId, id)
+      this.db.query('UPDATE albums SET cover_id = NULL WHERE tree_id = ? AND cover_id = ?').run(treeId, id)
       this.db.query('DELETE FROM media WHERE tree_id = ? AND id = ?').run(treeId, id)
     })
   }
@@ -1159,6 +1175,100 @@ export class Store {
   setPhoto(treeId: string, personId: string, mediaId: string | null) {
     if (mediaId && !this.mediaInfo(treeId, mediaId)) return
     this.db.query('UPDATE people SET photo_id = ? WHERE tree_id = ? AND id = ?').run(mediaId, treeId, personId)
+  }
+
+  // ---- the family photo album ---------------------------------------------
+
+  addAlbum(treeId: string, userId: string, input: { title?: unknown; description?: unknown }): Album {
+    const title = clean(input.title, 200)
+    if (!title) throw new Error('an album needs a title')
+    const id = newId()
+    this.db.query('INSERT INTO albums (id,tree_id,title,description,created_by,cover_id,created_at) VALUES (?,?,?,?,?,?,?)').run(id, treeId, title, clean(input.description, 2000), userId, null, this.now())
+    return this.album(treeId, id)!
+  }
+
+  album(treeId: string, id: string): Album | null {
+    return this.db.query<Album, [string, string]>('SELECT * FROM albums WHERE tree_id = ? AND id = ?').get(treeId, id) ?? null
+  }
+
+  /** Every album in the tree, newest first, with how many photos each holds and a cover (chosen, or the newest photo). */
+  albums(treeId: string): (Album & { photos: number; cover: string | null })[] {
+    return this.db
+      .query<Album & { photos: number; cover: string | null }, [string]>(
+        'SELECT a.*, (SELECT COUNT(*) FROM media m WHERE m.album_id = a.id) AS photos, coalesce(a.cover_id, (SELECT m.id FROM media m WHERE m.album_id = a.id ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1)) AS cover FROM albums a WHERE a.tree_id = ? ORDER BY a.created_at DESC',
+      )
+      .all(treeId)
+  }
+
+  updateAlbum(treeId: string, id: string, input: { title?: unknown; description?: unknown; cover_id?: unknown }): Album | null {
+    const a = this.album(treeId, id)
+    if (!a) return null
+    const title = 'title' in input ? clean(input.title, 200) ?? a.title : a.title
+    const description = 'description' in input ? clean(input.description, 2000) : a.description
+    let cover = a.cover_id
+    if ('cover_id' in input) {
+      const want = input.cover_id ? String(input.cover_id) : null
+      cover = want && this.mediaInfo(treeId, want)?.album_id === id ? want : want ? a.cover_id : null
+    }
+    this.db.query('UPDATE albums SET title = ?, description = ?, cover_id = ? WHERE tree_id = ? AND id = ?').run(title, description, cover, treeId, id)
+    return this.album(treeId, id)
+  }
+
+  /** The album goes; its photos stay in the tree's photos. */
+  deleteAlbum(treeId: string, id: string) {
+    this.tx(() => {
+      this.db.query('UPDATE media SET album_id = NULL WHERE tree_id = ? AND album_id = ?').run(treeId, id)
+      this.db.query('DELETE FROM albums WHERE tree_id = ? AND id = ?').run(treeId, id)
+    })
+  }
+
+  /**
+   * Photos in the tree, newest first: one album's, or all of them (people's, businesses' and albums').
+   * With the uploader's name, so the album can say who shared each one.
+   */
+  photos(treeId: string, opts: { albumId?: string | null; limit?: number; before?: number | null } = {}): (Media & { uploader: string | null })[] {
+    const limit = Math.min(500, Math.max(1, opts.limit ?? 120))
+    const before = opts.before ?? Number.MAX_SAFE_INTEGER
+    if (opts.albumId)
+      return this.db
+        .query<Media & { uploader: string | null }, [string, string, number, number]>(
+          'SELECT m.id,m.tree_id,m.person_id,m.business_id,m.album_id,m.uploaded_by,m.filename,m.mime,m.size,m.caption,m.created_at, coalesce(u.name, u.email) AS uploader FROM media m LEFT JOIN users u ON u.id = m.uploaded_by WHERE m.tree_id = ? AND m.album_id = ? AND m.created_at < ? ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?',
+        )
+        .all(treeId, opts.albumId, before, limit)
+    return this.db
+      .query<Media & { uploader: string | null }, [string, number, number]>(
+        'SELECT m.id,m.tree_id,m.person_id,m.business_id,m.album_id,m.uploaded_by,m.filename,m.mime,m.size,m.caption,m.created_at, coalesce(u.name, u.email) AS uploader FROM media m LEFT JOIN users u ON u.id = m.uploaded_by WHERE m.tree_id = ? AND m.created_at < ? ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?',
+      )
+      .all(treeId, before, limit)
+  }
+
+  /** Change a photo's caption, who is in it, or its album. Only the fields given change. */
+  updateMedia(treeId: string, id: string, input: { caption?: unknown; person_id?: unknown; album_id?: unknown }): Media | null {
+    const m = this.mediaInfo(treeId, id)
+    if (!m) return null
+    const caption = 'caption' in input ? clean(input.caption, 1000) : m.caption
+    let person = m.person_id
+    if ('person_id' in input) {
+      person = input.person_id ? String(input.person_id) : null
+      if (person && !this.person(treeId, person)) throw new Error('person is not in this tree')
+    }
+    let album = m.album_id ?? null
+    if ('album_id' in input) {
+      album = input.album_id ? String(input.album_id) : null
+      if (album && !this.album(treeId, album)) throw new Error('no such album in this tree')
+    }
+    this.tx(() => {
+      this.db.query('UPDATE media SET caption = ?, person_id = ?, album_id = ? WHERE tree_id = ? AND id = ?').run(caption, person, album, treeId, id)
+      if (m.person_id && m.person_id !== person) this.db.query('UPDATE people SET photo_id = NULL WHERE tree_id = ? AND id = ? AND photo_id = ?').run(treeId, m.person_id, id)
+      if (person) this.db.query('UPDATE people SET photo_id = coalesce(photo_id, ?) WHERE tree_id = ? AND id = ?').run(id, treeId, person)
+      if (m.album_id && m.album_id !== album) this.db.query('UPDATE albums SET cover_id = NULL WHERE tree_id = ? AND id = ? AND cover_id = ?').run(treeId, m.album_id, id)
+    })
+    return this.mediaInfo(treeId, id)
+  }
+
+  /** How many photos someone has uploaded to any tree since a time, for the daily cap. */
+  uploadsSince(userId: string, since: number): number {
+    return this.db.query<{ n: number }, [string, number]>('SELECT COUNT(*) AS n FROM media WHERE uploaded_by = ? AND created_at >= ?').get(userId, since)?.n ?? 0
   }
 
   stats(treeId: string) {

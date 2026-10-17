@@ -4,7 +4,8 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
-import { AncestryClient, ApiError, readConfig, writeConfig, configPath, type BusinessDetail, type BusinessSummary, type PersonDetail, type TreeSummary } from './client.js'
+import { basename } from 'node:path'
+import { AncestryClient, ApiError, readConfig, writeConfig, configPath, type BusinessDetail, type BusinessSummary, type PersonDetail, type PhotoSummary, type TreeSummary } from './client.js'
 import { VERSION } from './html.js'
 
 const HELP = `ancestry ${VERSION}: private family trees, from the terminal
@@ -36,6 +37,11 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
   ancestry business edit <business> --field value ...   (same flags as add)
   ancestry business rm <business>
   ancestry business link <business> <contact>     link it to one of your Network contacts (--create adds it)
+  ancestry photos [--album A]       the family photos, newest first (or one album's)
+  ancestry albums                   the family's photo albums   (albums add <title> starts one)
+  ancestry upload <photo...> [--album A] [--caption C] [--of PERSON]
+                                    add photos to the family album; --album names an album
+                                    (made if new); any verified member can
   ancestry local [search] [--category Plumber]   businesses people you know recommend
   ancestry local add <name> --category C [--town T] [--phone P] [--website W] [--note TEXT]
                                     recommend a business to everyone who knows you
@@ -338,6 +344,16 @@ async function login(client: AncestryClient, flags: Record<string, string | true
   }
 }
 
+export const formatPhotoLine = (p: PhotoSummary) => `${p.id}  ${new Date(p.created_at).toISOString().slice(0, 10)}  ${p.caption ?? p.filename}${p.uploader ? `  (${p.uploader})` : ''}`
+
+/** An album by id or title. Throws when there is none, unless `must` is false (then ''). */
+async function pickAlbum(client: AncestryClient, tree: string, ref: string, must = true): Promise<string> {
+  const { albums } = await client.albums(tree)
+  const hit = albums.find((a) => a.id === ref) ?? albums.find((a) => a.title.toLowerCase() === ref.toLowerCase()) ?? albums.find((a) => a.title.toLowerCase().includes(ref.toLowerCase()))
+  if (!hit && must) throw new Error(`no album called "${ref}" (ancestry albums lists them)`)
+  return hit?.id ?? ''
+}
+
 export async function runCli(argv: string[]): Promise<number> {
   const args = parseArgs(argv)
   const [cmd, ...rest] = args._
@@ -407,6 +423,46 @@ export async function runCli(argv: string[]): Promise<number> {
         const tree = await pickTree(client, f.tree)
         const list = await client.businesses(tree.id, rest.join(' '), Number(f.limit) || 200)
         print(list, () => (list.length ? list.map(formatBusinessLine).join('\n') : 'No businesses found.'))
+        return 0
+      }
+      case 'photos': {
+        const tree = await pickTree(client, f.tree)
+        const album = typeof f.album === 'string' ? await pickAlbum(client, tree.id, f.album) : ''
+        const list = await client.photos(tree.id, album, Number(f.limit) || 200)
+        print(list, () => (list.length ? list.map(formatPhotoLine).join('\n') : 'No photos yet.'))
+        return 0
+      }
+      case 'albums': {
+        const tree = await pickTree(client, f.tree)
+        if (rest[0] === 'add') {
+          const title = rest.slice(1).join(' ')
+          if (!title) throw new Error('ancestry albums add <title> [--description TEXT]')
+          const a = await client.addAlbum(tree.id, title, str(f.description))
+          print(a, () => `${a.id}  ${a.title}\n${a.url}`)
+          return 0
+        }
+        const { albums } = await client.albums(tree.id)
+        print(albums, () => (albums.length ? albums.map((a) => `${a.id}  ${a.title}  (${a.photos ?? 0} photo${a.photos === 1 ? '' : 's'})`).join('\n') : 'No albums yet.'))
+        return 0
+      }
+      case 'upload': {
+        const tree = await pickTree(client, f.tree)
+        if (!rest.length) throw new Error('ancestry upload <photo...> [--album A] [--caption C] [--of PERSON]')
+        const fields: { caption?: string; album_id?: string; album_title?: string; person_id?: string } = { caption: str(f.caption) }
+        if (typeof f.album === 'string') {
+          const id = await pickAlbum(client, tree.id, f.album, false)
+          if (id) fields.album_id = id
+          else fields.album_title = f.album
+        }
+        if (typeof f.of === 'string') fields.person_id = await pickPerson(client, tree.id, f.of)
+        const out: string[] = []
+        for (const file of rest) {
+          const r = await client.uploadPhoto(tree.id, basename(file), new Uint8Array(readFileSync(file)), fields)
+          if (r.album) (fields.album_id = r.album.id), delete fields.album_title
+          for (const p of r.saved) out.push(`added ${file}  ${p.page}`)
+          for (const why of r.refused) out.push(`not added: ${why}`)
+        }
+        console.log(out.join('\n'))
         return 0
       }
       case 'business': {
