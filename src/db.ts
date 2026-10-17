@@ -155,7 +155,6 @@ CREATE TABLE IF NOT EXISTS media (
 CREATE INDEX IF NOT EXISTS media_person ON media(person_id);
 `
 
-const SELECT_INVITES = 'SELECT token_hash AS id, tree_id, role, email, person_id, note, created_by, created_at, expires_at, used_by FROM invites'
 
 export const clean = (value: unknown, max = 500): string | null => {
   if (value === undefined || value === null) return null
@@ -306,13 +305,13 @@ export class Store {
   }
 
   invite(token: string): Invite | null {
-    const row = this.db.query<any, [string]>(SELECT_INVITES + ' WHERE token_hash = ?').get(sha256(token))
+    const row = this.db.query<any, [string]>('SELECT token_hash AS id, tree_id, role, email, person_id, note, created_by, created_at, expires_at, used_by FROM invites WHERE token_hash = ?').get(sha256(token))
     return row && row.expires_at > this.now() && !row.used_by ? row : null
   }
 
   /** Invites not yet used or expired, newest first. `id` is the token's hash, safe to show. */
   pendingInvites(treeId: string): Invite[] {
-    return this.db.query<Invite, [string, number]>(SELECT_INVITES + ' WHERE tree_id = ? AND used_by IS NULL AND expires_at > ? ORDER BY created_at DESC').all(treeId, this.now())
+    return this.db.query<Invite, [string, number]>('SELECT token_hash AS id, tree_id, role, email, person_id, note, created_by, created_at, expires_at, used_by FROM invites WHERE tree_id = ? AND used_by IS NULL AND expires_at > ? ORDER BY created_at DESC').all(treeId, this.now())
   }
 
   revokeInvite(treeId: string, id: string) {
