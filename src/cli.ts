@@ -23,7 +23,7 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
                [--relation birth|adopted|step|foster] [--sibling full|half|adopted|foster|step]
                [--kind married|partners|dating|divorced]   (for --partner-of; dating = boyfriend/girlfriend)
                [--via PARENT] [--raised]   (--raised: they raised that person)
-  ancestry bond <person> <raised_by|guardian|godparent|caregiver|chosen_family|neighbor> <other>
+  ancestry bond <person> <raised_by|guardian|godparent|caregiver|chosen_family|friend|neighbor> <other>
                                     a bond that is not descent: "bond Sam raised_by Rose"
   ancestry pet <owner> <name> [--species Dog] [--born DATE]   (Family plan)
   ancestry plan [buy --chain USDC_POL]     the one-time Family plan for this tree
@@ -630,7 +630,7 @@ export async function runCli(argv: string[]): Promise<number> {
       case 'bond': {
         const tree = await pickTree(client, f.tree)
         const [who, kind, ...other] = rest
-        if (!who || !kind || !other.length) throw new Error('ancestry bond <person> <raised_by|guardian|godparent|caregiver|chosen_family> <other>')
+        if (!who || !kind || !other.length) throw new Error('ancestry bond <person> <raised_by|guardian|godparent|caregiver|chosen_family|friend|neighbor> <other>')
         const r = await client.addBond(tree.id, await pickPerson(client, tree.id, who), { kind, other_id: await pickPerson(client, tree.id, other.join(' ')), note: str(f.note) })
         print(r, () => formatPerson(r.person))
         return 0
