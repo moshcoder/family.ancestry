@@ -106,7 +106,7 @@ export type Sibling = { person: Person; kind: SiblingKind; via: Person | null }
 /** `union` is the partnership's kind on a partner step: married, partners or dating. */
 export type PathStep = { person: Person; step: 'self' | 'parent' | 'child' | 'partner'; relation?: string; union?: string }
 /** What a partnership can be. Divorced is a marriage with an end date. */
-export const UNION_KINDS = ['married', 'partners', 'dating'] as const
+export const UNION_KINDS = ['married', 'engaged', 'partners', 'dating'] as const
 export type Descendant = { person: Person; unions: { partner: Person | null; children: Descendant[] }[] }
 
 export const PERSON_FIELDS = ['given', 'surname', 'sex', 'birth_date', 'birth_place', 'death_date', 'death_place', 'living', 'notes', 'species'] as const
@@ -130,6 +130,8 @@ export const BONDS: Record<string, { as: string; back: string; group: BondGroup 
   chosen_family: { as: 'Chosen family', back: 'Chosen family', group: 'Family' },
   friend: { as: 'Friend', back: 'Friend', group: 'Friends and neighbors' },
   best_friend: { as: 'Best friend', back: 'Best friend', group: 'Friends and neighbors' },
+  family_friend: { as: 'Family friend', back: 'Family friend', group: 'Friends and neighbors' },
+  ex: { as: 'Ex', back: 'Ex', group: 'Friends and neighbors' },
   neighbor: { as: 'Neighbor', back: 'Neighbor', group: 'Friends and neighbors' },
   roommate: { as: 'Roommate', back: 'Roommate', group: 'Friends and neighbors' },
   coworker: { as: 'Coworker', back: 'Coworker', group: 'Work and business' },
@@ -140,6 +142,8 @@ export const BONDS: Record<string, { as: string; back: string; group: BondGroup 
   classmate: { as: 'Classmate', back: 'Classmate', group: 'School and mentors' },
   teacher: { as: 'Teacher', back: 'Student', group: 'School and mentors' },
   mentor: { as: 'Mentor', back: 'Mentee', group: 'School and mentors' },
+  teammate: { as: 'Teammate', back: 'Teammate', group: 'School and mentors' },
+  served_with: { as: 'Served with', back: 'Served with', group: 'Work and business' },
   pet: { as: 'Owner', back: 'Pet', group: 'Family' },
 }
 export type BondGroup = 'Family' | 'Friends and neighbors' | 'Work and business' | 'School and mentors'

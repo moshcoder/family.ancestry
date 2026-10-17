@@ -498,6 +498,8 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
         everyone: canEdit(t.role) ? store.people(t.tree.id, 5000).filter((o) => o.kind === 'person') : [],
         siblings: store.siblings(t.tree.id, person.id),
         stepParents: store.stepParents(t.tree.id, person.id),
+        grandparents: store.parents(t.tree.id, person.id).flatMap((pp) => store.parents(t.tree.id, pp.id)),
+        auntsUncles: store.parents(t.tree.id, person.id).flatMap((pp) => store.siblings(t.tree.id, pp.id).map((s) => s.person)),
         bonds: store.bondsFor(t.tree.id, person.id),
         pets: store.petsOf(t.tree.id, person.id),
         plan: hasPlan(plan, store, t.tree),
@@ -1236,13 +1238,21 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
  * or a new one from the person fields. Returns the relative.
  *
  *   as=parent       relation birth | adopted | step | foster
- *   as=partner      kind married | partners | dating (boyfriend/girlfriend) | divorced
+ *   as=partner      kind married | engaged | partners | dating (boyfriend/girlfriend) | divorced
  *   as=child        relation, family_id (which partnership)
  *   as=sibling      sibling full | half | adopted | foster | step, via (the shared parent,
  *                   or for step the step-parent); with no parents recorded, a full
  *                   sibling still works: they share a family whose parents are unknown
  *   as=grandparent  via (which parent), or none: an "Unknown" parent is put in between,
  *                   for someone who knows their grandparents but not their parents
+ *   as=great_grandparent  via (a grandparent, or a parent), else Unknowns in between
+ *   as=grandchild   via (which child), else an "Unknown" child in between
+ *   as=aunt_uncle   via (which parent they are a brother or sister of), else Unknown parent
+ *   as=niece_nephew via (which brother or sister is their parent), else Unknown sibling
+ *   as=cousin       via (which aunt or uncle is their parent, or which parent's side),
+ *                   else Unknowns in between
+ * Every missing link is an "Unknown" person, so the tree stays a real tree and
+ * "How are we related?" still says aunt, cousin, great-grandmother.
  *
  * raised=1 also records that the relative raised this person (a "Raised by" bond),
  * which is how grandparents who brought someone up show as both.
@@ -1252,7 +1262,7 @@ export function addRelative(store: Store, treeId: string, personId: string, body
   if (!person) throw new Error('no such person')
   if (person.kind === 'pet') throw new Error('pets have owners, not relatives')
   const as = String(body.as)
-  if (!['parent', 'partner', 'child', 'sibling', 'grandparent'].includes(as)) throw new Error('as must be parent, partner, child, sibling or grandparent')
+  if (!(RELATIVE_KINDS as readonly string[]).includes(as)) throw new Error(`as must be one of: ${RELATIVE_KINDS.join(', ')}`)
   const existingId = pickId(body.existing_id ?? body.existing)
   const hasNew = Boolean(String(body.given ?? '').trim() || String(body.surname ?? '').trim())
   if (!existingId && !hasNew) throw new Error('pick someone in the tree or give a name')
@@ -1281,20 +1291,82 @@ export function addRelative(store: Store, treeId: string, personId: string, body
       store.addChild(treeId, familyId, other.id, relation)
     } else if (as === 'sibling') linkSibling(store, treeId, person, other, String(body.sibling ?? 'full'), body.via ? pickId(body.via) : null)
     else {
-      // Grandparent: the parent of one of this person's parents, or of an unknown one.
       const viaId = body.via ? pickId(body.via) : null
-      const parents = store.parents(treeId, person.id)
-      let parent = viaId ? (parents.find((p) => p.id === viaId) ?? null) : null
-      if (viaId && !parent) throw new Error('that is not one of their parents')
-      if (!parent) {
-        parent = store.addPerson(treeId, { given: 'Unknown', surname: '', notes: `A parent of ${fullName(person)} whose name we do not know yet. Fill this in if you learn who they were.` })
-        linkParent(store, treeId, person, parent, 'birth')
+      const chain = new Chain(store, treeId)
+      if (as === 'grandparent') linkParent(store, treeId, chain.parent(person, viaId), other, relation)
+      else if (as === 'great_grandparent') {
+        // Through a grandparent, or a parent (an Unknown grandparent on their side), or Unknowns all the way.
+        const grand = chain.grandparents(person).find((g) => g.id === viaId)
+        const parent = grand ? null : chain.parent(person, store.parents(treeId, person.id).some((p) => p.id === viaId) ? viaId : null)
+        linkParent(store, treeId, grand ?? chain.parent(parent!, null), other, relation)
+      } else if (as === 'grandchild') addChildTo(store, treeId, chain.child(person, viaId), other, relation)
+      else if (as === 'aunt_uncle') chain.brother(chain.parent(person, viaId), other)
+      else if (as === 'niece_nephew') addChildTo(store, treeId, chain.sibling(person, viaId), other, relation)
+      else {
+        // Cousin: a child of an aunt or uncle, picked, or Unknown on a picked parent's side.
+        const aunt = chain.auntsUncles(person).find((a) => a.id === viaId)
+        const parent = aunt ? null : chain.parent(person, store.parents(treeId, person.id).some((p) => p.id === viaId) ? viaId : null)
+        addChildTo(store, treeId, aunt ?? chain.sibling(parent!, null), other, relation)
       }
-      linkParent(store, treeId, parent, other, relation)
     }
     if (['1', 'on', 'true', 'yes', true].includes(body.raised)) store.addBond(treeId, person.id, other.id, 'raised_by')
     return store.person(treeId, other.id)!
   })
+}
+
+export const RELATIVE_KINDS = ['parent', 'partner', 'child', 'sibling', 'grandparent', 'great_grandparent', 'grandchild', 'aunt_uncle', 'niece_nephew', 'cousin'] as const
+
+/**
+ * One step along a family line: the picked parent, child or sibling, or with none
+ * picked a new "Unknown" one in that place, so a cousin can be added before anyone
+ * knows which aunt they belong to.
+ */
+class Chain {
+  constructor(private store: Store, private treeId: string) {}
+  private unknown(about: Person, what: string): Person {
+    return this.store.addPerson(this.treeId, { given: 'Unknown', surname: '', notes: `${what} of ${fullName(about)} whose name we do not know yet. Fill this in if you learn who they were.` })
+  }
+  parent(person: Person, viaId: string | null): Person {
+    const found = viaId ? this.store.parents(this.treeId, person.id).find((p) => p.id === viaId) : null
+    if (viaId && !found) throw new Error(`that is not one of ${fullName(person)}'s parents`)
+    if (found) return found
+    const parent = this.unknown(person, 'A parent')
+    linkParent(this.store, this.treeId, person, parent, 'birth')
+    return parent
+  }
+  child(person: Person, viaId: string | null): Person {
+    const found = viaId ? this.store.spouseFamilies(this.treeId, person.id).flatMap((u) => u.children).find((c) => c.id === viaId) : null
+    if (viaId && !found) throw new Error(`that is not one of ${fullName(person)}'s children`)
+    if (found) return found
+    const child = this.unknown(person, 'A child')
+    addChildTo(this.store, this.treeId, person, child, 'birth')
+    return child
+  }
+  sibling(person: Person, viaId: string | null): Person {
+    const found = viaId ? this.store.siblings(this.treeId, person.id).map((s) => s.person).find((p) => p.id === viaId) : null
+    if (viaId && !found) throw new Error(`that is not one of ${fullName(person)}'s brothers or sisters`)
+    if (found) return found
+    const sib = this.unknown(person, 'A brother or sister')
+    this.brother(person, sib)
+    return sib
+  }
+  /** A full brother or sister through a real (or Unknown) parent: a family with no parents joins nobody up. */
+  brother(person: Person, sib: Person) {
+    if (!this.store.parents(this.treeId, person.id).length) this.parent(person, null)
+    linkSibling(this.store, this.treeId, person, sib, 'full', null)
+  }
+  grandparents(person: Person): Person[] {
+    return this.store.parents(this.treeId, person.id).flatMap((p) => this.store.parents(this.treeId, p.id))
+  }
+  auntsUncles(person: Person): Person[] {
+    return this.store.parents(this.treeId, person.id).flatMap((p) => this.store.siblings(this.treeId, p.id).map((s) => s.person))
+  }
+}
+
+/** A child of one person whose other parent is not known: their partnerless family, or a new one. */
+function addChildTo(store: Store, treeId: string, parent: Person, child: Person, relation: string) {
+  const single = store.spouseFamilies(treeId, parent.id).find((u) => !u.partner)
+  store.addChild(treeId, single?.family.id ?? store.createFamily(treeId, parent.id, null, { kind: 'partners' }).id, child.id, relation)
 }
 
 /** Join the child's family of this relation if it has a free parent slot, else start one. */
