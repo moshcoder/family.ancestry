@@ -53,6 +53,7 @@ export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [
 <script src="${asset('/app.js')}" defer></script>
 </head>
 <body>
+<!--ring-bar-->
 <header class="top">
   <a class="brand" href="/">${leaf()}<span>family<b>.ancestry</b></span></a>
   <nav>${ctx.user ? `<a href="/trees">Trees</a><a href="/network">Network</a><a href="/inbox">Inbox${ctx.unread ? ` <span class="badge">${ctx.unread}</span>` : ''}</a><a href="/settings">${esc(ctx.user.name ?? ctx.user.email)}</a>` : '<a href="/signin">Sign in</a>'}</nav>
