@@ -165,6 +165,11 @@ ${formatBusiness(b)}`)
     async ({ tree_id, emails, ...opts }: any) => json(await client.invite(tree_id, emails, opts)),
   )
 
+  server.tool('list_families', 'Families listed publicly at /families: id, name and the note they wrote. Never the people in a tree.', { query: z.string().max(200).default('') }, async ({ query }: any) => json(await client.families(query)))
+  server.tool('ask_to_join', 'Ask a listed family for an invite: a name, an email (the user\'s, or a relative\'s they are asking for) and how they know the family. Only when the user asked.', { family_id: z.string(), name: z.string().max(120), email: z.string().email(), circle: z.enum(['family', 'friends', 'neighbors', 'business']).optional(), note: z.string().max(1000).optional() }, async ({ family_id, ...body }: any) => text(await client.askToJoin(family_id, body)))
+  server.tool('tree_listing', "Whether a tree is listed at /families, its public note and URL. With listed or listing (owner only) it changes them. A listing shows the name and note, never the tree.", { tree_id: z.string(), listed: z.boolean().optional(), listing: z.string().max(1000).nullable().optional() }, async ({ tree_id, ...body }: any) => json(body.listed === undefined && body.listing === undefined ? await client.listing(tree_id) : await client.setListing(tree_id, body)))
+  server.tool('join_requests', 'People asking a listed tree for an invite (owners and editors).', { tree_id: z.string() }, async ({ tree_id }: any) => json(await client.joinRequests(tree_id)))
+  server.tool('answer_join_request', 'Invite (as a viewer, by the usual email) or decline someone asking to join. Declining tells them nothing. Only when the user decided.', { tree_id: z.string(), request_id: z.string(), answer: z.enum(['invite', 'decline']) }, async ({ tree_id, request_id, answer }: any) => json(await client.answerJoinRequest(tree_id, request_id, answer)))
   server.tool('tree_members', 'Who belongs to a tree, their role, and which person each one is (if they claimed a profile).', { tree_id: z.string() }, async ({ tree_id }: any) => json(await client.members(tree_id)))
 
   // ---- network: the people in your life, private to you ----

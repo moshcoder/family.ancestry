@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { BONDS, UNION_KINDS, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.7.2'
+export const VERSION = '0.8.0'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -56,7 +56,7 @@ export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [
 <!--ring-bar-->
 <header class="top">
   <a class="brand" href="/">${leaf()}<span>family<b>.ancestry</b></span></a>
-  <nav>${ctx.user ? `<a href="/trees">Trees</a><a href="/network">Network</a><a href="/local">Local</a><a href="/inbox">Inbox${ctx.unread ? ` <span class="badge">${ctx.unread}</span>` : ''}</a><a href="/settings">${esc(ctx.user.name ?? ctx.user.email)}</a>` : '<a href="/signin">Sign in</a>'}</nav>
+  <nav>${ctx.user ? `<a href="/trees">Trees</a><a href="/network">Network</a><a href="/local">Local</a><a href="/inbox">Inbox${ctx.unread ? ` <span class="badge">${ctx.unread}</span>` : ''}</a><a href="/settings">${esc(ctx.user.name ?? ctx.user.email)}</a>` : '<a href="/families">Families</a><a href="/signin">Sign in</a>'}</nav>
 </header>
 <main class="${opts.wide ? 'wide' : ''}">
 ${crumbs}
@@ -102,6 +102,7 @@ export function homePage(ctx: Ctx): string {
   <div><h3>How are we related?</h3><p>Pick two people and get the answer in words: "second cousin once removed".</p></div>
   <div><h3>Invite the family</h3><p>By email, from anyone's page: they join as themselves and keep their own profile up to date.</p></div>
   <div><h3>Your network, free</h3><p>Family, friends and work contacts with every detail you keep, and a private inbox. For people who know each other: no followers, no ads, no strangers.</p></div>
+  <div><h3>Found, not seen</h3><p>List your family so relatives can <a href="/families">find you</a> and ask for an invite. They see the name and a note from you, never the tree.</p></div>
   <div><h3>Everywhere you are</h3><p>Install it as an app, or use the desktop app, the <code>ancestry</code> CLI, the terminal UI, or let your AI assistant read it over MCP.</p></div>
 </section>`,
     { head: pitVerifyMeta() },
@@ -484,7 +485,7 @@ export function membersPage(
   role: Role,
   members: { user_id: string; email: string; name: string | null; role: Role }[],
   links: InviteLink[],
-  extra: { pending: Invite[]; profiles: Map<string, string>; people: (id: string) => Person | null; max?: number; plan?: boolean } = { pending: [], profiles: new Map(), people: () => null },
+  extra: { pending: Invite[]; profiles: Map<string, string>; people: (id: string) => Person | null; max?: number; plan?: boolean; listing?: string } = { pending: [], profiles: new Map(), people: () => null },
 ): string {
   const owner = role === 'owner'
   const edit = canEdit(role)
@@ -525,6 +526,7 @@ ${
     ? `<section class="panel"><h2>Waiting to join</h2><ul>${extra.pending.map((i) => `<li>${esc(i.email ?? 'link')}${asPerson(i.person_id)} <span class="muted small">${i.role}, ${days(i.expires_at)} days left</span> <form method="post" action="/t/${tree.id}/invites/${i.id}/revoke" class="inline">${csrfField(ctx)}<button class="x" title="Cancel invite">×</button></form></li>`).join('')}</ul></section>`
     : ''
 }
+${extra.listing ?? ''}
 <p class="muted small">Tip: invite someone from their own page in the tree and they join as that person, able to keep their profile up to date.</p>`,
     { crumbs: [['/trees', 'Trees'], [`/t/${tree.id}`, tree.name], ['', 'Members']] },
   )
