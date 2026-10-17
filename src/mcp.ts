@@ -143,12 +143,9 @@ ${formatBusiness(b)}`)
 
   server.tool(
     'add_event',
-    'Add a life event to a person: Residence, Occupation, Military, Immigration, Census, Burial, or anything else.',
-    { tree_id: z.string(), person_id: z.string(), type: z.string().max(60), date: z.string().max(200).optional(), place: z.string().max(200).optional(), description: z.string().max(5000).optional() },
-    async ({ tree_id, person_id, ...event }: any) => {
-      await client.addEvent(tree_id, person_id, event)
-      return text('Event added.')
-    },
+    "Record something that happened to a person. type is what happened: Birth or Death (sets their dates), Marriage, Remarriage, Started dating, Moved in together, Engagement, Separation, Divorce or Widowed (with: the partner's person id, or with_given/with_surname for someone new), Child born, Adopted a child, Took in a foster child or Became a step-parent (child: the child's person id, or child_given/child_surname; with: the other parent / the partner whose child it is), or a plain event: Occupation, Job change, Promotion, Started a business, Retirement, Education, Graduation, Military, Moved, Immigration, Emigration, Naturalization, Census, Baptism, Christening, Confirmation, Bar mitzvah, Bat mitzvah, Religion, Burial, Cremation, Medical, Award, or any other name.",
+    { tree_id: z.string(), person_id: z.string(), type: z.string().max(60), date: z.string().max(200).optional(), place: z.string().max(200).optional(), description: z.string().max(5000).optional(), with: z.string().optional(), with_given: z.string().max(120).optional(), with_surname: z.string().max(120).optional(), child: z.string().optional(), child_given: z.string().max(120).optional(), child_surname: z.string().max(120).optional(), child_sex: z.enum(['M', 'F', 'X', 'U']).optional() },
+    async ({ tree_id, person_id, with: withId, ...event }: any) => text((await client.addEvent(tree_id, person_id, { ...event, with_person: withId })).message ?? 'Event added.'),
   )
 
   server.tool('pedigree', "A person's ancestors, generation by generation (Ahnentafel numbered: father 2n, mother 2n+1).", { tree_id: z.string(), person_id: z.string(), generations: z.number().int().min(2).max(8).optional() }, async ({ tree_id, person_id, generations }: any) => text(formatPedigree(await client.pedigree(tree_id, person_id, generations ?? 4), generations ?? 4)))

@@ -219,8 +219,9 @@ export class AncestryClient {
   updatePerson(tree: string, id: string, fields: Record<string, unknown>) {
     return this.request<{ person: PersonDetail }>(`/api/v1/trees/${enc(tree)}/people/${enc(id)}`, { method: 'PATCH', json: fields }).then((r) => r.person)
   }
-  addEvent(tree: string, id: string, event: { type: string; date?: string; place?: string; description?: string }) {
-    return this.request<{ event: unknown }>(`/api/v1/trees/${enc(tree)}/people/${enc(id)}/events`, { method: 'POST', json: event })
+  /** type: a life event (Death, Marriage, Divorce, Child born…) or any plain event; with_person / child for the ones that need them. */
+  addEvent(tree: string, id: string, event: { type: string; date?: string; place?: string; description?: string } & Record<string, unknown>) {
+    return this.request<{ event: unknown; message?: string }>(`/api/v1/trees/${enc(tree)}/people/${enc(id)}/events`, { method: 'POST', json: event })
   }
   pedigree(tree: string, id: string, generations = 4) {
     return this.request<{ ancestors: { n: number; generation: number; id: string; name: string; birth_date: string | null; death_date: string | null; sex: string }[] }>(`/api/v1/trees/${enc(tree)}/pedigree/${enc(id)}?generations=${generations}`).then((r) => r.ancestors)

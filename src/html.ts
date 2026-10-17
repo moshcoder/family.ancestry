@@ -308,6 +308,12 @@ export type PersonView = {
   businesses?: string
   /** "Add to my network" or "In my network", already rendered (src/network-html.ts). */
   network?: string
+  /** Their life in date order (src/life.ts): birth, partnerships starting and ending, children, events, death. */
+  timeline?: { type: string; date: string | null; place: string | null; description: string | null; id: string }[]
+  /** The "Add an event" panel, already rendered (src/life.ts). */
+  eventForm?: string
+  /** Their partners' children by someone else, per partnership. */
+  stepChildren?: { familyId: string; children: Person[] }[]
 }
 
 export function personPage(ctx: Ctx, tree: Tree, role: Role, v: PersonView): string {
@@ -320,9 +326,8 @@ export function personPage(ctx: Ctx, tree: Tree, role: Role, v: PersonView): str
     ['Born', [p.birth_date, p.birth_place].filter(Boolean).join(' · ')],
     ['Died', [p.death_date, p.death_place].filter(Boolean).join(' · ') || (p.living ? 'Living' : '')],
   ].filter(([, val]) => val)
-  const timeline = [
+  const timeline = v.timeline ?? [
     ...(p.birth_date || p.birth_place ? [{ type: 'Birth', date: p.birth_date, place: p.birth_place, description: null, id: '' }] : []),
-    ...v.unions.filter((u) => u.family.start_date || u.family.start_place).map((u) => ({ type: u.family.kind === 'married' ? 'Marriage' : u.family.kind === 'dating' ? 'Started dating' : 'Partnership', date: u.family.start_date, place: u.family.start_place, description: u.partner ? `with ${fullName(u.partner)}` : null, id: '' })),
     ...v.events,
     ...(p.death_date || p.death_place ? [{ type: 'Death', date: p.death_date, place: p.death_place, description: null, id: '' }] : []),
   ]
@@ -350,7 +355,7 @@ ${pet ? '' : `<div class="cols">
     }</section>
 <section><h2>Partners and children</h2>${
       v.unions.length
-        ? v.unions.map((u) => `<div class="union"><div class="line">${u.partner ? personLink(tree.id, u.partner) : '<span class="muted">unknown partner</span>'} <span class="tag">${esc(unionLabel(u.family.kind))}${u.family.start_date ? ` ${esc(u.family.start_date)}` : ''}${u.family.end_date ? ` · ended ${esc(u.family.end_date)}` : ''}</span></div>${u.children.length ? `<ul>${u.children.map((c) => `<li>${personLink(tree.id, c)}</li>`).join('')}</ul>` : ''}${edit ? `<details class="mini"><summary>edit</summary><form method="post" action="/t/${tree.id}/f/${u.family.id}" class="pform">${csrfField(ctx)}<div class="grid3"><label>Kind<select name="kind">${unionOptions(u.family.kind)}</select></label><label>Date<input name="start_date" value="${esc(u.family.start_date ?? '')}"></label><label>Place<input name="start_place" value="${esc(u.family.start_place ?? '')}"></label></div><label>Ended<input name="end_date" value="${esc(u.family.end_date ?? '')}"></label><button>Save</button></form><form method="post" action="/t/${tree.id}/f/${u.family.id}/delete" data-confirm="Remove this partnership? The people stay in the tree.">${csrfField(ctx)}<button class="danger small">Remove partnership</button></form></details>` : ''}</div>`).join('')
+        ? v.unions.map((u) => `<div class="union"><div class="line">${u.partner ? personLink(tree.id, u.partner) : '<span class="muted">unknown partner</span>'} <span class="tag">${esc(unionLabel(u.family.kind))}${u.family.start_date ? ` ${esc(u.family.start_date)}` : ''}${u.family.end_date || u.family.end_kind ? ` · ${esc(u.family.end_kind ?? 'divorced')}${u.family.end_date && !['divorced', 'separated', 'widowed'].includes(u.family.end_date.toLowerCase()) ? ` ${esc(u.family.end_date)}` : ''}` : ''}</span></div>${u.children.length ? `<ul>${u.children.map((c) => `<li>${personLink(tree.id, c)}</li>`).join('')}</ul>` : ''}${(() => { const steps = v.stepChildren?.find((x) => x.familyId === u.family.id)?.children ?? []; return steps.length ? `<p class="small"><span class="tag">step-children</span> ${steps.map((c) => personLink(tree.id, c)).join(', ')}</p>` : '' })()}${edit ? `<details class="mini"><summary>edit</summary><form method="post" action="/t/${tree.id}/f/${u.family.id}" class="pform">${csrfField(ctx)}<div class="grid3"><label>Kind<select name="kind">${unionOptions(u.family.kind)}</select></label><label>Date<input name="start_date" value="${esc(u.family.start_date ?? '')}"></label><label>Place<input name="start_place" value="${esc(u.family.start_place ?? '')}"></label></div><div class="grid3"><label>Ended<input name="end_date" value="${esc(u.family.end_date ?? '')}" placeholder="date, or leave empty"></label><label>How<select name="end_kind"><option value="">—</option>${['divorced', 'separated', 'widowed'].map((k) => `<option value="${k}"${(u.family.end_kind ?? (u.family.end_date ? 'divorced' : '')) === k ? ' selected' : ''}>${k}</option>`).join('')}</select></label><label>Where<input name="end_place" value="${esc(u.family.end_place ?? '')}"></label></div><button>Save</button></form><form method="post" action="/t/${tree.id}/f/${u.family.id}/delete" data-confirm="Remove this partnership? The people stay in the tree.">${csrfField(ctx)}<button class="danger small">Remove partnership</button></form></details>` : ''}</div>`).join('')
         : '<p class="muted">None recorded.</p>'
     }</section>
 </div>`}
@@ -367,8 +372,7 @@ ${edit && !pet ? `${datalist}<div class="cols3">${relativeForm(ctx, tree, p, 'pa
         ? `<ol class="timeline">${timeline.map((e) => `<li><span class="when">${esc(e.date ?? '')}</span><b>${esc(e.type)}</b>${e.place ? ` · ${esc(e.place)}` : ''}${e.description ? `<br><span class="muted">${esc(e.description)}</span>` : ''}${edit && e.id ? ` <form method="post" action="/t/${tree.id}/e/${e.id}/delete" class="inline">${csrfField(ctx)}<input type="hidden" name="person_id" value="${p.id}"><button class="x" title="Delete event">×</button></form>` : ''}</li>`).join('')}</ol>`
         : '<p class="muted">Nothing yet.</p>'
     }
-${own ? `<details class="panel"><summary>Add an event</summary><form method="post" action="/t/${tree.id}/p/${p.id}/events" class="pform">${csrfField(ctx)}<div class="grid3"><label>What<input name="type" list="event-types" required placeholder="Residence, Occupation, Census…"></label><label>When<input name="date"></label><label>Where<input name="place"></label></div><label>Details<textarea name="description" rows="2"></textarea></label><button>Add event</button></form>
-<datalist id="event-types">${['Residence', 'Occupation', 'Education', 'Military', 'Immigration', 'Emigration', 'Naturalization', 'Census', 'Baptism', 'Christening', 'Burial', 'Religion', 'Retirement'].map((t) => `<option value="${t}">`).join('')}</datalist></details>` : ''}
+${own ? (v.eventForm ?? '') : ''}
 </section>
 
 ${p.notes ? `<section><h2>Notes and stories</h2><div class="notes">${esc(p.notes).replace(/\n/g, '<br>')}</div></section>` : ''}
