@@ -12,7 +12,7 @@ import { RING_PLACEHOLDER, ringBar, startRingRefresh, visitorOnMoshpit } from '.
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { createBridgeClient } from '@profullstack/bridges'
 import { join } from 'node:path'
-import { BONDS, CHILD_RELATIONS, Store, bondKind, canEdit, fullName, newId, type Person, type Role, type Tree, type User } from './db.js'
+import { BONDS, CHILD_RELATIONS, Store, UNION_KINDS, bondKind, canEdit, fullName, newId, type Person, type Role, type Tree, type User } from './db.js'
 import { Auth, SESSION_COOKIE, consoleMailer, resendMailer, safeNext, validEmail, type Mailer } from './auth.js'
 import { exportGedcom, importGedcom, describeImport } from './gedcom.js'
 import { describeRelation } from './relate.js'
@@ -1155,7 +1155,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
  * or a new one from the person fields. Returns the relative.
  *
  *   as=parent       relation birth | adopted | step | foster
- *   as=partner      kind married | partners | divorced
+ *   as=partner      kind married | partners | dating (boyfriend/girlfriend) | divorced
  *   as=child        relation, family_id (which partnership)
  *   as=sibling      sibling full | half | adopted | foster | step, via (the shared parent,
  *                   or for step the step-parent); with no parents recorded, a full
@@ -1185,7 +1185,7 @@ export function addRelative(store: Store, treeId: string, personId: string, body
     if (as === 'parent') linkParent(store, treeId, person, other, relation)
     else if (as === 'partner') {
       const single = store.spouseFamilies(treeId, person.id).find((u) => !u.partner)
-      const kind = ['married', 'partners', 'divorced'].includes(String(body.kind)) ? String(body.kind) : 'married'
+      const kind = [...UNION_KINDS, 'divorced'].includes(String(body.kind)) ? String(body.kind) : 'married'
       if (single) {
         store.setPartner(treeId, single.family.id, other.id)
         store.updateFamily(treeId, single.family.id, { kind: kind === 'divorced' ? 'married' : kind, end_date: kind === 'divorced' ? 'Divorced' : undefined })

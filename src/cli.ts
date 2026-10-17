@@ -20,6 +20,7 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
                [--died DATE] [--deathplace P] [--living]
                [--parent-of ID | --child-of ID | --partner-of ID | --sibling-of ID | --grandparent-of ID]
                [--relation birth|adopted|step|foster] [--sibling full|half|adopted|foster|step]
+               [--kind married|partners|dating|divorced]   (for --partner-of; dating = boyfriend/girlfriend)
                [--via PARENT] [--raised]   (--raised: they raised that person)
   ancestry bond <person> <raised_by|guardian|godparent|caregiver|chosen_family|neighbor> <other>
                                     a bond that is not descent: "bond Sam raised_by Rose"
