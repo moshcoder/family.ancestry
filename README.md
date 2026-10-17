@@ -8,7 +8,14 @@ Open source (MIT).
 The desktop app, the CLI and the MCP server reach it by themselves; a browser
 needs [one setting](https://pit.world/connect).
 
-- **Trees** you build together: editors add and fix, viewers look. Invite by link.
+- **Trees** you build together: editors add and fix, viewers look. Invite by email
+  (up to 20 at once) or by link.
+- **Join the family as yourself.** Right after you add someone, the page quietly offers
+  to invite them; they join *as that person* and keep their own profile up to date,
+  even as a viewer.
+- **Network (add-on, free for everyone):** family, friends and business contacts with
+  every detail you keep (emails, phones, addresses, birthdays, links, notes), vCard
+  import/export, and a private **Inbox**. See [Network](#network).
 - **People** with dates, places, notes and stories, photos, and a life timeline.
 - **Families** the GEDCOM way: partners plus children (birth, adopted, step, foster).
 - **Pedigree** (3–6 generations, Ahnentafel numbers) and **descendant** charts.
@@ -41,6 +48,13 @@ ancestry pedigree Robert -g 4
 ancestry descendants Johann
 ancestry relate Robert Anna          # Anna Ettinger is Robert Ettinger's aunt.
 ancestry export --privacy -o family.ged
+ancestry invite rose@example.com --as "Rose Ettinger"   # she joins as Rose, keeps her own profile
+ancestry invite a@example.com b@example.com --role editor --note "Help with Grandpa's side"
+ancestry contact add --name "Dr. Patel" --circle business --relationship "our dentist" --phone "555 0142"
+ancestry contacts import ~/phone.vcf --circle family
+ancestry connect "Aunt Rose"         # one email; if she says yes, you can message
+ancestry inbox
+ancestry message "Aunt Rose" "Are you coming Sunday?"
 ```
 
 `--json` on any command prints JSON. `ANCESTRY_URL` points every client at another
@@ -50,8 +64,10 @@ server (your own, or `http://127.0.0.1:8792`).
 
 `list_trees`, `search_people`, `get_person`, `add_person`, `update_person`,
 `link_relative`, `add_event`, `pedigree`, `descendants`, `relationship`,
-`export_gedcom`, `import_gedcom`. The assistant acts as you: it sees the trees
-you see, and changes only the ones you can edit.
+`export_gedcom`, `import_gedcom`, `invite_to_tree`, `tree_members`, and for the
+network `list_contacts`, `get_contact`, `add_contact`, `update_contact`,
+`connect_contact`, `inbox`, `read_conversation`, `send_message`. The assistant acts
+as you: it sees the trees you see, and changes only the ones you can edit.
 
 ### API
 
@@ -68,6 +84,30 @@ you see, and changes only the ones you can edit.
 | `GET /api/v1/trees/:tree/relate?a=&b=` | relationship in words, and the path |
 | `POST /api/v1/trees/:tree/import` | GEDCOM text body |
 | `GET /api/v1/trees/:tree/export?privacy=1` | GEDCOM |
+| `GET /api/v1/trees/:tree/members` | members, with the person each one is |
+| `GET/POST /api/v1/trees/:tree/invites`, `DELETE .../invites/:id` | pending invites; invite (`{emails, role?, person_id?, note?}`; no emails = a link) |
+| `GET/POST /api/v1/contacts?q=&circle=` | your network: list / add |
+| `GET/PATCH/DELETE /api/v1/contacts/:id` | one contact |
+| `POST /api/v1/contacts/:id/connect` | ask them to connect (`{note?}`) |
+| `POST /api/v1/contacts/import?circle=`, `GET /api/v1/contacts.vcf` | vCard in and out |
+| `GET /api/v1/inbox`, `GET/POST /api/v1/inbox/:user` | conversations; read / send (`{body}`) |
+
+## Network
+
+An add-on with its own tables and routes (`src/network*.ts`), included free with every
+account. Anything we ever charge for is covered by a
+[Profullstack Power Key](https://profullstack.com/plans).
+
+It is for people who know each other, and the rules are in the code, not just the copy:
+
+- Contacts are private to whoever saved them. No public profiles, no follower counts,
+  no "people you may know", no directory to browse.
+- You can message someone only if you both said yes to connecting, or you share a tree.
+  One person at a time; there is no broadcast.
+- Joining a tree from someone's invite connects you with them, as family.
+- Either side can block; a block ends the conversation both ways and is never revealed.
+- Per sender: 40 invitations (tree or connect) a day, 120 messages an hour. A new
+  message emails the recipient once per unread run, not once per message.
 
 ## Running it
 

@@ -4,9 +4,9 @@
  */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { fullName, lifespan, type Descendant, type Event, type Family, type Media, type Person, type Role, type Source, type Tree, type User, canEdit } from './db.js'
+import { fullName, lifespan, type Descendant, type Event, type Family, type Invite, type Media, type Person, type Role, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.1.0'
+export const VERSION = '0.2.0'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -24,9 +24,9 @@ export function asset(path: string): string {
   return `${path}?v=${assetVersions.get(path)}`
 }
 
-export type Ctx = { user: User | null; csrf?: string; flash?: string | null; error?: string | null }
+export type Ctx = { user: User | null; csrf?: string; flash?: string | null; error?: string | null; unread?: number }
 
-const csrfField = (ctx: Ctx) => (ctx.csrf ? `<input type="hidden" name="_csrf" value="${esc(ctx.csrf)}">` : '')
+export const csrfField = (ctx: Ctx) => (ctx.csrf ? `<input type="hidden" name="_csrf" value="${esc(ctx.csrf)}">` : '')
 
 /**
  * pit.world proves a listing's owner by a meta tag on the homepage. PIT_VERIFY
@@ -55,7 +55,7 @@ export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [
 <body>
 <header class="top">
   <a class="brand" href="/">${leaf()}<span>family<b>.ancestry</b></span></a>
-  <nav>${ctx.user ? `<a href="/trees">Trees</a><a href="/settings">${esc(ctx.user.name ?? ctx.user.email)}</a>` : '<a href="/signin">Sign in</a>'}</nav>
+  <nav>${ctx.user ? `<a href="/trees">Trees</a><a href="/network">Network</a><a href="/inbox">Inbox${ctx.unread ? ` <span class="badge">${ctx.unread}</span>` : ''}</a><a href="/settings">${esc(ctx.user.name ?? ctx.user.email)}</a>` : '<a href="/signin">Sign in</a>'}</nav>
 </header>
 <main class="${opts.wide ? 'wide' : ''}">
 ${crumbs}
@@ -88,7 +88,8 @@ export function homePage(ctx: Ctx): string {
   <div><h3>GEDCOM in and out</h3><p>Import the file every genealogy site exports. Export yours, with living people hidden if you share it outside the family.</p></div>
   <div><h3>Photos, stories, sources</h3><p>Attach photos to people, write down what grandma remembers, cite the census page you found it on.</p></div>
   <div><h3>How are we related?</h3><p>Pick two people and get the answer in words: "second cousin once removed".</p></div>
-  <div><h3>Invite the family</h3><p>Editors add and fix; viewers just look. Links expire, roles can change.</p></div>
+  <div><h3>Invite the family</h3><p>By email, from anyone's page: they join as themselves and keep their own profile up to date.</p></div>
+  <div><h3>Your network, free</h3><p>Family, friends and work contacts with every detail you keep, and a private inbox. For people who know each other: no followers, no ads, no strangers.</p></div>
   <div><h3>Everywhere you are</h3><p>Install it as an app, or use the desktop app, the <code>ancestry</code> CLI, the terminal UI, or let your AI assistant read it over MCP.</p></div>
 </section>`,
     { head: pitVerifyMeta() },
@@ -155,7 +156,7 @@ export function treePage(ctx: Ctx, tree: Tree, role: Role, data: { stats: Record
     ctx,
     tree.name,
     `<div class="titlebar"><div><h1>${esc(tree.name)}</h1>${tree.description ? `<p class="muted">${esc(tree.description)}</p>` : ''}</div>
-<div class="actions">${data.home ? `<a class="btn" href="/t/${tree.id}/pedigree/${data.home.id}">Pedigree</a><a class="btn" href="/t/${tree.id}/descendants/${data.home.id}">Descendants</a>` : ''}<a class="btn" href="/t/${tree.id}/relate">How are we related?</a><a class="btn" href="/t/${tree.id}/sources">Sources</a><a class="btn" href="/t/${tree.id}/export.ged">Export GEDCOM</a>${role === 'owner' ? `<a class="btn" href="/t/${tree.id}/members">Share</a>` : `<a class="btn" href="/t/${tree.id}/members">Members</a>`}</div></div>
+<div class="actions">${data.home ? `<a class="btn" href="/t/${tree.id}/pedigree/${data.home.id}">Pedigree</a><a class="btn" href="/t/${tree.id}/descendants/${data.home.id}">Descendants</a>` : ''}<a class="btn" href="/t/${tree.id}/relate">How are we related?</a><a class="btn" href="/t/${tree.id}/sources">Sources</a><a class="btn" href="/t/${tree.id}/export.ged">Export GEDCOM</a>${edit ? `<a class="btn" href="/t/${tree.id}/members#invite">Invite family</a>` : `<a class="btn" href="/t/${tree.id}/members">Members</a>`}</div></div>
 <p class="stats">${Object.entries(data.stats).map(([k, v]) => `<span><b>${v}</b> ${k}</span>`).join('')}</p>
 ${data.home ? `<p>Home person: ${personLink(tree.id, data.home)}</p>` : ''}
 <form class="search" method="get" action="/t/${tree.id}"><input name="q" value="${esc(data.query)}" placeholder="Search names, places, years" aria-label="Search people"><button>Search</button></form>
@@ -212,11 +213,18 @@ export type PersonView = {
   media: Media[]
   sources: Source[]
   everyone: Person[]
+  /** The member who is this person, if one has joined as them. */
+  profile?: User | null
+  /** The viewer is this person: they may keep their own profile up to date. */
+  self?: boolean
+  /** The quiet "invite them to manage this profile" offer, already rendered. */
+  invite?: string
 }
 
 export function personPage(ctx: Ctx, tree: Tree, role: Role, v: PersonView): string {
   const p = v.person
   const edit = canEdit(role)
+  const own = edit || Boolean(v.self)
   const photo = p.photo_id ? `<img class="portrait" src="/t/${tree.id}/media/${p.photo_id}" alt="${esc(fullName(p))}">` : `<div class="portrait none sex-${p.sex}">${esc((p.given[0] ?? '') + (p.surname[0] ?? '') || '?')}</div>`
   const facts = [
     ['Born', [p.birth_date, p.birth_place].filter(Boolean).join(' · ')],
@@ -234,6 +242,7 @@ export function personPage(ctx: Ctx, tree: Tree, role: Role, v: PersonView): str
     fullName(p),
     `<div class="person-head">${photo}<div><h1>${esc(fullName(p))}</h1><p class="muted">${esc(lifespan(p))}${p.sex !== 'U' ? ` · ${{ M: 'male', F: 'female', X: 'other' }[p.sex] ?? ''}` : ''}</p>
 ${facts.map(([k, val]) => `<p><b>${k}</b> ${esc(val)}</p>`).join('')}
+${v.profile ? `<p class="small muted">${v.self ? 'This is you. Keep it up to date.' : `Managed by ${esc(v.profile.name ?? v.profile.email)}, in the family since ${new Date(v.profile.created_at).getFullYear()}.`}</p>` : (v.invite ?? '')}
 <div class="actions"><a class="btn" href="/t/${tree.id}/pedigree/${p.id}">Pedigree</a><a class="btn" href="/t/${tree.id}/descendants/${p.id}">Descendants</a><a class="btn" href="/t/${tree.id}/relate?a=${tree.home_person_id ?? ''}&b=${p.id}">Related how?</a>${edit && tree.home_person_id !== p.id ? `<form method="post" action="/t/${tree.id}/home" class="inline">${csrfField(ctx)}<input type="hidden" name="person_id" value="${p.id}"><button class="btn">Make home person</button></form>` : ''}</div></div></div>
 
 <div class="cols">
@@ -255,20 +264,20 @@ ${edit ? `${datalist}<div class="cols3">${relativeForm(ctx, tree, p, 'parent', [
         ? `<ol class="timeline">${timeline.map((e) => `<li><span class="when">${esc(e.date ?? '')}</span><b>${esc(e.type)}</b>${e.place ? ` · ${esc(e.place)}` : ''}${e.description ? `<br><span class="muted">${esc(e.description)}</span>` : ''}${edit && e.id ? ` <form method="post" action="/t/${tree.id}/e/${e.id}/delete" class="inline">${csrfField(ctx)}<input type="hidden" name="person_id" value="${p.id}"><button class="x" title="Delete event">×</button></form>` : ''}</li>`).join('')}</ol>`
         : '<p class="muted">Nothing yet.</p>'
     }
-${edit ? `<details class="panel"><summary>Add an event</summary><form method="post" action="/t/${tree.id}/p/${p.id}/events" class="pform">${csrfField(ctx)}<div class="grid3"><label>What<input name="type" list="event-types" required placeholder="Residence, Occupation, Census…"></label><label>When<input name="date"></label><label>Where<input name="place"></label></div><label>Details<textarea name="description" rows="2"></textarea></label><button>Add event</button></form>
+${own ? `<details class="panel"><summary>Add an event</summary><form method="post" action="/t/${tree.id}/p/${p.id}/events" class="pform">${csrfField(ctx)}<div class="grid3"><label>What<input name="type" list="event-types" required placeholder="Residence, Occupation, Census…"></label><label>When<input name="date"></label><label>Where<input name="place"></label></div><label>Details<textarea name="description" rows="2"></textarea></label><button>Add event</button></form>
 <datalist id="event-types">${['Residence', 'Occupation', 'Education', 'Military', 'Immigration', 'Emigration', 'Naturalization', 'Census', 'Baptism', 'Christening', 'Burial', 'Religion', 'Retirement'].map((t) => `<option value="${t}">`).join('')}</datalist></details>` : ''}
 </section>
 
 ${p.notes ? `<section><h2>Notes and stories</h2><div class="notes">${esc(p.notes).replace(/\n/g, '<br>')}</div></section>` : ''}
 
 <section><h2>Photos</h2>${v.media.length ? `<div class="photos">${v.media.map((m) => `<figure><a href="/t/${tree.id}/media/${m.id}"><img loading="lazy" src="/t/${tree.id}/media/${m.id}" alt="${esc(m.caption ?? m.filename)}"></a><figcaption>${esc(m.caption ?? '')}${edit ? ` <form method="post" action="/t/${tree.id}/media/${m.id}/primary" class="inline">${csrfField(ctx)}<button class="link small">${p.photo_id === m.id ? 'portrait' : 'use as portrait'}</button></form><form method="post" action="/t/${tree.id}/media/${m.id}/delete" class="inline" data-confirm="Delete this photo?">${csrfField(ctx)}<button class="x">×</button></form>` : ''}</figcaption></figure>`).join('')}</div>` : '<p class="muted">No photos yet.</p>'}
-${edit ? `<form method="post" action="/t/${tree.id}/p/${p.id}/media" enctype="multipart/form-data" class="row">${csrfField(ctx)}<input type="file" name="file" accept="image/*" required><input name="caption" placeholder="Caption" maxlength="1000"><button>Upload</button></form>` : ''}</section>
+${own ? `<form method="post" action="/t/${tree.id}/p/${p.id}/media" enctype="multipart/form-data" class="row">${csrfField(ctx)}<input type="file" name="file" accept="image/*" required><input name="caption" placeholder="Caption" maxlength="1000"><button>Upload</button></form>` : ''}</section>
 
 <section><h2>Sources</h2>${v.citations.length ? `<ul>${v.citations.map((s) => `<li>${s.url ? `<a href="${esc(s.url)}" rel="noopener noreferrer" target="_blank">${esc(s.title)}</a>` : esc(s.title)}${s.page ? ` · ${esc(s.page)}` : ''}${s.author ? ` <span class="muted">${esc(s.author)}</span>` : ''}${edit ? ` <form method="post" action="/t/${tree.id}/p/${p.id}/uncite" class="inline">${csrfField(ctx)}<input type="hidden" name="source_id" value="${s.id}"><button class="x">×</button></form>` : ''}</li>`).join('')}</ul>` : '<p class="muted">No sources cited.</p>'}
 ${edit ? `<details class="panel"><summary>Cite a source</summary><form method="post" action="/t/${tree.id}/p/${p.id}/cite" class="pform">${csrfField(ctx)}${v.sources.length ? `<label>Existing source<select name="source_id"><option value="">— new source below —</option>${v.sources.map((s) => `<option value="${s.id}">${esc(s.title)}</option>`).join('')}</select></label>` : ''}<div class="grid2"><label>New source title<input name="title" placeholder="1910 US Census"></label><label>Link<input name="url" type="url" placeholder="https://"></label></div><label>Page or detail<input name="page" placeholder="Sheet 4A, line 12"></label><button>Cite</button></form></details>` : ''}</section>
 
-${edit ? `<details class="panel"><summary>Edit ${esc(fullName(p))}</summary>${personForm(ctx, `/t/${tree.id}/p/${p.id}`, p, 'Save')}
-<form method="post" action="/t/${tree.id}/p/${p.id}/delete" data-confirm="Delete ${esc(fullName(p))}? Their relationships go too.">${csrfField(ctx)}<button class="danger">Delete this person</button></form></details>` : ''}`,
+${own ? `<details class="panel"${v.self && !edit ? ' open' : ''}><summary>${v.self ? 'Edit your profile' : `Edit ${esc(fullName(p))}`}</summary>${personForm(ctx, `/t/${tree.id}/p/${p.id}`, p, 'Save')}
+${edit ? `<form method="post" action="/t/${tree.id}/p/${p.id}/delete" data-confirm="Delete ${esc(fullName(p))}? Their relationships go too.">${csrfField(ctx)}<button class="danger">Delete this person</button></form>` : ''}</details>` : ''}`,
     { crumbs: [['/trees', 'Trees'], [`/t/${tree.id}`, tree.name], ['', fullName(p)]] },
   )
 }
@@ -360,15 +369,30 @@ ${canEdit(role) ? `<form method="post" action="/t/${tree.id}/sources" class="pan
   )
 }
 
-export function membersPage(ctx: Ctx, tree: Tree, role: Role, members: { user_id: string; email: string; name: string | null; role: Role }[], inviteUrl: string | null): string {
+export type InviteLink = { email: string | null; url: string; mailed: boolean }
+
+export function membersPage(
+  ctx: Ctx,
+  tree: Tree,
+  role: Role,
+  members: { user_id: string; email: string; name: string | null; role: Role }[],
+  links: InviteLink[],
+  extra: { pending: Invite[]; profiles: Map<string, string>; people: (id: string) => Person | null } = { pending: [], profiles: new Map(), people: () => null },
+): string {
   const owner = role === 'owner'
+  const edit = canEdit(role)
+  const days = (t: number) => Math.max(1, Math.ceil((t - Date.now()) / 86_400_000))
+  const asPerson = (personId: string | null | undefined) => {
+    const p = personId ? extra.people(personId) : null
+    return p ? ` <span class="muted small">as</span> ${personLink(tree.id, p)}` : ''
+  }
   return layout(
     ctx,
     'Members',
     `<h1>Who can see ${esc(tree.name)}</h1>
 <table class="people"><thead><tr><th>Member</th><th>Role</th><th></th></tr></thead><tbody>${members
       .map(
-        (m) => `<tr><td>${esc(m.name ?? m.email)}${m.name ? ` <span class="muted small">${esc(m.email)}</span>` : ''}</td><td>${
+        (m) => `<tr><td>${esc(m.name ?? m.email)}${m.name ? ` <span class="muted small">${esc(m.email)}</span>` : ''}${asPerson(extra.profiles.get(m.user_id))}</td><td>${
           owner && m.role !== 'owner'
             ? `<form method="post" action="/t/${tree.id}/members/${m.user_id}" class="inline">${csrfField(ctx)}<select name="role" data-autosubmit>${['editor', 'viewer'].map((r) => `<option${r === m.role ? ' selected' : ''}>${r}</option>`).join('')}</select><noscript><button>Save</button></noscript></form>`
             : m.role
@@ -376,26 +400,44 @@ export function membersPage(ctx: Ctx, tree: Tree, role: Role, members: { user_id
       )
       .join('')}</tbody></table>
 ${
-  owner
-    ? `<form method="post" action="/t/${tree.id}/invites" class="panel pform">${csrfField(ctx)}<h2>Invite family</h2><p class="muted small">Editors can add and change people. Viewers can only look. A link works once and expires in 14 days.</p>
-<div class="grid3"><label>Role<select name="role"><option>editor</option><option selected>viewer</option></select></label><label>Email them (optional)<input name="email" type="email" placeholder="cousin@example.com"></label></div><button>Make invite link</button></form>
-${inviteUrl ? `<div class="panel"><p>Send this link. It works once.</p><p class="copy"><input readonly value="${esc(inviteUrl)}" data-copy><button type="button" data-copy-btn>Copy</button></p></div>` : ''}`
+  links.length
+    ? `<div class="panel">${links.map((l) => `<p class="small">${l.email ? `${esc(l.email)}: ${l.mailed ? 'emailed. Or send them this link yourself:' : '<b>not emailed</b> (daily limit). Send them this link yourself:'}` : 'Send this link. It works once.'}</p><p class="copy"><input readonly value="${esc(l.url)}" data-copy><button type="button" data-copy-btn>Copy</button></p>`).join('')}</div>`
     : ''
-}`,
+}
+${
+  edit
+    ? `<form method="post" action="/t/${tree.id}/invites" class="panel pform" id="invite">${csrfField(ctx)}<h2>Invite family by email</h2><p class="muted small">Each person gets their own link from you, by email. It works once and expires in 14 days.${owner ? ' Editors can add and change people; viewers can only look.' : ' You can invite viewers; the owner can make them editors.'}</p>
+<label>Their emails <span class="muted small">up to 20, separated by commas or new lines</span><textarea name="emails" rows="2" required placeholder="cousin@example.com, aunt.rose@example.com"></textarea></label>
+<div class="grid2">${owner ? `<label>Role<select name="role"><option>editor</option><option selected>viewer</option></select></label>` : ''}<label>A line from you (optional)<input name="note" maxlength="1000" placeholder="Help me fill in Grandpa's side!"></label></div><button>Email invites</button></form>
+${owner ? `<form method="post" action="/t/${tree.id}/invites" class="row">${csrfField(ctx)}<select name="role" aria-label="Role"><option>editor</option><option selected>viewer</option></select><button class="btn">Just make a link</button> <span class="muted small">to send yourself, by text or chat</span></form>` : ''}`
+    : ''
+}
+${
+  edit && extra.pending.length
+    ? `<section class="panel"><h2>Waiting to join</h2><ul>${extra.pending.map((i) => `<li>${esc(i.email ?? 'link')}${asPerson(i.person_id)} <span class="muted small">${i.role}, ${days(i.expires_at)} days left</span> <form method="post" action="/t/${tree.id}/invites/${i.id}/revoke" class="inline">${csrfField(ctx)}<button class="x" title="Cancel invite">×</button></form></li>`).join('')}</ul></section>`
+    : ''
+}
+<p class="muted small">Tip: invite someone from their own page in the tree and they join as that person, able to keep their profile up to date.</p>`,
     { crumbs: [['/trees', 'Trees'], [`/t/${tree.id}`, tree.name], ['', 'Members']] },
   )
 }
 
-export function invitePage(ctx: Ctx, tree: Tree, role: string, token: string): string {
+export function invitePage(ctx: Ctx, tree: Tree, role: string, token: string, extra: { from?: User | null; person?: Person | null; note?: string | null } = {}): string {
+  const from = extra.from ? esc(extra.from.name ?? extra.from.email) : 'Someone'
   return layout(
     ctx,
     `Join ${tree.name}`,
-    `<h1>You're invited to ${esc(tree.name)}</h1><p>As ${role === 'editor' ? 'an editor: you can add and change people' : 'a viewer: you can look at everything'}.</p>
+    `${
+      extra.person
+        ? `<h1>Join the family</h1><p>${from} added you to <b>${esc(tree.name)}</b> as ${personLink(tree.id, extra.person)}. Join, and that profile is yours: fix the dates, add your photos and your story.</p>`
+        : `<h1>You're invited to ${esc(tree.name)}</h1><p>${from} invited you, as ${role === 'editor' ? 'an editor: you can add and change people' : 'a viewer: you can look at everything'}.</p>`
+    }
+${extra.note ? `<blockquote class="notes">${esc(extra.note)}</blockquote>` : ''}
 ${ctx.user ? `<form method="post" action="/invite/${esc(token)}">${csrfField(ctx)}<button>Join as ${esc(ctx.user.email)}</button></form>` : `<p>Sign in or sign up first; you'll come straight back here.</p>${signInForm(ctx, `/invite/${token}`)}`}`,
   )
 }
 
-export function settingsPage(ctx: Ctx, data: { passkeys: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; tokens: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; newToken?: string | null }): string {
+export function settingsPage(ctx: Ctx, data: { passkeys: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; tokens: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; newToken?: string | null; addons?: string }): string {
   const when = (t: number | null) => (t ? new Date(t).toISOString().slice(0, 10) : 'never')
   return layout(
     ctx,
@@ -409,6 +451,7 @@ ${data.passkeys.length ? `<ul>${data.passkeys.map((k) => `<li>${esc(k.label ?? '
 ${data.newToken ? `<p class="flash">New token (shown once): <code>${esc(data.newToken)}</code></p>` : ''}
 ${data.tokens.length ? `<ul>${data.tokens.map((t) => `<li>${esc(t.label ?? 'token')} <span class="muted small">made ${when(t.created_at)}, last used ${when(t.last_used_at)}</span> <form method="post" action="/settings/tokens/${t.id}/delete" class="inline">${csrfField(ctx)}<button class="x">×</button></form></li>`).join('')}</ul>` : ''}
 <form method="post" action="/settings/tokens" class="row">${csrfField(ctx)}<input name="label" placeholder="What is it for?" maxlength="80"><button>Make a token</button></form></section>
+${data.addons ?? ''}
 <form method="post" action="/auth/signout">${csrfField(ctx)}<button class="danger">Sign out</button></form>`,
   )
 }

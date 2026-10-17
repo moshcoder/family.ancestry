@@ -56,6 +56,6 @@ describe('mcp', () => {
   test('registers the family tree tools', () => {
     const server: any = createMcpServer(new AncestryClient({ url: 'http://127.0.0.1:1', token: null }))
     const tools = Object.keys(server._registeredTools ?? {})
-    for (const name of ['list_trees', 'search_people', 'get_person', 'add_person', 'link_relative', 'pedigree', 'descendants', 'relationship', 'export_gedcom', 'import_gedcom']) expect(tools).toContain(name)
+    for (const name of ['list_trees', 'search_people', 'get_person', 'add_person', 'link_relative', 'pedigree', 'descendants', 'relationship', 'export_gedcom', 'import_gedcom', 'invite_to_tree', 'tree_members', 'list_contacts', 'add_contact', 'connect_contact', 'inbox', 'send_message']) expect(tools).toContain(name)
   })
 })

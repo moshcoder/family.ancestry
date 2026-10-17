@@ -84,6 +84,41 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
 
   server.tool('import_gedcom', 'Import GEDCOM text into a tree you can edit.', { tree_id: z.string(), gedcom: z.string().max(25_000_000) }, async ({ tree_id, gedcom }: any) => json(await client.importGedcom(tree_id, gedcom)))
 
+  server.tool(
+    'invite_to_tree',
+    'Email someone an invite to a family tree. Give person_id to invite them to BE that person: once they join, they manage their own profile. Up to 20 emails at once, and a daily limit per sender.',
+    { tree_id: z.string(), emails: z.array(z.string().email()).min(1).max(20), role: z.enum(['viewer', 'editor']).optional(), person_id: z.string().optional(), note: z.string().max(1000).optional() },
+    async ({ tree_id, emails, ...opts }: any) => json(await client.invite(tree_id, emails, opts)),
+  )
+
+  server.tool('tree_members', 'Who belongs to a tree, their role, and which person each one is (if they claimed a profile).', { tree_id: z.string() }, async ({ tree_id }: any) => json(await client.members(tree_id)))
+
+  // ---- network: the people in your life, private to you ----
+  const contact = {
+    name: z.string().max(200).optional(),
+    nickname: z.string().max(200).optional(),
+    circle: z.enum(['family', 'friends', 'business']).optional(),
+    relationship: z.string().max(200).optional().describe('how you know them: "cousin", "college roommate", "our plumber"'),
+    company: z.string().max(200).optional(),
+    title: z.string().max(200).optional(),
+    birthday: z.string().max(200).optional(),
+    anniversary: z.string().max(200).optional(),
+    emails: z.array(z.string()).max(20).optional().describe('"work: a@b.com" or just the address'),
+    phones: z.array(z.string()).max(20).optional(),
+    addresses: z.array(z.object({ label: z.string().optional(), lines: z.string() })).max(10).optional(),
+    links: z.array(z.string().url()).max(20).optional(),
+    notes: z.string().max(20000).optional(),
+  }
+
+  server.tool('list_contacts', "Search your network (family, friends, business). Private to you; matches names, emails, phones, companies, addresses and notes.", { query: z.string().max(200).default(''), circle: z.enum(['family', 'friends', 'business']).optional() }, async ({ query, circle }: any) => json(await client.contacts(query, circle)))
+  server.tool('get_contact', 'Everything you keep about one contact.', { contact_id: z.string() }, async ({ contact_id }: any) => json(await client.contact(contact_id)))
+  server.tool('add_contact', 'Add someone you know to your network.', contact, async (fields: any) => json(await client.addContact(fields)))
+  server.tool('update_contact', 'Change a contact. Lists (emails, phones, addresses, links) are replaced whole.', { contact_id: z.string(), ...contact }, async ({ contact_id, ...fields }: any) => json(await client.updateContact(contact_id, fields)))
+  server.tool('connect_contact', 'Ask a contact to connect: one email from you, and if they say yes you can message each other. Use it for people the user actually knows, one at a time.', { contact_id: z.string(), note: z.string().max(1000).optional() }, async ({ contact_id, note }: any) => text(await client.connectContact(contact_id, note)))
+  server.tool('inbox', 'Your conversations, newest first, with unread counts, and who you could write to.', {}, async () => json(await client.inbox()))
+  server.tool('read_conversation', 'The messages between you and one person (marks them read).', { user_id: z.string() }, async ({ user_id }: any) => json(await client.conversation(user_id)))
+  server.tool('send_message', 'Send a private message to one person you are connected with or share a tree with. Only send what the user asked you to send.', { user_id: z.string(), body: z.string().min(1).max(5000) }, async ({ user_id, body }: any) => json(await client.sendMessage(user_id, body)))
+
   return server
 }
 

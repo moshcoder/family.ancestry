@@ -153,6 +153,22 @@ table.people tr:last-child td { border-bottom: 0; }
 .answer .big { font-size: 1.35rem; font-family: var(--serif); }
 .path { color: var(--muted); }
 .copy { display: flex; gap: 8px; }
+.badge { display: inline-block; min-width: 1.4em; padding: 0 .4em; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: .75rem; line-height: 1.4em; text-align: center; vertical-align: 1px; }
+.facts { border-collapse: collapse; margin: 8px 0 16px; }
+.facts th { text-align: left; font-weight: 400; color: var(--muted); padding: 4px 18px 4px 0; vertical-align: top; text-transform: capitalize; white-space: nowrap; }
+.facts td { padding: 4px 0; overflow-wrap: anywhere; }
+.threads { list-style: none; padding: 0; margin: 0 0 16px; }
+.threads li { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.threads li a { text-decoration: none; color: var(--ink); min-width: 0; overflow-wrap: anywhere; }
+.threads li.unread b { color: var(--accent); }
+.messages { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.messages li { max-width: min(80%, 560px); padding: 8px 12px; border-radius: 12px; background: var(--card); border: 1px solid var(--line); overflow-wrap: anywhere; }
+.messages li.mine { align-self: flex-end; background: var(--accent-soft); }
+.messages li .small { display: block; margin-top: 2px; }
+.invite-nudge { margin: 8px 0; }
+.invite-nudge .row input { flex: 1 1 200px; }
+details.mini.invite-nudge summary { color: var(--muted); font-size: .9rem; cursor: pointer; }
+blockquote.notes { margin: 8px 0; padding: 6px 14px; border-left: 3px solid var(--line); }
 
 @media (max-width: 720px) {
   .split, .cols, .cols3 { grid-template-columns: 1fr; }
