@@ -60,6 +60,10 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
                                     email invites; --file (or -) reads a pasted list;
                                     --as invites them to be that person
   ancestry members                  who is in the tree, and pending invites
+  ancestry team <business> [invite <email> --as employee|manager|officer|partner|owner [--title T] [--note TEXT]]
+               [rm <user-id>] [listing on|off [--note TEXT]] [invite|decline <request-id>]
+                                    a business's team: they join the business, never the tree
+  ancestry work                     businesses whose team you are on
   ancestry listing [on|off] [--note TEXT]   list the tree at /families: its name and your note, never the tree
   ancestry requests [invite|decline <id>]   people asking a listed tree for an invite
   ancestry families [search]        listed families you could ask to join
@@ -669,6 +673,43 @@ export async function runCli(argv: string[]): Promise<number> {
         const body = rest.length ? { person_id: await pickPerson(client, tree.id, rest.join(' ')) } : personFields(f)
         const p = await client.claim(tree.id, body)
         print(p, () => `You are ${p.name} (${p.id}) in ${tree.name}. Keep it up to date: ancestry edit ${p.id} ...`)
+        return 0
+      }
+      case 'team': {
+        const tree = await pickTree(client, f.tree)
+        const [ref, sub, arg] = rest.length > 1 && ['invite', 'rm', 'listing', 'decline'].includes(rest[1]!) ? [rest[0], rest[1], rest[2]] : [rest.join(' '), undefined, undefined]
+        const biz = await pickBusiness(client, tree.id, ref)
+        if (sub === 'invite' && arg && arg.includes('@')) {
+          console.log(await client.inviteToTeam(tree.id, biz, { email: arg, role: str(f.as), title: str(f.title), note: str(f.note) }))
+          return 0
+        }
+        if ((sub === 'invite' || sub === 'decline') && arg) {
+          console.log(await client.answerTeamRequest(tree.id, biz, arg, sub))
+          return 0
+        }
+        if (sub === 'rm' && arg) {
+          await client.removeFromTeam(tree.id, biz, arg)
+          console.log('Removed from the team.')
+          return 0
+        }
+        if (sub === 'listing') {
+          const l = await client.setBusinessListing(tree.id, biz, { listed: arg === 'on' ? true : arg === 'off' ? false : undefined, listing: str(f.note) })
+          print(l, () => (l.listed ? `Listed: ${l.url}` : 'Not listed.'))
+          return 0
+        }
+        const t = await client.team(tree.id, biz)
+        print(t, () =>
+          [
+            ...(t.members.length ? t.members.map((m) => `${m.user_id}  ${m.name ?? m.email ?? ''}  ${[m.title, m.role].filter(Boolean).join(' · ')}`) : ['Nobody on the team yet.']),
+            ...(t.invites ?? []).map((i) => `invited ${i.email} (${i.role})`),
+            ...(t.requests ?? []).map((r) => `asking  ${r.id}  ${r.name} <${r.email}> as ${r.role}${r.note ? `  "${r.note}"` : ''}`),
+          ].join('\n'),
+        )
+        return 0
+      }
+      case 'work': {
+        const places = await client.work()
+        print(places, () => (places.length ? places.map((b) => `${b.id}  ${b.name}  ${[b.title, b.role].filter(Boolean).join(' · ')}  ${b.url}`).join('\n') : 'No business has added you to its team yet.'))
         return 0
       }
       case 'listing': {

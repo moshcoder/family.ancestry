@@ -217,6 +217,21 @@ footer everywhere, and a 300×250 on Local and Network. It is a cross-origin fra
 (`/api/ads/frame`), so the CSP gains one `frame-src` and nothing else: no ad script,
 no cookie. `CRAWLPROOF_AD_SLOT` sets the slot; `off` removes the units.
 
+## Business teams
+
+A family business ("Profullstack, Inc.") can have a team: people with their own accounts
+who work there. Tree editors and up invite them from the business page by email, as an
+employee, manager, officer, partner or owner, with a title. They join the business, never
+the tree: at `/w/:business` they see what it is, where, its website and the team (the
+leaders who have accounts, then everyone invited), and nothing from the family tree. Joining
+connects them with whoever invited them. Owners and admins can list a business at
+`/families`; anyone can ask to join the team, and the family invites or declines.
+Code: `src/team.ts`. CLI: `ancestry team <business> [invite <email> --as employee --title T]`,
+`ancestry work`. MCP: `business_team`, `invite_to_team`, `my_work`. API:
+`/api/v1/trees/:tree/businesses/:biz/team` (GET, POST invite, DELETE `/:user`), `.../listing`,
+`.../requests/:id/invite|decline`, `/api/v1/work`, `/api/v1/families/businesses`,
+`POST /api/v1/families/b/:biz/request`.
+
 ## Listed families
 
 A tree can be found without being seen. On the Members page the owner can list it at

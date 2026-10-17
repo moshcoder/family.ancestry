@@ -26,6 +26,8 @@ export type BusinessDeps = {
   /** The tree and the caller's role in it, or a response that ends the request. */
   treeFor: (c: Context, need?: 'view' | 'edit' | 'manage' | 'owner') => { error: Response } | { error?: undefined; tree: Tree; role: Role; user: User }
   pickId: (value: unknown) => string | null
+  /** The team panel for a business page (src/team.ts). */
+  team?: (ctx: Ctx, tree: Tree, role: Role, b: Business) => string
   image: { types: Set<string>; max: number }
 }
 
@@ -107,6 +109,8 @@ export type BusinessView = {
   everyone: Person[]
   contact: { id: string; name: string } | null
   contacts: { id: string; name: string }[]
+  /** The team (people with accounts who work there), already rendered (src/team.ts). */
+  team?: string
 }
 
 export function businessPage(ctx: Ctx, tree: Tree, role: Role, v: BusinessView): string {
@@ -128,6 +132,7 @@ ${facts.map(([k, val]) => `<p><b>${k}</b> ${esc(val)}</p>`).join('')}
 ${b.website ? `<p><b>Website</b> <a href="${esc(b.website)}" rel="noopener noreferrer nofollow" target="_blank">${esc(host(b.website))}</a></p>` : ''}
 ${v.contact ? `<p class="small">In your network: <a href="/network/c/${esc(v.contact.id)}">${esc(v.contact.name)}</a></p>` : ''}</div></div>
 
+${v.team ?? ''}
 <section><h2>People</h2>${
       v.people.length
         ? `<ul>${v.people.map((r) => `<li><span class="tag">${esc(roleLabel(r))}</span> ${personLink(tree.id, r.person)}${span(r) ? ` <span class="muted small">${esc(span(r))}</span>` : ''}${r.note ? ` <span class="muted small">${esc(r.note)}</span>` : ''}${edit ? ` <form method="post" action="/t/${tree.id}/business-roles/${r.id}/delete" class="inline">${csrf(ctx)}<input type="hidden" name="back" value="/t/${tree.id}/b/${b.id}"><button class="x" title="Remove">×</button></form>` : ''}</li>`).join('')}</ul>`
@@ -240,6 +245,7 @@ export function mountBusinesses(app: Hono<any>, api: Hono<any>, d: BusinessDeps)
         everyone: canEdit(t.role) ? store.people(t.tree.id, 5000).filter((o) => o.kind === 'person') : [],
         contact: myContact(b, t.user),
         contacts: net.contacts(t.user.id, { circle: 'business' }).map((x) => ({ id: x.id, name: x.company || contactName(x) })),
+        team: d.team?.(d.ctx(c), t.tree, t.role, b),
       }),
     )
   })
