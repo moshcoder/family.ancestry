@@ -179,6 +179,14 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   const ctx = (c: Context, extra: Partial<html.Ctx> = {}): html.Ctx => ({ user: c.get('user'), csrf: c.get('csrf'), flash: c.req.query('ok') ?? null, error: c.req.query('error') ?? null, unread: c.get('user') ? net.unreadCount(c.get('user')!.id) : 0, ...extra })
   const signIn = (c: Context, user: User) => {
     setCookie(c, SESSION_COOKIE, auth.createSession(user.id), { path: '/', httpOnly: true, sameSite: 'Lax', secure: secure(c), maxAge: 60 * 60 * 24 * 90 })
+    // Came from pit.world with no account linked, then signed in the usual way: that account is theirs.
+    const pendingToken = getCookie(c, 'fa_pw_pending')
+    const pending = store.heldIdentity(pendingToken)
+    if (pendingToken) {
+      store.dropHeldIdentity(pendingToken)
+      deleteCookie(c, 'fa_pw_pending', { path: '/' })
+    }
+    if (pending && !store.userByIdentity(pending.provider, pending.subject) && !store.identities(user.id).some((i) => i.provider === pending.provider)) store.linkIdentity(user.id, pending.provider, pending.subject)
   }
 
   /** The tree and the caller's role in it, or a response that ends the request. */
@@ -277,9 +285,24 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
       store.linkIdentity(me.id, 'pitworld', sub)
       return c.redirect('/settings?ok=pit.world%20linked')
     }
-    const user = linked ?? store.createBridgedUser('pitworld', sub, result.user.name ?? null)
+    if (linked) {
+      signIn(c, linked)
+      return c.redirect(safeNext(result.returnTo) ?? '/trees')
+    }
+    // Not linked yet. Never guess (email cannot link: pit.world cannot vouch for it), and never
+    // quietly make a second, empty account for someone who already has one: ask.
+    setCookie(c, 'fa_pw_pending', store.holdIdentity('pitworld', sub, result.user.name ?? null), { path: '/', httpOnly: true, sameSite: 'Lax', secure: secure(c), maxAge: 30 * 60 })
+    return c.html(html.pitWorldChoicePage(ctx(c), result.user.name ?? null, safeNext(result.returnTo)))
+  })
+  app.post('/auth/pitworld/new', (c) => {
+    const token = getCookie(c, 'fa_pw_pending')
+    const held = store.heldIdentity(token)
+    if (!token || !held) return c.redirect('/signin')
+    store.dropHeldIdentity(token)
+    deleteCookie(c, 'fa_pw_pending', { path: '/' })
+    const user = store.userByIdentity(held.provider, held.subject) ?? store.createBridgedUser(held.provider, held.subject, held.name)
     signIn(c, user)
-    return c.redirect(safeNext(result.returnTo) ?? '/trees')
+    return c.redirect('/trees')
   })
   app.post('/settings/pitworld/unlink', (c) => {
     if (needUser(c)) return needUser(c)!
