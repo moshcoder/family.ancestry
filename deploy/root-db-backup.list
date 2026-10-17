@@ -1,0 +1,8 @@
+# /etc/root-db-backup.list on dev2: <name> <nightly|weekly> <path>
+# Root-owned SQLite databases the fleet backup (runs as anthony) cannot see.
+# LNbits (/opt/lnbits-data) is NOT here: the fleet backup already covers it.
+family-ancestry nightly /root/.local/share/family-ancestry/family.db
+pit-world-listings nightly /root/.local/share/pit-world/listings.db
+pit-world-newsletter nightly /root/.local/share/pit-world/newsletter.db
+# ~1 GB of daemon state: weekly, newest 2, like the fleet's big databases.
+threatcrushd-state weekly /var/lib/threatcrush/state.db

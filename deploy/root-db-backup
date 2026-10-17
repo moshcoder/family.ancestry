@@ -1,0 +1,53 @@
+#!/bin/bash
+# Back up the SQLite databases on dev2 that the fleet backup cannot see.
+# fleet-db-backup runs as anthony and its discover skips /root and hidden dirs, so
+# root-owned app databases (family.ancestry, pit.world, threatcrushd) need this.
+#
+#   root-db-backup nightly|weekly        (cron: /etc/cron.d/root-db-backup)
+#
+# Each line of /etc/root-db-backup.list is "<name> <schedule> <path>". For each
+# database on this schedule: online .backup (safe while the app writes), quick_check,
+# gzip, hand to anthony (whose key reaches dev3), rsync to dev3:~/backups/dbs/<name>/.
+# Retention on dev3: nightly 30 days, weekly the newest 2. Locally only the newest copy.
+set -euo pipefail
+SCHEDULE="${1:?usage: root-db-backup nightly|weekly}"
+LIST=/etc/root-db-backup.list
+OUT=/home/anthony/Backups/root-db
+exec 9>/run/root-db-backup.lock
+flock -n 9 || { echo "root-db-backup: already running"; exit 0; }
+install -d -o anthony -g anthony -m 700 "$OUT"
+STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+ok=0
+failed=0
+# The list is read on fd 3: ssh and sqlite3 inside the loop would otherwise eat it from stdin.
+while read -r name schedule path <&3; do
+  case "$name" in ''|'#'*) continue ;; esac
+  [ "$schedule" = "$SCHEDULE" ] || continue
+  if [ ! -f "$path" ]; then echo "root-db-backup: $name — missing $path"; failed=$((failed + 1)); continue; fi
+  tmp=$(mktemp /root/.root-db-backup.XXXXXX)
+  if sqlite3 "$path" ".backup '$tmp'" && [ "$(sqlite3 "$tmp" 'PRAGMA quick_check')" = ok ] && gzip -9 -f "$tmp"; then
+    dir="$OUT/$name"
+    install -d -o anthony -g anthony -m 700 "$dir"
+    file="$dir/$name-$SCHEDULE-$STAMP.sqlite.gz"
+    install -o anthony -g anthony -m 600 "$tmp.gz" "$file"
+    ls -1t "$dir"/"$name-$SCHEDULE"-*.sqlite.gz | tail -n +2 | xargs -r rm -f
+    if sudo -u anthony -H rsync -a "$dir/" "dev3:backups/dbs/$name/"; then
+      if [ "$SCHEDULE" = weekly ]; then
+        sudo -u anthony -H ssh -o BatchMode=yes dev3 "ls -1t ~/backups/dbs/$name/$name-weekly-*.sqlite.gz | tail -n +3 | xargs -r rm -f"
+      else
+        sudo -u anthony -H ssh -o BatchMode=yes dev3 "find ~/backups/dbs/$name -name '$name-nightly-*.sqlite.gz' -mtime +30 -delete"
+      fi
+      echo "root-db-backup: $name — ok ($(stat -c %s "$file") bytes)"
+      ok=$((ok + 1))
+    else
+      echo "root-db-backup: $name — rsync to dev3 failed"
+      failed=$((failed + 1))
+    fi
+  else
+    echo "root-db-backup: $name — backup or quick_check failed"
+    failed=$((failed + 1))
+  fi
+  rm -f "$tmp" "$tmp.gz"
+done 3< "$LIST"
+echo "root-db-backup: $SCHEDULE $STAMP — $ok ok, $failed failed"
+[ "$failed" = 0 ]
