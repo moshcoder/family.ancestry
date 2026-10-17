@@ -64,7 +64,7 @@
     const status = document.querySelector('[data-passkey-status]')
     if (!hasPasskeys) {
       button.disabled = true
-      if (status) status.textContent = 'This browser cannot make passkeys here (they need https).'
+      if (status) status.textContent = location.hostname.endsWith('.pit.world') ? 'Passkeys work at https://family.ancestry itself (on Moshpit), not through pit.world.' : 'This browser cannot make passkeys here (they need https).'
       continue
     }
     button.addEventListener('click', async () => {
