@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS media (
 CREATE INDEX IF NOT EXISTS media_person ON media(person_id);
 `
 
-const INVITE_COLS = 'token_hash AS id, tree_id, role, email, person_id, note, created_by, created_at, expires_at, used_by'
+const SELECT_INVITES = 'SELECT token_hash AS id, tree_id, role, email, person_id, note, created_by, created_at, expires_at, used_by FROM invites'
 
 export const clean = (value: unknown, max = 500): string | null => {
   if (value === undefined || value === null) return null
@@ -203,9 +203,9 @@ export class Store {
     this.db.run('PRAGMA busy_timeout = 5000')
     this.db.exec(SCHEMA)
     // Columns added after 0.1.0. SQLite has no ADD COLUMN IF NOT EXISTS.
-    const has = (table: string, column: string) => this.db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().some((c) => c.name === column)
-    if (!has('invites', 'person_id')) this.db.run('ALTER TABLE invites ADD COLUMN person_id TEXT')
-    if (!has('invites', 'note')) this.db.run('ALTER TABLE invites ADD COLUMN note TEXT')
+    const inviteCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('invites')").all().map((c) => c.name)
+    if (!inviteCols.includes('person_id')) this.db.run('ALTER TABLE invites ADD COLUMN person_id TEXT')
+    if (!inviteCols.includes('note')) this.db.run('ALTER TABLE invites ADD COLUMN note TEXT')
   }
 
   tx<T>(fn: () => T): T {
@@ -306,13 +306,13 @@ export class Store {
   }
 
   invite(token: string): Invite | null {
-    const row = this.db.query<any, [string]>(`SELECT ${INVITE_COLS} FROM invites WHERE token_hash = ?`).get(sha256(token))
+    const row = this.db.query<any, [string]>(SELECT_INVITES + ' WHERE token_hash = ?').get(sha256(token))
     return row && row.expires_at > this.now() && !row.used_by ? row : null
   }
 
   /** Invites not yet used or expired, newest first. `id` is the token's hash, safe to show. */
   pendingInvites(treeId: string): Invite[] {
-    return this.db.query<Invite, [string, number]>(`SELECT ${INVITE_COLS} FROM invites WHERE tree_id = ? AND used_by IS NULL AND expires_at > ? ORDER BY created_at DESC`).all(treeId, this.now())
+    return this.db.query<Invite, [string, number]>(SELECT_INVITES + ' WHERE tree_id = ? AND used_by IS NULL AND expires_at > ? ORDER BY created_at DESC').all(treeId, this.now())
   }
 
   revokeInvite(treeId: string, id: string) {

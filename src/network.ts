@@ -215,7 +215,9 @@ export class Network {
   }
 
   linkContact(ownerId: string, id: string, link: { tree_id?: string | null; person_id?: string | null; linked_user_id?: string | null }) {
-    for (const key of ['tree_id', 'person_id', 'linked_user_id'] as const) if (link[key] !== undefined) this.db.query(`UPDATE contacts SET ${key} = ? WHERE owner_id = ? AND id = ?`).run(link[key], ownerId, id)
+    if (link.tree_id !== undefined) this.db.query('UPDATE contacts SET tree_id = ? WHERE owner_id = ? AND id = ?').run(link.tree_id, ownerId, id)
+    if (link.person_id !== undefined) this.db.query('UPDATE contacts SET person_id = ? WHERE owner_id = ? AND id = ?').run(link.person_id, ownerId, id)
+    if (link.linked_user_id !== undefined) this.db.query('UPDATE contacts SET linked_user_id = ? WHERE owner_id = ? AND id = ?').run(link.linked_user_id, ownerId, id)
   }
 
   deleteContact(ownerId: string, id: string) {
