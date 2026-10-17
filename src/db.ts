@@ -122,16 +122,29 @@ export const CHILD_RELATIONS = ['birth', 'adopted', 'step', 'foster'] as const
  * one; `as` is what the other is to the person, `back` what the person is to them.
  * A pet's owner is a bond too, which is what keeps pets out of every bloodline walk.
  */
-export const BONDS: Record<string, { as: string; back: string }> = {
-  raised_by: { as: 'Raised by', back: 'Raised' },
-  guardian: { as: 'Guardian', back: 'Ward' },
-  godparent: { as: 'Godparent', back: 'Godchild' },
-  caregiver: { as: 'Caregiver', back: 'Cared for' },
-  chosen_family: { as: 'Chosen family', back: 'Chosen family' },
-  friend: { as: 'Friend', back: 'Friend' },
-  neighbor: { as: 'Neighbor', back: 'Neighbor' },
-  pet: { as: 'Owner', back: 'Pet' },
+export const BONDS: Record<string, { as: string; back: string; group: BondGroup }> = {
+  raised_by: { as: 'Raised by', back: 'Raised', group: 'Family' },
+  guardian: { as: 'Guardian', back: 'Ward', group: 'Family' },
+  godparent: { as: 'Godparent', back: 'Godchild', group: 'Family' },
+  caregiver: { as: 'Caregiver', back: 'Cared for', group: 'Family' },
+  chosen_family: { as: 'Chosen family', back: 'Chosen family', group: 'Family' },
+  friend: { as: 'Friend', back: 'Friend', group: 'Friends and neighbors' },
+  best_friend: { as: 'Best friend', back: 'Best friend', group: 'Friends and neighbors' },
+  neighbor: { as: 'Neighbor', back: 'Neighbor', group: 'Friends and neighbors' },
+  roommate: { as: 'Roommate', back: 'Roommate', group: 'Friends and neighbors' },
+  coworker: { as: 'Coworker', back: 'Coworker', group: 'Work and business' },
+  business_partner: { as: 'Business partner', back: 'Business partner', group: 'Work and business' },
+  employer: { as: 'Employer', back: 'Employee', group: 'Work and business' },
+  client: { as: 'Client', back: 'Works for', group: 'Work and business' },
+  doctor: { as: 'Family doctor', back: 'Patient', group: 'Work and business' },
+  classmate: { as: 'Classmate', back: 'Classmate', group: 'School and mentors' },
+  teacher: { as: 'Teacher', back: 'Student', group: 'School and mentors' },
+  mentor: { as: 'Mentor', back: 'Mentee', group: 'School and mentors' },
+  pet: { as: 'Owner', back: 'Pet', group: 'Family' },
 }
+export type BondGroup = 'Family' | 'Friends and neighbors' | 'Work and business' | 'School and mentors'
+/** Every bond a person can have with another person (pets have their own form). */
+export const PERSON_BONDS = Object.keys(BONDS).filter((k) => k !== 'pet') as [string, ...string[]]
 export const bondKind = (value: unknown): string | null => {
   const v = String(value ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_')
   if (BONDS[v]) return v

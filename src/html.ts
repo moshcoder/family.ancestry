@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.10.0'
+export const VERSION = '0.10.1'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -262,12 +262,13 @@ function relativeForm(ctx: Ctx, tree: Tree, person: Person, kind: RelativeKind, 
 </form></details>`
 }
 
-/** Raised by, guardian, godparent, caregiver, chosen family: people who matter and are not a line of descent. */
+/** People who matter and are not a line of descent: who raised them, godparents, friends, neighbors, coworkers, teachers. */
 function bondForm(ctx: Ctx, tree: Tree, person: Person): string {
-  const kinds = Object.entries(BONDS).filter(([k]) => k !== 'pet')
-  return `<details class="panel"><summary>Add someone who raised them, a godparent, a guardian…</summary>
+  const groups = new Map<string, [string, (typeof BONDS)[string]][]>()
+  for (const [k, b] of Object.entries(BONDS)) if (k !== 'pet') groups.set(b.group, [...(groups.get(b.group) ?? []), [k, b]])
+  return `<details class="panel"><summary>Add a friend, neighbor, coworker, godparent, who raised them…</summary>
 <form method="post" action="/t/${tree.id}/p/${person.id}/bonds" class="pform">${csrfField(ctx)}
-  <label>They are ${esc(person.given || 'this person')}'s<select name="kind">${kinds.map(([k, b]) => `<option value="${k}">${esc(b.as.toLowerCase())}</option>`).join('')}</select></label>
+  <label>They are ${esc(person.given || 'this person')}'s<select name="kind">${[...groups].map(([g, kinds]) => `<optgroup label="${esc(g)}">${kinds.map(([k, b]) => `<option value="${k}">${esc(b.as.toLowerCase())}</option>`).join('')}</optgroup>`).join('')}</select></label>
   <p class="muted small">Someone already in the tree:</p>
   <div class="row"><input name="existing" list="people-${tree.id}" placeholder="Start typing a name" autocomplete="off"></div>
   <p class="muted small">Or someone new:</p>

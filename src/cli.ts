@@ -1,6 +1,7 @@
 /**
  * `ancestry`: family.ancestry from the terminal.
  */
+import { PERSON_BONDS } from './db.js'
 import { createHash, randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -23,7 +24,9 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
                [--relation birth|adopted|step|foster] [--sibling full|half|adopted|foster|step]
                [--kind married|partners|dating|divorced]   (for --partner-of; dating = boyfriend/girlfriend)
                [--via PARENT] [--raised]   (--raised: they raised that person)
-  ancestry bond <person> <raised_by|guardian|godparent|caregiver|chosen_family|friend|neighbor> <other>
+  ancestry bond <person> <kind> <other>   kind: friend, best_friend, neighbor, roommate, coworker,
+                                    business_partner, employer, client, doctor, classmate, teacher,
+                                    mentor, raised_by, guardian, godparent, caregiver, chosen_family
                                     a bond that is not descent: "bond Sam raised_by Rose"
   ancestry pet <owner> <name> [--species Dog] [--born DATE]   (Family plan)
   ancestry plan [buy --chain USDC_POL]     the one-time Family plan for this tree
@@ -634,7 +637,7 @@ export async function runCli(argv: string[]): Promise<number> {
       case 'bond': {
         const tree = await pickTree(client, f.tree)
         const [who, kind, ...other] = rest
-        if (!who || !kind || !other.length) throw new Error('ancestry bond <person> <raised_by|guardian|godparent|caregiver|chosen_family|friend|neighbor> <other>')
+        if (!who || !kind || !other.length) throw new Error(`ancestry bond <person> <${PERSON_BONDS.join('|')}> <other>`)
         const r = await client.addBond(tree.id, await pickPerson(client, tree.id, who), { kind, other_id: await pickPerson(client, tree.id, other.join(' ')), note: str(f.note) })
         print(r, () => formatPerson(r.person))
         return 0

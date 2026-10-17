@@ -11,6 +11,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
+import { PERSON_BONDS } from './db.js'
 import { AncestryClient } from './client.js'
 import { formatBusiness, formatDescendants, formatPedigree, formatPerson } from './cli.js'
 import { VERSION } from './html.js'
@@ -66,8 +67,8 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
 
   server.tool(
     'add_bond',
-    'Record a bond that is not descent: other_id raised, is the guardian, godparent or caregiver of, or is chosen family to person_id. This is how grandparents who raised someone show as both grandparents and "raised by".',
-    { tree_id: z.string(), person_id: z.string(), other_id: z.string(), kind: z.enum(['raised_by', 'guardian', 'godparent', 'caregiver', 'chosen_family', 'friend', 'neighbor']), note: z.string().max(500).optional() },
+    `Record a bond that is not descent: other_id is person_id's <kind> (${PERSON_BONDS.join(', ')}). Grandparents who raised someone show as both grandparents and "raised by"; a coworker or neighbor needs no family line at all.`,
+    { tree_id: z.string(), person_id: z.string(), other_id: z.string(), kind: z.enum(PERSON_BONDS), note: z.string().max(500).optional() },
     async ({ tree_id, person_id, ...body }: any) => text(formatPerson((await client.addBond(tree_id, person_id, body)).person)),
   )
 
