@@ -167,6 +167,9 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT, created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS pending_identities (
+  token_hash TEXT PRIMARY KEY, provider TEXT NOT NULL, subject TEXT NOT NULL, name TEXT, expires_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS user_identities (
   provider TEXT NOT NULL, subject TEXT NOT NULL, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   created_at INTEGER NOT NULL, PRIMARY KEY (provider, subject)
@@ -413,6 +416,24 @@ export class Store {
 
   unlinkIdentity(userId: string, provider: string) {
     this.db.query('DELETE FROM user_identities WHERE user_id = ? AND provider = ?').run(userId, provider)
+  }
+
+  /** A pit.world sign-in with no account here yet, held until they say which account is theirs. */
+  holdIdentity(provider: string, subject: string, name: string | null, minutes = 30): string {
+    const token = newId(24)
+    this.db.query('DELETE FROM pending_identities WHERE expires_at < ?').run(this.now())
+    this.db.query('INSERT INTO pending_identities (token_hash, provider, subject, name, expires_at) VALUES (?, ?, ?, ?, ?)').run(sha256(token), provider, subject, clean(name, 120), this.now() + minutes * 60_000)
+    return token
+  }
+
+  heldIdentity(token: string | null | undefined): { provider: string; subject: string; name: string | null } | null {
+    if (!token) return null
+    const row = this.db.query<{ provider: string; subject: string; name: string | null; expires_at: number }, [string]>('SELECT provider, subject, name, expires_at FROM pending_identities WHERE token_hash = ?').get(sha256(token))
+    return row && row.expires_at > this.now() ? { provider: row.provider, subject: row.subject, name: row.name } : null
+  }
+
+  dropHeldIdentity(token: string) {
+    this.db.query('DELETE FROM pending_identities WHERE token_hash = ?').run(sha256(token))
   }
 
   /** A new account for someone who arrived by pit.world: no email of theirs (an address nothing is sent to), their name. */

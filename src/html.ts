@@ -120,6 +120,18 @@ export function signInForm(ctx: Ctx, next: string | null = null): string {
 <p class="pitworld"><a class="btn" href="/auth/pitworld${next ? `?next=${encodeURIComponent(next)}` : ''}">Sign in with pit.world</a> <span class="muted small">One account for every pit.world site, signed in with CoinPay.</span></p>`
 }
 
+/** A pit.world sign-in we have no account for yet: theirs already, or new? */
+export function pitWorldChoicePage(ctx: Ctx, name: string | null, next: string | null): string {
+  return layout(
+    ctx,
+    'One more step',
+    `<h1>Welcome${name ? `, ${esc(name)}` : ''}</h1>
+<p>You signed in with pit.world, and it isn't linked to a family.ancestry account yet.</p>
+<section class="panel"><h2>Already have an account here?</h2><p class="muted small">If you were invited to a tree, or signed in here before with your email, do this: sign in with that email once and we link pit.world to it, so your trees are right there next time.</p>${signInForm(ctx, next).replace(/<p class="pitworld">[\s\S]*?<\/p>/, '')}</section>
+<section class="panel"><h2>New here?</h2><form method="post" action="/auth/pitworld/new">${csrfField(ctx)}<button>Make my account</button></form><p class="muted small">You can add a tree, or be invited to one, right after.</p></section>`,
+  )
+}
+
 export function signInPage(ctx: Ctx, next: string | null): string {
   return layout(ctx, 'Sign in', `<h1>Sign in or sign up</h1>${signInForm(ctx, next)}`)
 }
