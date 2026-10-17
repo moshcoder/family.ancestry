@@ -23,7 +23,7 @@ export const ROLES: Role[] = ['owner', 'editor', 'viewer']
 export const canEdit = (role: Role | null | undefined) => role === 'owner' || role === 'editor'
 
 export type User = { id: string; email: string; name: string | null; created_at: number }
-export type Tree = { id: string; name: string; description: string | null; owner_id: string; home_person_id: string | null; created_at: number }
+export type Tree = { id: string; name: string; description: string | null; owner_id: string; home_person_id: string | null; created_at: number; plan_paid_at: number | null }
 export type Sex = 'M' | 'F' | 'X' | 'U'
 export type Person = {
   id: string
@@ -38,6 +38,9 @@ export type Person = {
   living: number
   notes: string | null
   photo_id: string | null
+  /** 'person', or 'pet' (Family plan): a pet has owners, never parents or partners. */
+  kind: 'person' | 'pet'
+  species: string | null
   created_at: number
   updated_at: number
 }
@@ -56,9 +59,39 @@ export type Event = { id: string; tree_id: string; person_id: string; type: stri
 export type Source = { id: string; tree_id: string; title: string; author: string | null; url: string | null; citation: string | null; created_at: number }
 export type Media = { id: string; tree_id: string; person_id: string | null; filename: string; mime: string; size: number; caption: string | null; created_at: number }
 export type Invite = { id: string; tree_id: string; role: 'editor' | 'viewer'; email: string | null; person_id: string | null; note: string | null; created_by: string; created_at: number; expires_at: number; used_by: string | null }
+export type Association = { id: string; tree_id: string; person_id: string; other_id: string; kind: string; note: string | null; created_at: number }
+export type Payment = { ref: string; tree_id: string; user_id: string; amount_cents: number; currency: string; chain: string | null; status: string; created_at: number; updated_at: number }
+export type SiblingKind = 'full' | 'half' | 'step' | 'adoptive' | 'foster'
+export type Sibling = { person: Person; kind: SiblingKind; via: Person | null }
+export type PathStep = { person: Person; step: 'self' | 'parent' | 'child' | 'partner'; relation?: string }
 export type Descendant = { person: Person; unions: { partner: Person | null; children: Descendant[] }[] }
 
-export const PERSON_FIELDS = ['given', 'surname', 'sex', 'birth_date', 'birth_place', 'death_date', 'death_place', 'living', 'notes'] as const
+export const PERSON_FIELDS = ['given', 'surname', 'sex', 'birth_date', 'birth_place', 'death_date', 'death_place', 'living', 'notes', 'species'] as const
+
+/** How a child belongs to a family. GEDCOM's PEDI values, minus LDS sealing. */
+export const CHILD_RELATIONS = ['birth', 'adopted', 'step', 'foster'] as const
+
+/**
+ * Bonds that are not a line of descent: the grandparents who raised you, a
+ * godparent, a guardian. Each reads two ways, from the person and from the other
+ * one; `as` is what the other is to the person, `back` what the person is to them.
+ * A pet's owner is a bond too, which is what keeps pets out of every bloodline walk.
+ */
+export const BONDS: Record<string, { as: string; back: string }> = {
+  raised_by: { as: 'Raised by', back: 'Raised' },
+  guardian: { as: 'Guardian', back: 'Ward' },
+  godparent: { as: 'Godparent', back: 'Godchild' },
+  caregiver: { as: 'Caregiver', back: 'Cared for' },
+  chosen_family: { as: 'Chosen family', back: 'Chosen family' },
+  pet: { as: 'Owner', back: 'Pet' },
+}
+export const bondKind = (value: unknown): string | null => {
+  const v = String(value ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+  if (BONDS[v]) return v
+  // GEDCOM RELA text ("Raised by", "Godparent") maps back to its key.
+  const byLabel = Object.entries(BONDS).find(([, b]) => b.as.toLowerCase() === String(value ?? '').trim().toLowerCase())
+  return byLabel?.[0] ?? null
+}
 export type PersonInput = Partial<Pick<Person, (typeof PERSON_FIELDS)[number]>>
 
 const SCHEMA = `
@@ -153,6 +186,19 @@ CREATE TABLE IF NOT EXISTS media (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS media_person ON media(person_id);
+CREATE TABLE IF NOT EXISTS associations (
+  id TEXT PRIMARY KEY, tree_id TEXT NOT NULL REFERENCES trees(id) ON DELETE CASCADE,
+  person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+  other_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL, note TEXT, created_at INTEGER NOT NULL,
+  UNIQUE (person_id, other_id, kind)
+);
+CREATE INDEX IF NOT EXISTS associations_other ON associations(other_id);
+CREATE TABLE IF NOT EXISTS payments (
+  ref TEXT PRIMARY KEY, tree_id TEXT NOT NULL REFERENCES trees(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL, amount_cents INTEGER NOT NULL, currency TEXT NOT NULL, chain TEXT,
+  status TEXT NOT NULL, raw TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
 `
 
 
@@ -173,6 +219,7 @@ export function normalizePerson(input: Record<string, unknown>): PersonInput {
   for (const key of ['birth_date', 'birth_place', 'death_date', 'death_place'] as const) if (key in input) out[key] = clean(input[key], 200)
   if ('notes' in input) out.notes = clean(input.notes, 20_000)
   if ('living' in input) out.living = [true, 1, '1', 'on', 'true', 'yes'].includes(input.living as any) ? 1 : 0
+  if ('species' in input) out.species = clean(input.species, 80)
   return out
 }
 
@@ -205,6 +252,12 @@ export class Store {
     const inviteCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('invites')").all().map((c) => c.name)
     if (!inviteCols.includes('person_id')) this.db.run('ALTER TABLE invites ADD COLUMN person_id TEXT')
     if (!inviteCols.includes('note')) this.db.run('ALTER TABLE invites ADD COLUMN note TEXT')
+    // 0.3.0: pets, and the one-time Family plan.
+    const peopleCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('people')").all().map((c) => c.name)
+    if (!peopleCols.includes('kind')) this.db.run("ALTER TABLE people ADD COLUMN kind TEXT NOT NULL DEFAULT 'person'")
+    if (!peopleCols.includes('species')) this.db.run('ALTER TABLE people ADD COLUMN species TEXT')
+    const treeCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('trees')").all().map((c) => c.name)
+    if (!treeCols.includes('plan_paid_at')) this.db.run('ALTER TABLE trees ADD COLUMN plan_paid_at INTEGER')
   }
 
   tx<T>(fn: () => T): T {
@@ -319,18 +372,20 @@ export class Store {
   }
 
   /** The tree joined and, for a profile invite, the person the new member now is. */
-  acceptInvite(token: string, userId: string): { tree_id: string; person_id: string | null } | null {
+  acceptInvite(token: string, userId: string): { tree_id: string; person_id: string | null; mismatch: boolean } | null {
     const invite = this.invite(token)
     if (!invite) return null
     let claimed: string | null = null
+    // A profile is yours only if the invite went to the address you signed in with (and so proved).
+    const mismatch = Boolean(invite.person_id && invite.email && this.user(userId)?.email !== invite.email)
     this.tx(() => {
       const current = this.role(invite.tree_id, userId)
       // An invite never demotes: an owner who clicks a viewer link stays owner.
       if (!current || (current === 'viewer' && invite.role === 'editor')) this.setMember(invite.tree_id, userId, invite.role)
-      if (invite.person_id && this.claimProfile(invite.tree_id, invite.person_id, userId)) claimed = invite.person_id
+      if (invite.person_id && !mismatch && this.claimProfile(invite.tree_id, invite.person_id, userId)) claimed = invite.person_id
       this.db.query('UPDATE invites SET used_by = ? WHERE token_hash = ?').run(userId, sha256(token))
     })
-    return { tree_id: invite.tree_id, person_id: claimed }
+    return { tree_id: invite.tree_id, person_id: claimed, mismatch }
   }
 
   // ---- profiles: a member who is a person in the tree --------------------
@@ -378,17 +433,17 @@ export class Store {
 
   // ---- people ------------------------------------------------------------
 
-  addPerson(treeId: string, input: Record<string, unknown>): Person {
+  addPerson(treeId: string, input: Record<string, unknown>, kind: 'person' | 'pet' = 'person'): Person {
     const p = normalizePerson(input)
     const id = newId()
     const now = this.now()
     this.db
       .query(
-        `INSERT INTO people (id,tree_id,given,surname,sex,birth_date,birth_place,death_date,death_place,living,notes,created_at,updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO people (id,tree_id,given,surname,sex,birth_date,birth_place,death_date,death_place,living,notes,kind,species,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
-      .run(id, treeId, p.given ?? '', p.surname ?? '', p.sex ?? 'U', p.birth_date ?? null, p.birth_place ?? null, p.death_date ?? null, p.death_place ?? null, p.living ?? 0, p.notes ?? null, now, now)
-    if (!this.tree(treeId)?.home_person_id) this.updateTree(treeId, { home_person_id: id })
+      .run(id, treeId, p.given ?? '', p.surname ?? '', p.sex ?? 'U', p.birth_date ?? null, p.birth_place ?? null, p.death_date ?? null, p.death_place ?? null, p.living ?? 0, p.notes ?? null, kind, kind === 'pet' ? (p.species ?? null) : null, now, now)
+    if (kind === 'person' && !this.tree(treeId)?.home_person_id) this.updateTree(treeId, { home_person_id: id })
     return this.person(treeId, id)!
   }
 
@@ -401,8 +456,8 @@ export class Store {
     if (!current) return null
     const p = { ...current, ...normalizePerson(input) }
     this.db
-      .query('UPDATE people SET given = ?, surname = ?, sex = ?, birth_date = ?, birth_place = ?, death_date = ?, death_place = ?, living = ?, notes = ?, updated_at = ? WHERE tree_id = ? AND id = ?')
-      .run(p.given, p.surname, p.sex, p.birth_date, p.birth_place, p.death_date, p.death_place, p.living, p.notes, this.now(), treeId, id)
+      .query('UPDATE people SET given = ?, surname = ?, sex = ?, birth_date = ?, birth_place = ?, death_date = ?, death_place = ?, living = ?, notes = ?, species = ?, updated_at = ? WHERE tree_id = ? AND id = ?')
+      .run(p.given, p.surname, p.sex, p.birth_date, p.birth_place, p.death_date, p.death_place, p.living, p.notes, current.kind === 'pet' ? p.species : null, this.now(), treeId, id)
     return this.person(treeId, id)
   }
 
@@ -450,6 +505,7 @@ export class Store {
 
   createFamily(treeId: string, partner1: string | null, partner2: string | null, fields: { kind?: string; start_date?: string | null; start_place?: string | null; end_date?: string | null } = {}): Family {
     for (const pid of [partner1, partner2]) if (pid && !this.person(treeId, pid)) throw new Error('partner is not in this tree')
+    for (const pid of [partner1, partner2]) if (pid && this.person(treeId, pid)!.kind === 'pet') throw new Error('pets have owners, not partners')
     if (partner1 && partner1 === partner2) throw new Error('a person cannot partner themselves')
     const id = newId()
     this.db
@@ -470,6 +526,7 @@ export class Store {
   setPartner(treeId: string, familyId: string, personId: string) {
     const fam = this.family(treeId, familyId)
     if (!fam || !this.person(treeId, personId)) throw new Error('not in this tree')
+    if (this.person(treeId, personId)!.kind === 'pet') throw new Error('pets have owners, not partners')
     if (fam.partner1_id === personId || fam.partner2_id === personId) return
     if (this.childrenOf(treeId, familyId).some((c) => c.id === personId)) throw new Error('a child cannot be their own parent')
     if (!fam.partner1_id) this.db.query('UPDATE families SET partner1_id = ? WHERE id = ?').run(personId, familyId)
@@ -484,6 +541,7 @@ export class Store {
   addChild(treeId: string, familyId: string, childId: string, relation = 'birth') {
     const fam = this.family(treeId, familyId)
     if (!fam || !this.person(treeId, childId)) throw new Error('not in this tree')
+    if (this.person(treeId, childId)!.kind === 'pet') throw new Error('pets have owners, not parents')
     if (fam.partner1_id === childId || fam.partner2_id === childId) throw new Error('a person cannot be their own child')
     if (this.ancestorIds(treeId, fam.partner1_id).has(childId) || this.ancestorIds(treeId, fam.partner2_id).has(childId)) throw new Error('that would make someone their own ancestor')
     const position = this.db.query<{ n: number }, [string]>('SELECT COUNT(*) AS n FROM children WHERE family_id = ?').get(familyId)?.n ?? 0
@@ -573,34 +631,197 @@ export class Store {
     return walk(root, 0)
   }
 
-  /** How two people are related, as the chain of steps from a to b (parent / child / partner), shortest first. */
-  relationship(treeId: string, a: string, b: string, maxSteps = 12): { person: Person; step: 'self' | 'parent' | 'child' | 'partner' }[] | null {
+  /**
+   * How two people are related, as the chain of steps from a to b (parent / child / partner), shortest first.
+   * Each parent or child step carries how that child belongs to that family (birth, adopted, step, foster),
+   * so the words can say "adoptive mother" instead of "mother".
+   */
+  relationship(treeId: string, a: string, b: string, maxSteps = 12): PathStep[] | null {
     if (!this.person(treeId, a) || !this.person(treeId, b)) return null
-    const prev = new Map<string, { from: string; step: 'parent' | 'child' | 'partner' }>()
+    type Hop = { step: 'parent' | 'child' | 'partner'; relation?: string }
+    const prev = new Map<string, Hop & { from: string }>()
     const depth = new Map<string, number>([[a, 0]])
     const queue = [a]
+    // Blood steps first, so a full sibling is reached through a birth parent before a step-parent.
+    const rank = (r?: string) => (!r || r === 'birth' ? 0 : 1)
     while (queue.length) {
       const id = queue.shift()!
       if (id === b) break
       if (depth.get(id)! >= maxSteps) continue
-      const next: [string, 'parent' | 'child' | 'partner'][] = [
-        ...this.parents(treeId, id).map((p) => [p.id, 'parent'] as [string, 'parent']),
+      const next: [string, Hop][] = [
+        ...this.parentFamilies(treeId, id).flatMap((f) => f.parents.map((p) => [p.id, { step: 'parent', relation: f.relation }] as [string, Hop])),
         ...this.spouseFamilies(treeId, id).flatMap((u) => [
-          ...(u.partner ? [[u.partner.id, 'partner'] as [string, 'partner']] : []),
-          ...u.children.map((c) => [c.id, 'child'] as [string, 'child']),
+          ...(u.partner ? [[u.partner.id, { step: 'partner' }] as [string, Hop]] : []),
+          ...this.childLinksOf(treeId, u.family.id).map((c) => [c.person_id, { step: 'child', relation: c.relation }] as [string, Hop]),
         ]),
-      ]
-      for (const [nid, step] of next) {
+      ].sort((x, y) => rank(x[1].relation) - rank(y[1].relation))
+      for (const [nid, hop] of next) {
         if (depth.has(nid)) continue
         depth.set(nid, depth.get(id)! + 1)
-        prev.set(nid, { from: id, step })
+        prev.set(nid, { from: id, ...hop })
         queue.push(nid)
       }
     }
     if (!depth.has(b)) return null
-    const path: { person: Person; step: 'self' | 'parent' | 'child' | 'partner' }[] = []
-    for (let id: string | undefined = b; id; id = prev.get(id)?.from) path.unshift({ person: this.person(treeId, id)!, step: prev.get(id)?.step ?? 'self' })
+    const path: PathStep[] = []
+    for (let id: string | undefined = b; id; id = prev.get(id)?.from) {
+      const hop = prev.get(id)
+      path.unshift({ person: this.person(treeId, id)!, step: hop?.step ?? 'self', ...(hop?.relation ? { relation: hop.relation } : {}) })
+    }
     return path
+  }
+
+  childLinksOf(treeId: string, familyId: string): { person_id: string; relation: string }[] {
+    return this.db.query<{ person_id: string; relation: string }, [string, string]>('SELECT c.person_id, c.relation FROM children c JOIN families f ON f.id = c.family_id WHERE c.family_id = ? AND f.tree_id = ? ORDER BY c.position').all(familyId, treeId)
+  }
+
+  /**
+   * Everyone who is a brother or sister in any sense, each once, closest kind first:
+   *   full      same family, both by birth
+   *   adoptive  same family, one or both adopted in
+   *   foster    same family, one or both fostered
+   *   half      shares one birth parent through a different family
+   *   step      same family as a step-child, or a child of a parent's other partner
+   */
+  siblings(treeId: string, personId: string): Sibling[] {
+    const out = new Map<string, Sibling>()
+    const order: SiblingKind[] = ['full', 'adoptive', 'foster', 'half', 'step']
+    const put = (person: Person | null, kind: SiblingKind, via: Person | null) => {
+      if (!person || person.id === personId) return
+      const had = out.get(person.id)
+      if (!had || order.indexOf(kind) < order.indexOf(had.kind)) out.set(person.id, { person, kind, via })
+    }
+    const mine = this.parentFamilies(treeId, personId)
+    const myFamilyIds = new Set(mine.map((f) => f.family.id))
+    for (const f of mine) {
+      for (const c of this.childLinksOf(treeId, f.family.id)) {
+        const rels = [f.relation, c.relation]
+        const kind: SiblingKind = rels.includes('step') ? 'step' : rels.includes('foster') ? 'foster' : rels.includes('adopted') ? 'adoptive' : 'full'
+        put(this.person(treeId, c.person_id), kind, null)
+      }
+    }
+    for (const f of mine) {
+      for (const parent of f.parents) {
+        for (const other of this.spouseFamilies(treeId, parent.id)) {
+          if (myFamilyIds.has(other.family.id)) continue
+          for (const c of this.childLinksOf(treeId, other.family.id)) {
+            put(this.person(treeId, c.person_id), f.relation === 'birth' && c.relation === 'birth' ? 'half' : 'step', parent)
+          }
+          // A parent's partner who is not your parent is a step-parent; their children from elsewhere are step-siblings.
+          const stepParent = other.partner
+          if (!stepParent || f.parents.some((p) => p.id === stepParent.id)) continue
+          for (const theirs of this.spouseFamilies(treeId, stepParent.id)) {
+            if (theirs.family.id === other.family.id || myFamilyIds.has(theirs.family.id)) continue
+            for (const c of theirs.children) put(c, 'step', stepParent)
+          }
+        }
+      }
+    }
+    return [...out.values()].sort((x, y) => order.indexOf(x.kind) - order.indexOf(y.kind) || (x.person.birth_date ?? '').localeCompare(y.person.birth_date ?? ''))
+  }
+
+  /** People who are partners of this person's parents but not their parent. */
+  stepParents(treeId: string, personId: string): Person[] {
+    const mine = this.parentFamilies(treeId, personId)
+    const parents = new Set(mine.flatMap((f) => f.parents.map((p) => p.id)))
+    const out = new Map<string, Person>()
+    for (const f of mine) for (const p of f.parents) for (const u of this.spouseFamilies(treeId, p.id)) if (u.partner && !parents.has(u.partner.id)) out.set(u.partner.id, u.partner)
+    return [...out.values()]
+  }
+
+  // ---- bonds outside the bloodline, and pets -------------------------------
+
+  /** `other` is `kind` to `person`: addBond(t, me, grandma, 'raised_by'). */
+  addBond(treeId: string, personId: string, otherId: string, kind: string, note: string | null = null): Association {
+    const k = bondKind(kind)
+    if (!k) throw new Error(`kind must be one of: ${Object.keys(BONDS).join(', ')}`)
+    const person = this.person(treeId, personId)
+    const other = this.person(treeId, otherId)
+    if (!person || !other) throw new Error('not in this tree')
+    if (person.id === other.id) throw new Error('a bond needs two people')
+    if (k === 'pet' ? person.kind !== 'pet' || other.kind === 'pet' : person.kind === 'pet' || other.kind === 'pet') throw new Error(k === 'pet' ? 'a pet bond joins a pet to a person' : 'pets have owners, not family bonds')
+    this.db.query('INSERT OR IGNORE INTO associations (id,tree_id,person_id,other_id,kind,note,created_at) VALUES (?,?,?,?,?,?,?)').run(newId(), treeId, personId, otherId, k, clean(note, 500), this.now())
+    return this.db.query<Association, [string, string, string]>('SELECT * FROM associations WHERE person_id = ? AND other_id = ? AND kind = ?').get(personId, otherId, k)!
+  }
+
+  removeBond(treeId: string, id: string) {
+    this.db.query('DELETE FROM associations WHERE tree_id = ? AND id = ?').run(treeId, id)
+  }
+
+  bond(treeId: string, id: string): Association | null {
+    return this.db.query<Association, [string, string]>('SELECT * FROM associations WHERE tree_id = ? AND id = ?').get(treeId, id) ?? null
+  }
+
+  /** Every bond touching this person, worded from their side: "Raised by Grandma", "Godchild Sam". */
+  bondsFor(treeId: string, personId: string): { id: string; kind: string; label: string; other: Person; note: string | null }[] {
+    const rows = this.db.query<Association, [string, string, string]>('SELECT * FROM associations WHERE tree_id = ? AND (person_id = ? OR other_id = ?) ORDER BY created_at').all(treeId, personId, personId)
+    return rows.flatMap((r) => {
+      const forward = r.person_id === personId
+      const other = this.person(treeId, forward ? r.other_id : r.person_id)
+      const words = BONDS[r.kind] ?? { as: r.kind, back: r.kind }
+      return other ? [{ id: r.id, kind: r.kind, label: forward ? words.as : words.back, other, note: r.note }] : []
+    })
+  }
+
+  allBonds(treeId: string): Association[] {
+    return this.db.query<Association, [string]>('SELECT * FROM associations WHERE tree_id = ? ORDER BY created_at').all(treeId)
+  }
+
+  /** A pet, owned by one or more people in the tree. */
+  addPet(treeId: string, input: Record<string, unknown>, ownerIds: string[]): Person {
+    const owners = ownerIds.map((id) => this.person(treeId, id)).filter((p): p is Person => Boolean(p && p.kind === 'person'))
+    if (!owners.length) throw new Error('a pet needs an owner in this tree')
+    return this.tx(() => {
+      const pet = this.addPerson(treeId, input, 'pet')
+      for (const o of owners) this.addBond(treeId, pet.id, o.id, 'pet')
+      return pet
+    })
+  }
+
+  petsOf(treeId: string, personId: string): Person[] {
+    return this.db.query<Person, [string, string]>("SELECT p.* FROM associations a JOIN people p ON p.id = a.person_id WHERE a.tree_id = ? AND a.other_id = ? AND a.kind = 'pet' ORDER BY p.given").all(treeId, personId)
+  }
+
+  /** Living people nobody has claimed yet: who a new member might be. */
+  unclaimed(treeId: string): Person[] {
+    return this.db
+      .query<Person, [string, string]>("SELECT * FROM people p WHERE p.tree_id = ? AND p.kind = 'person' AND p.death_date IS NULL AND p.death_place IS NULL AND p.id NOT IN (SELECT person_id FROM profiles WHERE tree_id = ?) ORDER BY surname, given")
+      .all(treeId, treeId)
+  }
+
+  // ---- the Family plan: one payment per tree, for good -------------------
+
+  markPaid(treeId: string) {
+    this.db.query('UPDATE trees SET plan_paid_at = coalesce(plan_paid_at, ?) WHERE id = ?').run(this.now(), treeId)
+  }
+
+  recordPayment(p: { ref: string; tree_id: string; user_id: string; amount_cents: number; currency: string; chain: string | null; raw: unknown }) {
+    this.db
+      .query('INSERT OR IGNORE INTO payments (ref,tree_id,user_id,amount_cents,currency,chain,status,raw,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+      .run(p.ref, p.tree_id, p.user_id, p.amount_cents, p.currency, p.chain, 'pending', JSON.stringify(p.raw ?? null), this.now(), this.now())
+  }
+
+  payment(ref: string): Payment | null {
+    return this.db.query<Payment, [string]>('SELECT ref,tree_id,user_id,amount_cents,currency,chain,status,created_at,updated_at FROM payments WHERE ref = ?').get(ref) ?? null
+  }
+
+  paymentsFor(treeId: string): Payment[] {
+    return this.db.query<Payment, [string]>('SELECT ref,tree_id,user_id,amount_cents,currency,chain,status,created_at,updated_at FROM payments WHERE tree_id = ? ORDER BY created_at DESC').all(treeId)
+  }
+
+  /** Record a webhook's status. Settling marks the tree paid, in the same transaction. Unknown refs are ignored. */
+  settlePayment(ref: string, status: string, raw: unknown, settled: boolean): Payment | null {
+    return this.tx(() => {
+      this.db.query('UPDATE payments SET status = ?, raw = ?, updated_at = ? WHERE ref = ?').run(status || 'unknown', JSON.stringify(raw ?? null), this.now(), ref)
+      const p = this.payment(ref)
+      if (p && settled) this.markPaid(p.tree_id)
+      return p
+    })
+  }
+
+  /** Whether this user is a member of any tree on the Family plan. */
+  inPaidTree(userId: string): boolean {
+    return Boolean(this.db.query<{ n: number }, [string]>('SELECT 1 AS n FROM members m JOIN trees t ON t.id = m.tree_id WHERE m.user_id = ? AND t.plan_paid_at IS NOT NULL LIMIT 1').get(userId))
   }
 
   // ---- events, sources, media -------------------------------------------
@@ -695,7 +916,8 @@ export class Store {
   stats(treeId: string) {
     const one = (sql: string) => this.db.query<{ n: number }, [string]>(sql).get(treeId)?.n ?? 0
     return {
-      people: one('SELECT COUNT(*) AS n FROM people WHERE tree_id = ?'),
+      people: one("SELECT COUNT(*) AS n FROM people WHERE tree_id = ? AND kind = 'person'"),
+      pets: one("SELECT COUNT(*) AS n FROM people WHERE tree_id = ? AND kind = 'pet'"),
       families: one('SELECT COUNT(*) AS n FROM families WHERE tree_id = ?'),
       sources: one('SELECT COUNT(*) AS n FROM sources WHERE tree_id = ?'),
       photos: one('SELECT COUNT(*) AS n FROM media WHERE tree_id = ?'),

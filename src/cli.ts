@@ -18,7 +18,14 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
   ancestry show <person>            everything about one person
   ancestry add --given G --surname S [--sex F|M] [--born DATE] [--birthplace P]
                [--died DATE] [--deathplace P] [--living]
-               [--parent-of ID | --child-of ID | --partner-of ID]
+               [--parent-of ID | --child-of ID | --partner-of ID | --sibling-of ID | --grandparent-of ID]
+               [--relation birth|adopted|step|foster] [--sibling full|half|adopted|foster|step]
+               [--via PARENT] [--raised]   (--raised: they raised that person)
+  ancestry bond <person> <raised_by|guardian|godparent|caregiver|chosen_family> <other>
+                                    a bond that is not descent: "bond Sam raised_by Rose"
+  ancestry pet <owner> <name> [--species Dog] [--born DATE]   (Family plan)
+  ancestry plan [buy --chain USDC_POL]     the one-time Family plan for this tree
+  ancestry claim [person]           say which person you are (or add yourself)
   ancestry edit <person> --field value ...     (same flags as add)
   ancestry event <person> <type> [--date D] [--place P] [--note TEXT]
   ancestry pedigree <person> [-g 4] ancestors as a chart
@@ -26,8 +33,9 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
   ancestry relate <person> <person> how two people are related
   ancestry import <file.ged> [--name N]   into a new tree (or --tree to merge into one)
   ancestry export [-o file.ged] [--privacy]
-  ancestry invite <email...> [--role editor|viewer] [--as <person>] [--note TEXT]
-                                    email invites; --as invites them to be that person
+  ancestry invite <email...> [--file list.txt] [--role editor|viewer] [--as <person>] [--note TEXT]
+                                    email invites; --file (or -) reads a pasted list;
+                                    --as invites them to be that person
   ancestry members                  who is in the tree, and pending invites
 
   ancestry contacts [search] [--circle family|friends|business]
@@ -65,7 +73,7 @@ export function parseArgs(argv: string[]): Args {
     if (m) {
       const key = short[m[1]!] ?? m[1]!
       if (m[2] !== undefined) out.flags[key] = m[2]
-      else if (argv[i + 1] !== undefined && !argv[i + 1]!.startsWith('-') && !['living', 'json', 'privacy', 'help', 'version', 'full'].includes(key)) out.flags[key] = argv[++i]!
+      else if (argv[i + 1] !== undefined && !argv[i + 1]!.startsWith('-') && !['living', 'json', 'privacy', 'help', 'version', 'full', 'raised'].includes(key)) out.flags[key] = argv[++i]!
       else out.flags[key] = true
     } else out._.push(a)
   }
@@ -183,8 +191,9 @@ export function formatPerson(p: PersonDetail): string {
   if (p.death_date || p.death_place) lines.push(`  died   ${[p.death_date, p.death_place].filter(Boolean).join(', ')}`)
   else if (p.living) lines.push('  living')
   for (const f of p.parents) lines.push(`  parents ${f.parents.map((x) => `${x.name} [${x.id}]`).join(' & ') || 'unknown'}${f.relation !== 'birth' ? ` (${f.relation})` : ''}`)
-  const sibs = p.parents.flatMap((f) => f.siblings)
-  if (sibs.length) lines.push(`  siblings ${sibs.map((x) => x.name).join(', ')}`)
+  if (p.siblings?.length) lines.push(`  siblings ${p.siblings.map((x) => `${x.name}${x.kind !== 'full' ? ` (${x.kind})` : ''}`).join(', ')}`)
+  for (const b of p.bonds ?? []) lines.push(`  ${b.label.toLowerCase()} ${b.other.name} [${b.other.id}]${b.note ? `, ${b.note}` : ''}`)
+  if (p.pets?.length) lines.push(`  pets ${p.pets.map((x) => `${x.name}${x.species ? ` (${x.species})` : ''}`).join(', ')}`)
   for (const u of p.unions) {
     lines.push(`  ${u.kind} ${u.partner ? `${u.partner.name} [${u.partner.id}]` : 'unknown partner'}${u.start_date ? ` ${u.start_date}` : ''}${u.end_date ? `, ended ${u.end_date}` : ''}`)
     for (const c of u.children) lines.push(`    child ${c.name} [${c.id}]`)
@@ -347,10 +356,18 @@ export async function runCli(argv: string[]): Promise<number> {
       case 'add': {
         const tree = await pickTree(client, f.tree)
         const fields = personFields(f)
-        const rel = (['parent-of', 'child-of', 'partner-of'] as const).find((k) => typeof f[k] === 'string')
+        const rel = (['parent-of', 'child-of', 'partner-of', 'sibling-of', 'grandparent-of'] as const).find((k) => typeof f[k] === 'string')
         if (rel) {
           // "add --parent-of X" adds a parent TO X; "--child-of X" adds a child to X.
-          Object.assign(fields, { relative_of: await pickPerson(client, tree.id, str(f[rel])), as: { 'parent-of': 'parent', 'child-of': 'child', 'partner-of': 'partner' }[rel], relation: str(f.relation) ?? 'birth', kind: str(f.kind) })
+          Object.assign(fields, {
+            relative_of: await pickPerson(client, tree.id, str(f[rel])),
+            as: rel.replace('-of', ''),
+            relation: str(f.relation) ?? 'birth',
+            kind: str(f.kind),
+            sibling: str(f.sibling),
+            via: typeof f.via === 'string' ? await pickPerson(client, tree.id, f.via) : undefined,
+            raised: f.raised === true ? '1' : undefined,
+          })
         }
         const p = await client.addPerson(tree.id, fields)
         print(p, () => `Added ${p.name} (${p.id})${rel ? ` as ${rel.replace('-of', '')} of ${str(f[rel])}` : ''}.`)
@@ -412,8 +429,45 @@ export async function runCli(argv: string[]): Promise<number> {
       case 'invite': {
         const tree = await pickTree(client, f.tree)
         const person = typeof f.as === 'string' ? await pickPerson(client, tree.id, f.as) : undefined
-        const invites = await client.invite(tree.id, rest, { role: f.role === 'editor' ? 'editor' : 'viewer', person_id: person, note: str(f.note) })
-        print(invites, () => invites.map((i) => `${i.email ?? 'link'}: ${i.mailed ? 'emailed' : 'not emailed'}  ${i.url}`).join('\n'))
+        // A pasted list: a file, or stdin with --file -. The server pulls the addresses (and names) out of it.
+        const pasted = typeof f.file === 'string' ? (f.file === '-' ? await Bun.stdin.text() : readFileSync(f.file, 'utf8')) : ''
+        const emails = [...rest, ...(pasted ? [pasted] : [])]
+        const invites = await client.invite(tree.id, emails, { role: f.role === 'editor' ? 'editor' : 'viewer', person_id: person, note: str(f.note) })
+        print(invites, () => invites.map((i) => `${i.email ?? 'link'}${i.name ? ` (${i.name})` : ''}: ${i.mailed ? 'emailed' : 'not emailed'}${i.person_id ? `, as ${i.person_id}` : ''}  ${i.url}`).join('\n'))
+        return 0
+      }
+      case 'bond': {
+        const tree = await pickTree(client, f.tree)
+        const [who, kind, ...other] = rest
+        if (!who || !kind || !other.length) throw new Error('ancestry bond <person> <raised_by|guardian|godparent|caregiver|chosen_family> <other>')
+        const r = await client.addBond(tree.id, await pickPerson(client, tree.id, who), { kind, other_id: await pickPerson(client, tree.id, other.join(' ')), note: str(f.note) })
+        print(r, () => formatPerson(r.person))
+        return 0
+      }
+      case 'pet': {
+        const tree = await pickTree(client, f.tree)
+        const [owner, ...name] = rest
+        if (!owner || !name.length) throw new Error('ancestry pet <owner> <name> [--species Dog]')
+        const pet = await client.addPet(tree.id, { owner_id: await pickPerson(client, tree.id, owner), given: name.join(' '), species: str(f.species), birth_date: str(f.born), death_date: str(f.died), notes: str(f.note) })
+        print(pet, () => `Added ${pet.name} (${pet.id}), ${pet.species ?? 'pet'}.`)
+        return 0
+      }
+      case 'plan': {
+        const tree = await pickTree(client, f.tree)
+        if (rest[0] === 'buy') {
+          const r = await client.planCheckout(tree.id, str(f.chain))
+          print(r, () => ('active' in r && r.active ? `${tree.name} is already on the Family plan.` : `Pay here: ${(r as any).checkoutUrl}`))
+          return 0
+        }
+        const plan = await client.plan(tree.id)
+        print(plan, () => (plan.active ? `${tree.name} is on the Family plan: pets, and invite everyone you want.` : `${tree.name} is on the free plan. The Family plan is ${plan.price} once: ancestry plan buy --chain ${plan.chains[0] ?? 'USDC_POL'}\n  or ${plan.url}`))
+        return 0
+      }
+      case 'claim': {
+        const tree = await pickTree(client, f.tree)
+        const body = rest.length ? { person_id: await pickPerson(client, tree.id, rest.join(' ')) } : personFields(f)
+        const p = await client.claim(tree.id, body)
+        print(p, () => `You are ${p.name} (${p.id}) in ${tree.name}. Keep it up to date: ancestry edit ${p.id} ...`)
         return 0
       }
       case 'members': {

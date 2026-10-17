@@ -13,7 +13,7 @@
  * foster), sources and the citations that point at them.
  */
 import type { Store, Person } from './db.js'
-import { fullName } from './db.js'
+import { BONDS, bondKind, fullName } from './db.js'
 
 export type GedLine = { level: number; xref: string | null; tag: string; value: string; children: GedLine[] }
 
@@ -178,6 +178,23 @@ export function importGedcom(store: Store, treeId: string, text: string): Import
       const sid = sources.get(c.sourceRef)
       if (sid) store.cite(treeId, sid, c.personId, c.page)
     }
+
+    // ASSO + RELA: "raised by", godparents, guardians. An unknown RELA is kept as chosen family, with its words as the note.
+    for (const rec of records) {
+      if (rec.tag !== 'INDI' || !rec.xref) continue
+      const from = people.get(rec.xref)
+      for (const asso of rec.children.filter((c) => c.tag === 'ASSO')) {
+        const to = people.get(asso.value.trim())
+        const rela = childValue(asso, 'RELA') ?? ''
+        if (!from || !to) continue
+        const kind = bondKind(rela)
+        try {
+          store.addBond(treeId, from, to, kind && kind !== 'pet' ? kind : 'chosen_family', kind ? null : rela || null)
+        } catch (error) {
+          result.warnings.push(`${rec.xref}: ${(error as Error).message}`)
+        }
+      }
+    }
   })
   return result
 }
@@ -212,7 +229,9 @@ export type ExportOptions = { privacy?: boolean; source?: string }
 export function exportGedcom(store: Store, treeId: string, options: ExportOptions = {}): string {
   const tree = store.tree(treeId)
   if (!tree) throw new Error('no such tree')
-  const people = store.people(treeId, 1_000_000)
+  // GEDCOM has no pets; they stay in the tree and out of the file.
+  const people = store.people(treeId, 1_000_000).filter((p) => p.kind !== 'pet')
+  const bonds = store.allBonds(treeId).filter((b) => b.kind !== 'pet')
   const families = store.families(treeId)
   const sources = store.sources(treeId)
   const links = store.childLinks(treeId)
@@ -267,6 +286,7 @@ export function exportGedcom(store: Store, treeId: string, options: ExportOption
       if (l.relation !== 'birth') out.push(`2 PEDI ${l.relation}`)
     }
     for (const f of families.filter((f) => f.partner1_id === p.id || f.partner2_id === p.id)) out.push(`1 FAMS ${fid.get(f.id)}`)
+    for (const b of bonds.filter((b) => b.person_id === p.id && pid.has(b.other_id))) out.push(`1 ASSO ${pid.get(b.other_id)}`, `2 RELA ${gedSafe(BONDS[b.kind]?.as ?? b.kind)}`)
   }
 
   const byId = new Map(people.map((p) => [p.id, p]))

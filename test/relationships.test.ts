@@ -1,0 +1,270 @@
+import { describe, expect, test } from 'bun:test'
+import { createHmac } from 'node:crypto'
+import { Store, type User } from '../src/db.ts'
+import { Auth, type Mail } from '../src/auth.ts'
+import { Network } from '../src/network.ts'
+import { addRelative, createApp, parseInvitees } from '../src/server.ts'
+import { describeRelation } from '../src/relate.ts'
+import { exportGedcom, importGedcom } from '../src/gedcom.ts'
+import { planFromEnv, verifyWebhook } from '../src/plan.ts'
+
+const SITE = 'http://family.test'
+const CSRF = 'csrfcsrfcsrfcsrf1234'
+
+function setup() {
+  const store = new Store(':memory:')
+  const user = store.findOrCreateUser('owner@example.com')
+  const tree = store.createTree(user.id, 'Fam')
+  const add = (given: string, sex = 'U', extra: Record<string, unknown> = {}) => store.addPerson(tree.id, { given, surname: 'Doe', sex, ...extra })
+  const words = (a: string, b: string) => describeRelation(store.relationship(tree.id, a, b), store.siblings(tree.id, a).find((s) => s.person.id === b))
+  return { store, user, tree, add, words, rel: (person: string, body: Record<string, unknown>) => addRelative(store, tree.id, person, body) }
+}
+
+function world(env: Record<string, string> = {}) {
+  const store = new Store(':memory:')
+  const mail: Mail[] = []
+  const auth = new Auth(store, async (m) => void mail.push(m), SITE)
+  const calls: { url: string; body: any }[] = []
+  const fetcher = (async (url: string, init: RequestInit) => {
+    calls.push({ url, body: JSON.parse(String(init.body)) })
+    return new Response(JSON.stringify({ success: true, payment: { id: `pay_${calls.length}` } }), { status: 200 })
+  }) as unknown as typeof fetch
+  const plan = planFromEnv(env)
+  const app = createApp({ store, auth, site: SITE, net: new Network(store), plan, fetcher })
+  const as = (user: User) => {
+    const cookie = `fa_session=${auth.createSession(user.id)}; fa_csrf=${CSRF}`
+    return {
+      get: (path: string) => app.request(`${SITE}${path}`, { headers: { cookie } }),
+      post: (path: string, fields: Record<string, string> = {}) => app.request(`${SITE}${path}`, { method: 'POST', headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ _csrf: CSRF, ...fields }) }),
+    }
+  }
+  return { store, mail, app, as, calls, plan, user: (email: string) => store.findOrCreateUser(email) }
+}
+
+describe('siblings', () => {
+  test('a full sibling with no parents recorded, then the parents arrive', () => {
+    const { store, tree, add, rel, words } = setup()
+    const me = add('Me', 'F')
+    const bro = rel(me.id, { as: 'sibling', given: 'Bro', sex: 'M' })
+    expect(store.siblings(tree.id, me.id).map((s) => [s.person.id, s.kind])).toEqual([[bro.id, 'full']])
+    expect(words(me.id, bro.id)).toBe('brother')
+    // Adding a parent to one of them fills the shared family, so it is the other's parent too.
+    const mom = rel(me.id, { as: 'parent', given: 'Mom', sex: 'F' })
+    expect(store.parents(tree.id, bro.id).map((p) => p.id)).toEqual([mom.id])
+  })
+
+  test('half, step, adopted and foster siblings, named properly', () => {
+    const { store, tree, add, rel, words } = setup()
+    const me = add('Me', 'F')
+    const mom = rel(me.id, { as: 'parent', given: 'Mom', sex: 'F' })
+    const dad = rel(me.id, { as: 'parent', given: 'Dad', sex: 'M' })
+    const half = rel(me.id, { as: 'sibling', sibling: 'half', via: dad.id, given: 'Half', sex: 'M' })
+    expect(store.parents(tree.id, half.id).map((p) => p.id)).toEqual([dad.id])
+    expect(words(me.id, half.id)).toBe('half-brother')
+
+    // Mom remarries; her new husband's daughter from before is a step-sister.
+    const stepdad = rel(mom.id, { as: 'partner', given: 'Stepdad', sex: 'M' })
+    expect(store.stepParents(tree.id, me.id).map((p) => p.id)).toEqual([stepdad.id])
+    expect(words(me.id, stepdad.id)).toBe('stepfather')
+    const stepsis = rel(me.id, { as: 'sibling', sibling: 'step', via: stepdad.id, given: 'Stepsis', sex: 'F' })
+    expect(store.parents(tree.id, stepsis.id).map((p) => p.id)).toEqual([stepdad.id])
+    expect(words(me.id, stepsis.id)).toBe('stepsister')
+
+    const adopted = rel(me.id, { as: 'sibling', sibling: 'adopted', given: 'Ada', sex: 'F' })
+    const foster = rel(me.id, { as: 'sibling', sibling: 'foster', given: 'Fos', sex: 'M' })
+    const kinds = Object.fromEntries(store.siblings(tree.id, me.id).map((s) => [s.person.given, s.kind]))
+    expect(kinds).toEqual({ Ada: 'adoptive', Fos: 'foster', Half: 'half', Stepsis: 'step' })
+    expect(words(me.id, adopted.id)).toBe('sister (by adoption)')
+    expect(words(me.id, foster.id)).toBe('foster brother')
+    // And from the other side.
+    expect(words(half.id, me.id)).toBe('half-sister')
+  })
+
+  test('half needs a real parent', () => {
+    const { add, rel } = setup()
+    const me = add('Me')
+    expect(() => rel(me.id, { as: 'sibling', sibling: 'half', given: 'X' })).toThrow(/which parent/)
+  })
+})
+
+describe('parents we do not know, and who raised you', () => {
+  test('grandparents with an unknown parent between, who raised them', () => {
+    const { store, tree, add, rel, words } = setup()
+    const me = add('Me', 'M')
+    const grandma = rel(me.id, { as: 'grandparent', given: 'Rose', sex: 'F', raised: '1' })
+    const [unknown] = store.parents(tree.id, me.id)
+    expect(unknown!.given).toBe('Unknown')
+    expect(store.parents(tree.id, unknown!.id).map((p) => p.id)).toEqual([grandma.id])
+    expect(words(me.id, grandma.id)).toBe('grandmother')
+    // Grandpa joins on the same unknown parent's side.
+    const grandpa = rel(me.id, { as: 'grandparent', via: unknown!.id, given: 'Walt', sex: 'M', raised: '1' })
+    expect(store.parents(tree.id, unknown!.id).map((p) => p.id).sort()).toEqual([grandma.id, grandpa.id].sort())
+    expect(store.bondsFor(tree.id, me.id).map((b) => `${b.label} ${b.other.given}`)).toEqual(['Raised by Rose', 'Raised by Walt'])
+    expect(store.bondsFor(tree.id, grandma.id).map((b) => `${b.label} ${b.other.given}`)).toEqual(['Raised Me'])
+  })
+
+  test('adoptive, step and foster parents and children in words', () => {
+    const { add, rel, words } = setup()
+    const kid = add('Kid', 'F')
+    const amom = rel(kid.id, { as: 'parent', relation: 'adopted', given: 'Amom', sex: 'F' })
+    const fdad = rel(kid.id, { as: 'parent', relation: 'foster', given: 'Fdad', sex: 'M' })
+    expect(words(kid.id, amom.id)).toBe('adoptive mother')
+    expect(words(amom.id, kid.id)).toBe('adopted daughter')
+    expect(words(kid.id, fdad.id)).toBe('foster father')
+    const gran = rel(amom.id, { as: 'parent', given: 'Gran', sex: 'F' })
+    expect(words(kid.id, gran.id)).toBe('grandmother (by adoption)')
+  })
+
+  test('godparents and guardians, kept out of the bloodline', () => {
+    const { store, tree, add, user } = setup()
+    const kid = add('Kid')
+    const god = add('God')
+    store.addBond(tree.id, kid.id, god.id, 'godparent')
+    expect(store.bondsFor(tree.id, god.id)[0]!.label).toBe('Godchild')
+    expect(store.relationship(tree.id, kid.id, god.id)).toBeNull()
+    expect(() => store.addBond(tree.id, kid.id, god.id, 'nemesis')).toThrow(/kind must be/)
+    void user
+  })
+
+  test('GEDCOM keeps bonds (ASSO/RELA) and leaves pets out', () => {
+    const { store, tree, add, user } = setup()
+    const kid = add('Kid')
+    const gran = add('Gran')
+    store.addBond(tree.id, kid.id, gran.id, 'raised_by')
+    store.addPet(tree.id, { given: 'Rex', species: 'Dog' }, [kid.id])
+    const ged = exportGedcom(store, tree.id)
+    expect(ged).toContain('2 RELA Raised by')
+    expect(ged).not.toContain('Rex')
+    const copy = store.createTree(user.id, 'Copy')
+    importGedcom(store, copy.id, ged)
+    const kid2 = store.people(copy.id).find((p) => p.given === 'Kid')!
+    expect(store.bondsFor(copy.id, kid2.id).map((b) => `${b.label} ${b.other.given}`)).toEqual(['Raised by Gran'])
+  })
+})
+
+describe('pets', () => {
+  test('pets have owners, never parents or partners', () => {
+    const { store, tree, add, rel } = setup()
+    const me = add('Me')
+    const rex = store.addPet(tree.id, { given: 'Rex', species: 'Dog' }, [me.id])
+    expect(rex.kind).toBe('pet')
+    expect(store.petsOf(tree.id, me.id).map((p) => p.given)).toEqual(['Rex'])
+    expect(store.bondsFor(tree.id, rex.id)[0]!.label).toBe('Owner')
+    expect(() => rel(me.id, { as: 'child', existing_id: rex.id })).toThrow(/pets/)
+    expect(() => rel(rex.id, { as: 'parent', given: 'X' })).toThrow(/pets/)
+    expect(store.stats(tree.id)).toMatchObject({ people: 1, pets: 1 })
+  })
+
+  test('pets need the Family plan; admins have it free', async () => {
+    const w = world({ ADMIN_EMAILS: 'boss@example.com' })
+    const free = w.user('free@example.com')
+    const boss = w.user('boss@example.com')
+    const freeTree = w.store.createTree(free.id, 'Free')
+    const me = w.store.addPerson(freeTree.id, { given: 'Me' })
+    const res = await w.as(free).post(`/t/${freeTree.id}/p/${me.id}/pets`, { given: 'Rex' })
+    expect(res.headers.get('location')).toContain(`/t/${freeTree.id}/plan`)
+    expect(w.store.petsOf(freeTree.id, me.id)).toHaveLength(0)
+
+    const bossTree = w.store.createTree(boss.id, 'Boss')
+    const b = w.store.addPerson(bossTree.id, { given: 'Boss' })
+    const ok = await w.as(boss).post(`/t/${bossTree.id}/p/${b.id}/pets`, { given: 'Rex', species: 'Dog', living: '1' })
+    expect(ok.headers.get('location')).toMatch(new RegExp(`/t/${bossTree.id}/p/`))
+    expect(w.store.petsOf(bossTree.id, b.id).map((p) => p.species)).toEqual(['Dog'])
+    expect(await (await w.as(boss).get(`/t/${bossTree.id}/plan`)).text()).toContain('Included with your admin account')
+  })
+})
+
+describe('Family plan payment', () => {
+  const env = { COINPAY_API_KEY: 'cp_live_x', COINPAY_BUSINESS_ID: 'biz', COINPAY_WEBHOOK_SECRET: 'whsec', COINPAY_API_URL: 'https://coinpay.test/api', FAMILY_PLAN_USD: '49' }
+  const sign = (body: string, secret = 'whsec', t = Math.floor(Date.now() / 1000)) => `t=${t},v1=${createHmac('sha256', secret).update(`${t}.${body}`).digest('hex')}`
+
+  test('checkout, then a signed settled webhook marks the tree paid once', async () => {
+    const w = world(env)
+    const u = w.user('payer@example.com')
+    const tree = w.store.createTree(u.id, 'Fam')
+    const res = await w.as(u).post(`/t/${tree.id}/plan/checkout`, { chain: 'USDC_POL' })
+    expect(res.headers.get('location')).toBe('https://coinpay.test/pay/pay_1')
+    expect(w.calls[0]!.url).toBe('https://coinpay.test/api/payments/create')
+    expect(w.calls[0]!.body).toMatchObject({ business_id: 'biz', amount: 49, blockchain: 'USDC_POL', metadata: { tree_id: tree.id } })
+
+    const pending = JSON.stringify({ type: 'payment.pending', data: { payment_id: 'pay_1', status: 'pending' } })
+    await w.app.request(`${SITE}/webhooks/coinpay`, { method: 'POST', body: pending, headers: { 'content-type': 'application/json', 'coinpay-signature': sign(pending) } })
+    expect(w.store.tree(tree.id)!.plan_paid_at).toBeNull()
+
+    const forged = JSON.stringify({ type: 'payment.confirmed', data: { payment_id: 'pay_1', status: 'confirmed' } })
+    const bad = await w.app.request(`${SITE}/webhooks/coinpay`, { method: 'POST', body: forged, headers: { 'content-type': 'application/json', 'coinpay-signature': sign(forged, 'wrong') } })
+    expect(bad.status).toBe(401)
+    expect(w.store.tree(tree.id)!.plan_paid_at).toBeNull()
+
+    const ok = await w.app.request(`${SITE}/webhooks/coinpay`, { method: 'POST', body: forged, headers: { 'content-type': 'application/json', 'coinpay-signature': sign(forged) } })
+    expect(await ok.json()).toMatchObject({ ok: true, paid: true })
+    expect(w.store.tree(tree.id)!.plan_paid_at).toBeNumber()
+
+    // A payment we never started settles nothing, whatever its metadata says.
+    const other = w.store.createTree(u.id, 'Other')
+    const stray = JSON.stringify({ data: { payment_id: 'pay_x', status: 'confirmed', metadata: { tree_id: other.id } } })
+    await w.app.request(`${SITE}/webhooks/coinpay`, { method: 'POST', body: stray, headers: { 'content-type': 'application/json', 'coinpay-signature': sign(stray) } })
+    expect(w.store.tree(other.id)!.plan_paid_at).toBeNull()
+  })
+
+  test('signatures expire', () => {
+    const body = '{}'
+    expect(verifyWebhook('s', body, sign(body, 's'))).toBe(true)
+    expect(verifyWebhook('s', body, sign(body, 's', Math.floor(Date.now() / 1000) - 3600))).toBe(false)
+    expect(verifyWebhook('s', body, 't=1,v1=zz')).toBe(false)
+  })
+})
+
+describe('paste a list, claim yourself', () => {
+  test('pulls addresses and names out of whatever is pasted', () => {
+    expect(parseInvitees('Karen Ettinger <Karen@Example.com>, "Doe, Jane" <jane@x.com>\nbob@y.org; bob@y.org\nnot an email\n\tLiz\tliz@z.net')).toEqual([
+      { email: 'karen@example.com', name: 'Karen Ettinger' },
+      { email: 'jane@x.com', name: 'Doe, Jane' },
+      { email: 'bob@y.org', name: null },
+      { email: 'liz@z.net', name: 'Liz' },
+    ])
+    expect(parseInvitees('a@x.com b@x.com c@x.com', 2)).toHaveLength(2)
+  })
+
+  test('a pasted name lands on that person; others pick themselves; claims need the invited address', async () => {
+    const w = world()
+    const owner = w.user('owner@example.com')
+    const tree = w.store.createTree(owner.id, 'Fam')
+    const karen = w.store.addPerson(tree.id, { given: 'Karen', surname: 'Ettinger', living: 1 })
+    const res = await w.as(owner).post(`/t/${tree.id}/invites`, { emails: 'Karen Ettinger <karen@example.com>\ncousin@example.com' })
+    expect(res.status).toBe(200)
+    expect(w.mail.map((m) => m.to)).toEqual(['karen@example.com', 'cousin@example.com'])
+    expect(w.mail[0]!.text).toContain('as Karen Ettinger')
+    const link = (i: number) => w.mail[i]!.text.match(/(http:\/\/family\.test\/invite\/\S+)/)![1]!.replace(SITE, '')
+
+    // Someone else opening Karen's link joins, but does not become Karen.
+    const intruder = w.user('intruder@example.com')
+    const joined = await w.as(intruder).post(link(0))
+    expect(joined.headers.get('location')).toBe(`/t/${tree.id}/claim?mismatch=1`)
+    expect(w.store.profilePerson(tree.id, intruder.id)).toBeNull()
+
+    // The cousin was not tied to anyone: they get "which one is you?" and add themselves.
+    const cousin = w.user('cousin@example.com')
+    expect((await w.as(cousin).post(link(1))).headers.get('location')).toBe(`/t/${tree.id}/claim`)
+    expect(await (await w.as(cousin).get(`/t/${tree.id}/claim`)).text()).toContain('Karen Ettinger')
+    const added = await w.as(cousin).post(`/t/${tree.id}/claim`, { given: 'Cousin', surname: 'Doe' })
+    const cousinPerson = w.store.profilePerson(tree.id, cousin.id)!
+    expect(added.headers.get('location')).toContain(`/t/${tree.id}/p/${cousinPerson}?welcome=1`)
+    expect(await (await w.as(cousin).get(`/t/${tree.id}/p/${cousinPerson}?welcome=1`)).text()).toContain('Add your photo')
+    // One profile each.
+    const again = await w.as(cousin).post(`/t/${tree.id}/claim`, { person_id: karen.id })
+    expect(again.headers.get('location')).toContain('already')
+  })
+
+  test('the free plan caps a paste at 20; the Family plan at 500', async () => {
+    const w = world()
+    const owner = w.user('owner@example.com')
+    const tree = w.store.createTree(owner.id, 'Fam')
+    const list = Array.from({ length: 30 }, (_, i) => `p${i}@example.com`).join('\n')
+    await w.as(owner).post(`/t/${tree.id}/invites`, { emails: list })
+    expect(w.store.pendingInvites(tree.id)).toHaveLength(20)
+    w.store.markPaid(tree.id)
+    await w.as(owner).post(`/t/${tree.id}/invites`, { emails: list })
+    expect(w.store.pendingInvites(tree.id)).toHaveLength(50)
+  })
+})

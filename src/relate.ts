@@ -6,10 +6,15 @@
  * `up` parent steps, then `down` child steps. Everything else in English kinship
  * is a function of those two numbers. A partner step at either end makes it an
  * in-law (or a spouse, when it is the only step).
+ *
+ * A parent or child step that is not by birth (adopted, step, foster) qualifies
+ * the word: "adoptive mother", "stepson", "grandfather (by adoption)". Whether a
+ * brother is a half-brother cannot be read off one path (and siblings whose parents
+ * are unknown have no path), so describeRelation takes the kind from Store.siblings().
  */
-import type { Person } from './db.js'
+import type { PathStep, Person, SiblingKind } from './db.js'
 
-type Step = { person: Person; step: 'self' | 'parent' | 'child' | 'partner' }
+type Step = PathStep
 
 const ordinal = (n: number) => {
   const words = ['', 'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth']
@@ -39,12 +44,50 @@ export function bloodTerm(up: number, down: number, sex: string): string {
   return `${ordinal(degree)} cousin${removed ? ` ${times(removed)} removed` : ''}`
 }
 
+const QUALIFIER: Record<string, { parent: [string, string, string]; child: [string, string, string]; tail: string }> = {
+  adopted: { parent: ['adoptive father', 'adoptive mother', 'adoptive parent'], child: ['adopted son', 'adopted daughter', 'adopted child'], tail: 'by adoption' },
+  step: { parent: ['stepfather', 'stepmother', 'step-parent'], child: ['stepson', 'stepdaughter', 'stepchild'], tail: 'step' },
+  foster: { parent: ['foster father', 'foster mother', 'foster parent'], child: ['foster son', 'foster daughter', 'foster child'], tail: 'foster' },
+}
+
+const SIBLING: Record<SiblingKind, [string, string, string]> = {
+  full: ['brother', 'sister', 'sibling'],
+  half: ['half-brother', 'half-sister', 'half-sibling'],
+  step: ['stepbrother', 'stepsister', 'step-sibling'],
+  adoptive: ['brother (by adoption)', 'sister (by adoption)', 'sibling (by adoption)'],
+  foster: ['foster brother', 'foster sister', 'foster sibling'],
+}
+
+/**
+ * The words for how `b` is to `a`, given the path and, when the store knows they
+ * are siblings, how. Siblings in a family with no parents recorded have no path
+ * at all, and are still brother and sister.
+ */
+export function describeRelation(path: Step[] | null, sibling: { person: Person; kind: SiblingKind } | null | undefined): string {
+  if (sibling) return gendered(sibling.person.sex, ...SIBLING[sibling.kind])
+  return describePath(path)
+}
+
 /** Describe a path from relationship(): what the last person is to the first. */
 export function describePath(path: Step[] | null): string {
+  const words = describeBlood(path)
+  if (!path || path.length < 2) return words
+  // One non-birth link anywhere in a longer chain: say how, once, the strongest first.
+  const relations = path.slice(1).map((s) => s.relation).filter((r): r is string => Boolean(r && r !== 'birth'))
+  const strongest = ['adopted', 'foster', 'step'].find((r) => relations.includes(r))
+  if (!strongest || /adopt|step|foster/.test(words)) return words
+  return `${words} (${QUALIFIER[strongest]!.tail})`
+}
+
+function describeBlood(path: Step[] | null): string {
   if (!path) return 'No connection found in this tree.'
   if (path.length === 1) return 'the same person'
   const steps = path.slice(1).map((s) => s.step)
   const target = path[path.length - 1]!.person
+  if (steps.length === 1 && steps[0] !== 'partner') {
+    const q = QUALIFIER[path[1]!.relation ?? '']
+    if (q) return gendered(target.sex, ...(steps[0] === 'parent' ? q.parent : q.child))
+  }
   if (steps.length === 1 && steps[0] === 'partner') return gendered(target.sex, 'husband or partner', 'wife or partner', 'partner')
 
   // Strip a leading partner (your spouse's relatives) and a trailing one (a relative's spouse).
