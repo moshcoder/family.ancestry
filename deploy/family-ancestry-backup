@@ -1,0 +1,24 @@
+#!/bin/bash
+# Nightly backup of family.ancestry's one SQLite file (every tree, every photo).
+# Installed on dev2 at /usr/local/bin/family-ancestry-backup, run by /etc/cron.d/family-ancestry-backup.
+# Online .backup (safe while the app writes), quick_check, gzip, then handed to anthony,
+# whose key reaches dev3, and copied next to the fleet dumps in dev3:~/backups/dbs.
+# Keeps 2 locally and 30 days on dev3. The fleet discover skips /root, hence this.
+set -euo pipefail
+exec 9>/run/family-ancestry-backup.lock
+flock -n 9 || exit 0
+DB=/root/.local/share/family-ancestry/family.db
+OUT=/home/anthony/Backups/family-ancestry
+STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+[ -f "$DB" ] || { echo "family-ancestry-backup: no $DB"; exit 1; }
+install -d -o anthony -g anthony -m 700 "$OUT"
+TMP=$(mktemp /root/.family-ancestry-backup.XXXXXX)
+trap 'rm -f "$TMP" "$TMP.gz"' EXIT
+sqlite3 "$DB" ".backup '$TMP'"
+[ "$(sqlite3 "$TMP" 'PRAGMA quick_check')" = ok ] || { echo "family-ancestry-backup: quick_check failed"; exit 1; }
+gzip -9 "$TMP"
+install -o anthony -g anthony -m 600 "$TMP.gz" "$OUT/family-ancestry-nightly-$STAMP.sqlite.gz"
+ls -1t "$OUT"/family-ancestry-nightly-*.sqlite.gz | tail -n +3 | xargs -r rm -f
+sudo -u anthony -H rsync -a "$OUT/" dev3:backups/dbs/family-ancestry/
+sudo -u anthony -H ssh -o BatchMode=yes dev3 'find ~/backups/dbs/family-ancestry -name "family-ancestry-nightly-*.sqlite.gz" -mtime +30 -delete'
+echo "family-ancestry-backup: $STAMP ok ($(stat -c %s "$OUT/family-ancestry-nightly-$STAMP.sqlite.gz") bytes)"
