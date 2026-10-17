@@ -510,7 +510,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     if (t.error) return t.error
     if (hasPlan(plan, store, t.tree)) return c.redirect(`/t/${t.tree.id}/plan`)
     try {
-      const { checkoutUrl } = await startCheckout(plan, store, { tree: t.tree, user: t.user, chain: String((await form(c)).chain ?? ''), successUrl: `${site}/t/${t.tree.id}/plan?paid=1`, cancelUrl: `${site}/t/${t.tree.id}/plan` }, fetcher)
+      const { checkoutUrl } = await startCheckout(plan, store, { tree: t.tree, user: t.user, chain: String((await form(c)).chain ?? ''), successUrl: `${linkBase(c)}/t/${t.tree.id}/plan?paid=1`, cancelUrl: `${linkBase(c)}/t/${t.tree.id}/plan` }, fetcher)
       return c.redirect(checkoutUrl)
     } catch (error) {
       console.error(`[plan] checkout failed: ${(error as Error).message}`)
@@ -896,7 +896,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     if (hasPlan(plan, store, t.tree)) return c.json({ active: true })
     try {
       const body = await json(c)
-      return c.json(await startCheckout(plan, store, { tree: t.tree, user: t.user, chain: String(body.chain ?? plan.chains[0] ?? ''), successUrl: `${site}/t/${t.tree.id}/plan?paid=1`, cancelUrl: `${site}/t/${t.tree.id}/plan` }, fetcher), 201)
+      return c.json(await startCheckout(plan, store, { tree: t.tree, user: t.user, chain: String(body.chain ?? plan.chains[0] ?? ''), successUrl: `${publicSite}/t/${t.tree.id}/plan?paid=1`, cancelUrl: `${publicSite}/t/${t.tree.id}/plan` }, fetcher), 201)
     } catch (error) {
       return bad(c, error)
     }
