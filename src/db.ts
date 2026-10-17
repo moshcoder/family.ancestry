@@ -754,7 +754,7 @@ export class Store {
 
   /** Every bond touching this person, worded from their side: "Raised by Grandma", "Godchild Sam". */
   bondsFor(treeId: string, personId: string): { id: string; kind: string; label: string; other: Person; note: string | null }[] {
-    const rows = this.db.query<Association, [string, string, string]>('SELECT * FROM associations WHERE tree_id = ? AND (person_id = ? OR other_id = ?) ORDER BY created_at').all(treeId, personId, personId)
+    const rows = this.db.query<Association, [string, string, string]>('SELECT * FROM associations WHERE tree_id = ? AND (person_id = ? OR other_id = ?) ORDER BY created_at, rowid').all(treeId, personId, personId)
     return rows.flatMap((r) => {
       const forward = r.person_id === personId
       const other = this.person(treeId, forward ? r.other_id : r.person_id)
@@ -764,7 +764,7 @@ export class Store {
   }
 
   allBonds(treeId: string): Association[] {
-    return this.db.query<Association, [string]>('SELECT * FROM associations WHERE tree_id = ? ORDER BY created_at').all(treeId)
+    return this.db.query<Association, [string]>('SELECT * FROM associations WHERE tree_id = ? ORDER BY created_at, rowid').all(treeId)
   }
 
   /** A pet, owned by one or more people in the tree. */
