@@ -93,6 +93,8 @@ ancestry invite rose@example.com --as "Rose Ettinger"   # she joins as Rose, kee
 ancestry invite a@example.com b@example.com --role editor --note "Help with Grandpa's side"
 ancestry invite --file family-emails.txt  # any pasted list; --file - reads stdin
 ancestry contact add --name "Dr. Patel" --circle business --relationship "our dentist" --phone "555 0142"
+ancestry contact add --name "Pat Lee" --email pat@example.com --circle friends --connect   # add a friend + ask to connect
+ancestry contact add --person "Kurt Rademacher" --email kurt@example.com --connect     # someone in your tree, into your network
 ancestry contacts import ~/phone.vcf --circle family
 ancestry connect "Aunt Rose"         # one email; if she says yes, you can message
 ancestry inbox
@@ -109,7 +111,7 @@ server (your own, or `http://127.0.0.1:8792`).
 `family_plan`, `search_businesses`, `get_business`, `add_business`, `update_business`,
 `add_business_role`, `remove_business_role`, `link_business_contact`, `list_albums`, `list_photos`, `create_album`, `add_photo`, `update_photo`, `local_recommendations`, `recommend_business`, `add_event`, `pedigree`, `descendants`, `relationship`,
 `export_gedcom`, `import_gedcom`, `invite_to_tree`, `tree_members`, and for the
-network `list_contacts`, `get_contact`, `add_contact`, `update_contact`,
+network `list_contacts`, `get_contact`, `add_contact`, `add_person_to_network`, `update_contact`,
 `connect_contact`, `inbox`, `read_conversation`, `send_message`. The assistant acts
 as you: it sees the trees you see, and changes only the ones you can edit.
 
@@ -144,7 +146,8 @@ as you: it sees the trees you see, and changes only the ones you can edit.
 | `POST /api/v1/trees/:tree/photos` | add photos: multipart `file` (up to 20) or JSON `{filename, data_base64}`, with `caption?`, `album_id?` or `album_title?`, `person_id?` |
 | `GET/PATCH/DELETE /api/v1/trees/:tree/photos/:id` | one photo (`{caption?, person_id?, album_id?}`) |
 | `GET /api/v1/local?q=&category=`, `POST /api/v1/local`, `DELETE /api/v1/local/:id` | recommendations from people you know; recommend (`{name, category, town?, phone?, website?, note?}` or `{contact_id}`) |
-| `GET/POST /api/v1/contacts?q=&circle=` | your network: list / add |
+| `GET/POST /api/v1/contacts?q=&circle=` | your network: list / add (`{connect: true, note_to_them?}` also asks them to connect) |
+| `POST /api/v1/trees/:tree/people/:person/contact` | someone in the tree into your network (`{circle?, email?, relationship?, connect?, note?}`); one contact per person |
 | `GET/PATCH/DELETE /api/v1/contacts/:id` | one contact |
 | `POST /api/v1/contacts/:id/connect` | ask them to connect (`{note?}`) |
 | `POST /api/v1/contacts/import?circle=`, `GET /api/v1/contacts.vcf` | vCard in and out |
@@ -224,6 +227,10 @@ It is for people who know each other, and the rules are in the code, not just th
 - You can message someone only if you both said yes to connecting, or you share a tree.
   One person at a time; there is no broadcast.
 - Joining a tree from someone's invite connects you with them, as family.
+- Every living person's page has **Add to my network** (circle, email, and "email them
+  to connect" in one step); after that it says **In my network**. The Add form on
+  /network has the same "email them to connect" box, so adding a friend and inviting
+  them is one step.
 - Either side can block; a block ends the conversation both ways and is never revealed.
 - Per sender: 40 invitations (tree or connect) a day (no limit for a family on the
   Family plan), 120 messages an hour. A new

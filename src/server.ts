@@ -23,7 +23,7 @@ import { mountNetwork } from './network-routes.js'
 import { Local, mountLocal } from './local.js'
 import { mountBusinesses, personBusinesses, personBusinessesOut } from './business.js'
 import { mountAlbums } from './album.js'
-import { addonsPanel, profileInvite } from './network-html.js'
+import { addonsPanel, personNetworkBox, profileInvite } from './network-html.js'
 
 type Env = { Variables: { user: User | null; csrf: string; via: 'session' | 'token' | null } }
 
@@ -467,6 +467,8 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
         claimable: !profile && person.kind === 'person' && !person.death_date && !person.death_place && !store.profilePerson(t.tree.id, t.user.id),
         welcome: c.req.query('welcome') === '1',
         invite: invitable ? profileInvite(ctx(c), t.tree, person, { justAdded: c.req.query('added') === '1', owner: t.role === 'owner' }) : '',
+        // Anyone in the tree may keep a living relative in their own network; not themselves, not a pet.
+        network: person.kind === 'person' && profile?.id !== t.user.id && !person.death_date && !person.death_place ? personNetworkBox(ctx(c), t.tree, person, net.contactForPerson(t.user.id, t.tree.id, person.id)) : '',
         businesses: personBusinesses(ctx(c), t.tree, t.role, person, store.businessesOf(t.tree.id, person.id), canEdit(t.role) ? store.businesses(t.tree.id) : []),
       }),
     )
@@ -1076,6 +1078,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     mail: (m) => auth.mail(m),
     limits: { invite: senderLimit, message: messageLimit },
     inviteToTree,
+    treeFor,
   })
   mountLocal(app, api, { local: new Local(store, net), ctx, form })
   // Free on every tree; never behind the Family plan.
