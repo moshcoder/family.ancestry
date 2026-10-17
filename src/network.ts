@@ -222,6 +222,24 @@ export class Network {
     return this.contact(ownerId, id)!
   }
 
+  /**
+   * Add, unless one of their emails is already in your network: then fill in what that
+   * contact is missing (blank fields, new emails, phones, addresses, links) and keep one row.
+   */
+  addOrMerge(ownerId: string, input: Record<string, unknown>): { contact: Contact; merged: boolean } {
+    const c = normalizeContact(input)
+    const existing = (c.emails ?? []).map((e) => this.contactByEmail(ownerId, e.value)).find(Boolean)
+    if (!existing) return { contact: this.addContact(ownerId, input), merged: false }
+    const patch: Record<string, unknown> = {}
+    for (const key of ['name', 'nickname', 'relationship', 'company', 'title', 'birthday', 'anniversary', 'notes'] as const) if (c[key] && !existing[key]) patch[key] = c[key]
+    const union = <T>(have: T[], add: T[] | undefined, key: (x: T) => string) => [...have, ...(add ?? []).filter((x) => !have.some((h) => key(h) === key(x)))]
+    patch.emails = union(existing.emails, c.emails, (e) => e.value)
+    patch.phones = union(existing.phones, c.phones, (p) => p.value.replace(/\D/g, ''))
+    patch.links = union(existing.links, c.links, (l) => l.value)
+    patch.addresses = union(existing.addresses, c.addresses, (a) => a.lines.toLowerCase())
+    return { contact: this.updateContact(ownerId, existing.id, patch)!, merged: true }
+  }
+
   updateContact(ownerId: string, id: string, input: Record<string, unknown>): Contact | null {
     const current = this.contact(ownerId, id)
     if (!current) return null
@@ -259,6 +277,11 @@ export class Network {
     const token = newId(18)
     this.db.query('INSERT INTO connect_requests (token_hash,from_user,contact_id,email,circle,note,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?)').run(sha256(token), fromUser, contactId, email.trim().toLowerCase(), circle, clean(note, 1000), this.now(), this.now() + days * 86_400_000)
     return token
+  }
+
+  /** A request you already sent this address that is still waiting for an answer. */
+  pendingRequest(fromUser: string, email: string): { created_at: number } | null {
+    return this.db.query<{ created_at: number }, [string, string, number]>('SELECT created_at FROM connect_requests WHERE from_user = ? AND email = ? AND used_by IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1').get(fromUser, email.trim().toLowerCase(), this.now()) ?? null
   }
 
   connectRequest(token: string): { from_user: string; contact_id: string | null; email: string; circle: Circle; note: string | null } | null {
