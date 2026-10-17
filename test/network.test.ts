@@ -164,7 +164,7 @@ describe('join the family', () => {
     const url = mail.text.match(/(http:\/\/family\.test\/invite\/\S+)/)![1]!.replace(SITE, '')
     expect(await (await her.get(url)).text()).toContain('Join the family')
     const joined = await her.post(url)
-    expect(joined.headers.get('location')).toContain(`/t/${treeId}/p/${lilyId}?ok=`)
+    expect(joined.headers.get('location')).toContain(`/t/${treeId}/p/${lilyId}?welcome=1&ok=`)
     expect(w.store.role(treeId, lily.id)).toBe('viewer')
     expect(w.store.profilePerson(treeId, lily.id)).toBe(lilyId)
 

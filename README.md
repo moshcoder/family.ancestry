@@ -9,17 +9,34 @@ The desktop app, the CLI and the MCP server reach it by themselves; a browser
 needs [one setting](https://pit.world/connect).
 
 - **Trees** you build together: editors add and fix, viewers look. Invite by email
-  (up to 20 at once) or by link.
+  or by link: **paste a whole list** (a To: line, a spreadsheet column,
+  `Aunt Rose <rose@example.com>`), 20 at a time, 500 on the Family plan.
 - **Join the family as yourself.** Right after you add someone, the page quietly offers
   to invite them; they join *as that person* and keep their own profile up to date,
-  even as a viewer.
+  even as a viewer. A pasted name that matches someone in the tree invites them as that
+  person; everyone else picks themselves ("Which one is you?") or adds themselves when
+  they join, then adds a photo. A profile is only ever claimed by the email address the
+  invite went to: signing in with an emailed link is the proof.
+- **Local:** businesses recommended by people you know. Your family, neighbors and
+  friends say who they use (the plumber, the dentist, the bakery) and why; you see the
+  picks of your connections and tree-mates, ranked by how many vouch for a place and how
+  close they are to you. No strangers' reviews, nothing paid to the top. See [Local](#local).
 - **Network (add-on, free for everyone):** family, friends, neighbors and business contacts with
   every detail you keep (emails, phones, addresses, birthdays, links, notes), vCard
   import/export, and a private **Inbox**. See [Network](#network).
 - **People** with dates, places, notes and stories, photos, and a life timeline.
-- **Families** the GEDCOM way: partners plus children (birth, adopted, step, foster).
+- **Every kind of family.** Partners plus children (birth, adopted, step, foster), the
+  GEDCOM way. Add a **brother or sister** directly: full (even when nobody knows the
+  parents), half through a chosen parent, adopted, foster, or step through a step-parent.
+  Add a **grandparent** when the parent between is unknown (an "Unknown" parent holds the
+  place). And bonds that are not descent: **raised by**, guardian, godparent, caregiver,
+  chosen family, neighbor, so grandparents who raised you are both. All of it round-trips through
+  GEDCOM (`PEDI`, `ASSO`/`RELA`).
+- **Pets** (Family plan): the dogs, cats and horses that were family too, with owners,
+  photos and stories. They never appear as anyone's parent or child, nor in GEDCOM.
 - **Pedigree** (3–6 generations, Ahnentafel numbers) and **descendant** charts.
-- **"How are we related?"** in words: *first cousin once removed*, *mother-in-law*.
+- **"How are we related?"** in words: *first cousin once removed*, *mother-in-law*,
+  *half-sister*, *stepbrother*, *adoptive mother*, *grandfather (by adoption)*.
 - **Sources and citations**, so you know where every fact came from.
 - **GEDCOM 5.5.1 import and export.** Bring your tree from Ancestry, FamilySearch,
   MyHeritage, Gramps or RootsMagic, and take it with you. Exports can hide living people.
@@ -44,12 +61,21 @@ ancestry import ~/Downloads/tree.ged # into a new tree, which becomes your defau
 ancestry people ettinger             # search
 ancestry show "Johann Ettinger"
 ancestry add --given Lily --surname Ettinger --born 2015 --living --child-of "Robert Ettinger"
+ancestry add --given Sam --sibling-of Lily --sibling half --via Robert
+ancestry add --given Rose --grandparent-of Lily --raised   # parents unknown: an "Unknown" parent goes between
+ancestry bond Lily godparent "Aunt Karen"
+ancestry pet Lily Rex --species Dog       # Family plan
+ancestry plan                             # ancestry plan buy --chain USDC_POL
+ancestry claim "Lily Ettinger"            # this is me
+ancestry local plumber                    # who the people you know use
+ancestry local add "Joe's Plumbing" --category Plumber --town Sacramento --note "Came on a Sunday"
 ancestry pedigree Robert -g 4
 ancestry descendants Johann
 ancestry relate Robert Anna          # Anna Ettinger is Robert Ettinger's aunt.
 ancestry export --privacy -o family.ged
 ancestry invite rose@example.com --as "Rose Ettinger"   # she joins as Rose, keeps her own profile
 ancestry invite a@example.com b@example.com --role editor --note "Help with Grandpa's side"
+ancestry invite --file family-emails.txt  # any pasted list; --file - reads stdin
 ancestry contact add --name "Dr. Patel" --circle business --relationship "our dentist" --phone "555 0142"
 ancestry contacts import ~/phone.vcf --circle family
 ancestry connect "Aunt Rose"         # one email; if she says yes, you can message
@@ -63,7 +89,8 @@ server (your own, or `http://127.0.0.1:8792`).
 ### MCP tools
 
 `list_trees`, `search_people`, `get_person`, `add_person`, `update_person`,
-`link_relative`, `add_event`, `pedigree`, `descendants`, `relationship`,
+`link_relative` (parent, partner, child, sibling, grandparent), `add_bond`, `add_pet`,
+`family_plan`, `local_recommendations`, `recommend_business`, `add_event`, `pedigree`, `descendants`, `relationship`,
 `export_gedcom`, `import_gedcom`, `invite_to_tree`, `tree_members`, and for the
 network `list_contacts`, `get_contact`, `add_contact`, `update_contact`,
 `connect_contact`, `inbox`, `read_conversation`, `send_message`. The assistant acts
@@ -76,8 +103,12 @@ as you: it sees the trees you see, and changes only the ones you can edit.
 | `GET /api/v1/me` | you and your trees |
 | `GET/POST /api/v1/trees` | list / create (`{name}`) |
 | `GET /api/v1/trees/:tree/people?q=` | list or search |
-| `POST /api/v1/trees/:tree/people` | add (`{given, surname, ..., relative_of?, as?: parent\|partner\|child, existing_id?}`) |
-| `GET/PATCH/DELETE /api/v1/trees/:tree/people/:id` | one person, with parents, partners, children, events, sources, photos |
+| `POST /api/v1/trees/:tree/people` | add (`{given, surname, ..., relative_of?, as?: parent\|partner\|child\|sibling\|grandparent, relation?, sibling?: full\|half\|adopted\|foster\|step, via?, raised?, existing_id?}`) |
+| `POST /api/v1/trees/:tree/people/:id/bonds`, `DELETE .../bonds/:bond` | a bond (`{kind: raised_by\|guardian\|godparent\|caregiver\|chosen_family, other_id or person fields, note?}`) |
+| `POST /api/v1/trees/:tree/pets` | a pet (`{owner_id(s), given, species?}`); 402 without the Family plan |
+| `GET /api/v1/trees/:tree/plan`, `POST .../plan/checkout` | the Family plan; start a payment (`{chain}`) |
+| `POST /api/v1/trees/:tree/claim` | this is me (`{person_id}`) or add me (person fields) |
+| `GET/PATCH/DELETE /api/v1/trees/:tree/people/:id` | one person, with parents, siblings (and their kind), partners, children, bonds, pets, events, sources, photos |
 | `POST /api/v1/trees/:tree/people/:id/events` | add a life event |
 | `GET /api/v1/trees/:tree/pedigree/:id?generations=4` | ancestors |
 | `GET /api/v1/trees/:tree/descendants/:id?generations=3` | descendants |
@@ -86,11 +117,42 @@ as you: it sees the trees you see, and changes only the ones you can edit.
 | `GET /api/v1/trees/:tree/export?privacy=1` | GEDCOM |
 | `GET /api/v1/trees/:tree/members` | members, with the person each one is |
 | `GET/POST /api/v1/trees/:tree/invites`, `DELETE .../invites/:id` | pending invites; invite (`{emails, role?, person_id?, note?}`; no emails = a link) |
+| `GET /api/v1/local?q=&category=`, `POST /api/v1/local`, `DELETE /api/v1/local/:id` | recommendations from people you know; recommend (`{name, category, town?, phone?, website?, note?}` or `{contact_id}`) |
 | `GET/POST /api/v1/contacts?q=&circle=` | your network: list / add |
 | `GET/PATCH/DELETE /api/v1/contacts/:id` | one contact |
 | `POST /api/v1/contacts/:id/connect` | ask them to connect (`{note?}`) |
 | `POST /api/v1/contacts/import?circle=`, `GET /api/v1/contacts.vcf` | vCard in and out |
 | `GET /api/v1/inbox`, `GET/POST /api/v1/inbox/:user` | conversations; read / send (`{body}`) |
+
+## Family plan
+
+One payment per tree, once, for good: **$49** (`FAMILY_PLAN_USD`), in crypto through
+CoinPay. It covers the whole family: pets, pasting up to 500 invites at a time, and no
+daily invitation limit for anyone in the tree (a 2,000/day ceiling only stops runaway
+scripts). Everything else stays free. Trees owned by an `ADMIN_EMAILS` account are on
+the plan without paying.
+
+The server needs `COINPAY_API_KEY`, `COINPAY_BUSINESS_ID` and `COINPAY_WEBHOOK_SECRET`,
+with the business's webhook pointed at `/webhooks/coinpay`. A payment is written down
+before the buyer leaves; the signed webhook settles it, and only a payment we started
+can mark a tree paid. `COINPAY_CHAINS` limits checkout to chains the business holds
+wallets for.
+
+## Local
+
+`src/local.ts`. A recommendation snapshots the business (name, category, town, phone,
+website, a line on why) when you share it; your contacts themselves stay private. You
+see your own picks and those of everyone you are connected with or share a tree with,
+grouped by phone, then website, then name and town. Score = sum of how close each
+recommender is to you: family and neighbors 3, friends and tree-mates 2, other
+connections 1 (your own circle for them decides). Blocks hide both ways.
+
+## Ads
+
+Pages carry one [crawlproof](https://crawlproof.com) unit: a fluid text link in the
+footer everywhere, and a 300×250 on Local and Network. It is a cross-origin frame
+(`/api/ads/frame`), so the CSP gains one `frame-src` and nothing else: no ad script,
+no cookie. `CRAWLPROOF_AD_SLOT` sets the slot; `off` removes the units.
 
 ## Network
 
@@ -106,7 +168,8 @@ It is for people who know each other, and the rules are in the code, not just th
   One person at a time; there is no broadcast.
 - Joining a tree from someone's invite connects you with them, as family.
 - Either side can block; a block ends the conversation both ways and is never revealed.
-- Per sender: 40 invitations (tree or connect) a day, 120 messages an hour. A new
+- Per sender: 40 invitations (tree or connect) a day (no limit for a family on the
+  Family plan), 120 messages an hour. A new
   message emails the recipient once per unread run, not once per message.
 
 ## Running it

@@ -3,18 +3,23 @@
  *
  *   bun src/server.ts            PORT (8792), ANCESTRY_DATA_DIR, ANCESTRY_SITE,
  *                                RESEND_API_KEY + MAIL_FROM for sign-in links
+ *                                ADMIN_EMAILS (their trees are on the Family plan, free)
+ *                                COINPAY_API_KEY, COINPAY_BUSINESS_ID, COINPAY_WEBHOOK_SECRET,
+ *                                FAMILY_PLAN_USD (49) for the one-time Family plan
  */
 import { Hono, type Context } from 'hono'
 import { RING_PLACEHOLDER, ringBar, startRingRefresh, visitorOnMoshpit } from './ring.js'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { join } from 'node:path'
-import { Store, canEdit, fullName, newId, type Person, type Role, type Tree, type User } from './db.js'
+import { BONDS, CHILD_RELATIONS, Store, bondKind, canEdit, fullName, newId, type Person, type Role, type Tree, type User } from './db.js'
 import { Auth, SESSION_COOKIE, consoleMailer, resendMailer, safeNext, validEmail, type Mailer } from './auth.js'
 import { exportGedcom, importGedcom, describeImport } from './gedcom.js'
-import { describePath } from './relate.js'
+import { describeRelation } from './relate.js'
+import { CHAIN_LABELS, SETTLED, hasPlan, isAdmin, planFromEnv, price, readWebhook, startCheckout, verifyWebhook, type PlanConfig } from './plan.js'
 import * as html from './html.js'
 import { Network } from './network.js'
 import { mountNetwork } from './network-routes.js'
+import { Local, mountLocal } from './local.js'
 import { addonsPanel, profileInvite } from './network-html.js'
 
 type Env = { Variables: { user: User | null; csrf: string; via: 'session' | 'token' | null } }
@@ -29,10 +34,32 @@ const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp
  * the Moshpit name for people who are not on Moshpit DNS. Links we email to someone
  * else (invites) use it, because we cannot know which internet they are on.
  */
-export type AppOptions = { store: Store; auth: Auth; site: string; publicSite?: string; publicDir?: string; net?: Network }
+export type AppOptions = { store: Store; auth: Auth; site: string; publicSite?: string; publicDir?: string; net?: Network; plan?: PlanConfig; fetcher?: typeof fetch }
 
-/** Up to 20 addresses from "a@b.com, c@d.com" or one per line. */
-export const parseEmails = (value: unknown): string[] => [...new Set(String(value ?? '').split(/[\s,;]+/).map((e) => validEmail(e)).filter(Boolean) as string[])].slice(0, 20)
+/** Up to `max` addresses from "a@b.com, c@d.com" or one per line. */
+export const parseEmails = (value: unknown, max = 20): string[] => parseInvitees(value, max).map((i) => i.email)
+
+/**
+ * Every address in whatever was pasted (a mail client's To line, a spreadsheet
+ * column, "Aunt Karen <karen@x.com>", one per line), each once, with the name
+ * written beside it when there is one.
+ */
+export function parseInvitees(value: unknown, max = 20): { email: string; name: string | null }[] {
+  const out = new Map<string, string | null>()
+  for (const line of String(value ?? '').split(/[\n;]+/)) {
+    // A name is whatever sits between the previous address and this one: "Doe, Jane" <j@x.com>, Liz<TAB>liz@z.net.
+    let from = 0
+    for (const m of line.matchAll(/[^\s<>()"',;:]+@[^\s<>()"',;:]+\.[^\s<>()"',;:]+/g)) {
+      const before = line.slice(from, m.index)
+      from = m.index! + m[0].length
+      const email = validEmail(m[0])
+      if (!email || out.has(email)) continue
+      const name = before.replace(/[<>()"\[\]\t]/g, ' ').replace(/\s+/g, ' ').replace(/^[\s,:-]+|[\s,:-]+$/g, '').trim()
+      out.set(email, name && !name.includes('@') ? name.slice(0, 120) : null)
+    }
+  }
+  return [...out].slice(0, max).map(([email, name]) => ({ email, name }))
+}
 
 /** Tiny fixed-window limiter, per key. Enough to stop a script from mailing a stranger 1,000 sign-in links. */
 function limiter(limit: number, windowMs: number) {
@@ -53,7 +80,7 @@ function limiter(limit: number, windowMs: number) {
 /** "Jane Doe (1901–1980) #abc123" from the datalist -> abc123. */
 export const pickId = (value: unknown): string | null => String(value ?? '').match(/#([A-Za-z0-9_-]{6,})\s*$/)?.[1] ?? (/^[A-Za-z0-9_-]{6,}$/.test(String(value ?? '').trim()) ? String(value).trim() : null)
 
-export function createApp({ store, auth, site, publicSite = site, publicDir = join(import.meta.dir, '..', 'public'), net = new Network(store) }: AppOptions) {
+export function createApp({ store, auth, site, publicSite = site, publicDir = join(import.meta.dir, '..', 'public'), net = new Network(store), plan = planFromEnv({}), fetcher = fetch }: AppOptions) {
   // A request relayed by pit.world says so in X-Forwarded-Host; a sign-in link for it must open there too.
   // Only the one configured address is believed, so a forged header can at worst pick that address.
   const publicHost = new URL(publicSite).host
@@ -62,6 +89,12 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   const linkLimit = limiter(10, 15 * 60_000)
   // People, not campaigns: a day's worth of invitations per sender (and per recipient), an hour's worth of messages.
   const inviteLimit = limiter(40, 24 * 60 * 60_000)
+  // A family on the Family plan invites whoever they like; the cap is only there to stop a runaway script.
+  const familyInviteLimit = limiter(2000, 24 * 60 * 60_000)
+  const paidSender = (userId: string) => store.inPaidTree(userId) || isAdmin(plan, store.user(userId))
+  const senderLimit = (key: string) => (key.startsWith('invite:') && paidSender(key.slice('invite:'.length)) ? familyInviteLimit(key) : inviteLimit(key))
+  /** How many addresses one paste may hold, for this tree. */
+  const pasteMax = (tree: Tree) => (hasPlan(plan, store, tree) ? 500 : 20)
   const messageLimit = limiter(120, 60 * 60_000)
   const secure = (c: Context) => (c.req.header('x-forwarded-proto') ?? new URL(c.req.url).protocol.replace(':', '')) === 'https'
   const ip = (c: Context) => c.req.header('x-real-ip') ?? c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? 'local'
@@ -104,10 +137,16 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     c.header('referrer-policy', 'same-origin')
     c.header('x-frame-options', 'DENY')
     if ((c.res.headers.get('content-type') ?? '').includes('text/html')) {
-      c.header('content-security-policy', "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' http://127.0.0.1:* http://localhost:*")
+      c.header('content-security-policy', "default-src 'self'; frame-src https://crawlproof.com; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' http://127.0.0.1:* http://localhost:*")
       c.header('cache-control', 'no-store')
     }
   })
+
+  /** The words for how b is to a, with half- and step-siblings named properly. */
+  const relate = (treeId: string, a: string, b: string) => {
+    const path = store.relationship(treeId, a, b)
+    return { path, words: describeRelation(path, store.siblings(treeId, a).find((s) => s.person.id === b)) }
+  }
 
   const form = async (c: Context): Promise<Record<string, any>> => (c as any).formBody ?? (await c.req.parseBody().catch(() => ({})))
   const ctx = (c: Context, extra: Partial<html.Ctx> = {}): html.Ctx => ({ user: c.get('user'), csrf: c.get('csrf'), flash: c.req.query('ok') ?? null, unread: c.get('user') ? net.unreadCount(c.get('user')!.id) : 0, ...extra })
@@ -283,6 +322,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
         people: q ? store.search(t.tree.id, q, 200) : store.people(t.tree.id, 500),
         surnames: store.surnames(t.tree.id),
         query: q,
+        plan: hasPlan(plan, store, t.tree),
       }),
     )
   })
@@ -351,9 +391,17 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
         citations: store.citationsFor(t.tree.id, person.id),
         media: store.mediaFor(t.tree.id, person.id),
         sources: store.sources(t.tree.id),
-        everyone: canEdit(t.role) ? store.people(t.tree.id, 5000) : [],
+        everyone: canEdit(t.role) ? store.people(t.tree.id, 5000).filter((o) => o.kind === 'person') : [],
+        siblings: store.siblings(t.tree.id, person.id),
+        stepParents: store.stepParents(t.tree.id, person.id),
+        bonds: store.bondsFor(t.tree.id, person.id),
+        pets: store.petsOf(t.tree.id, person.id),
+        plan: hasPlan(plan, store, t.tree),
         profile,
         self: profile?.id === t.user.id,
+        // A member with no profile yet, looking at a living person nobody has claimed: "this is me".
+        claimable: !profile && person.kind === 'person' && !person.death_date && !person.death_place && !store.profilePerson(t.tree.id, t.user.id),
+        welcome: c.req.query('welcome') === '1',
         invite: invitable ? profileInvite(ctx(c), t.tree, person, { justAdded: c.req.query('added') === '1', owner: t.role === 'owner' }) : '',
       }),
     )
@@ -397,6 +445,95 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     const body = await form(c)
     store.removeChild(String(body.family_id), c.req.param('person'))
     return c.redirect(`/t/${t.tree.id}/p/${c.req.param('person')}`)
+  })
+  // Bonds that are not descent: raised by, guardian, godparent, caregiver, chosen family.
+  app.post('/t/:tree/p/:person/bonds', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const body = await form(c)
+    const back = `/t/${t.tree.id}/p/${c.req.param('person')}`
+    try {
+      const other = addBondFrom(t.tree.id, c.req.param('person'), body)
+      return c.redirect(`${back}?ok=${encodeURIComponent(`Added ${fullName(other)}`)}`)
+    } catch (error) {
+      return c.redirect(`${back}?ok=${encodeURIComponent(`Not added: ${(error as Error).message}`)}`)
+    }
+  })
+  app.post('/t/:tree/bonds/:bond/delete', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const bond = store.bond(t.tree.id, c.req.param('bond'))
+    store.removeBond(t.tree.id, c.req.param('bond'))
+    const back = String((await form(c)).back ?? bond?.person_id ?? '')
+    return c.redirect(store.person(t.tree.id, back) ? `/t/${t.tree.id}/p/${back}` : `/t/${t.tree.id}`)
+  })
+  // Pets: the Family plan.
+  app.post('/t/:tree/p/:person/pets', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    if (!hasPlan(plan, store, t.tree)) return c.redirect(`/t/${t.tree.id}/plan?ok=${encodeURIComponent('Pets come with the Family plan.')}`)
+    const body = await form(c)
+    if (!String(body.given ?? '').trim()) return c.redirect(`/t/${t.tree.id}/p/${c.req.param('person')}?ok=${encodeURIComponent('Give the pet a name.')}`)
+    try {
+      const pet = store.addPet(t.tree.id, { ...body, living: body.living ?? '0' }, [c.req.param('person')])
+      return c.redirect(`/t/${t.tree.id}/p/${pet.id}?ok=${encodeURIComponent(`Added ${fullName(pet)}`)}`)
+    } catch (error) {
+      return c.redirect(`/t/${t.tree.id}/p/${c.req.param('person')}?ok=${encodeURIComponent(`Not added: ${(error as Error).message}`)}`)
+    }
+  })
+  // Who are you? For a member who joined without being tied to a profile.
+  app.get('/t/:tree/claim', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    const mine = store.profilePerson(t.tree.id, t.user.id)
+    if (mine) return c.redirect(`/t/${t.tree.id}/p/${mine}`)
+    return c.html(html.claimPage(ctx(c), t.tree, store.unclaimed(t.tree.id), { name: t.user.name ?? '', mismatch: c.req.query('mismatch') === '1' }))
+  })
+  app.post('/t/:tree/claim', async (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    const body = await form(c)
+    try {
+      const personId = claimSelf(t.tree.id, t.user, body)
+      return c.redirect(`/t/${t.tree.id}/p/${personId}?welcome=1&ok=${encodeURIComponent('That is you now. Add a photo and keep your profile up to date.')}`)
+    } catch (error) {
+      return c.redirect(`/t/${t.tree.id}/claim?ok=${encodeURIComponent((error as Error).message)}`)
+    }
+  })
+  // The Family plan: pay once per tree.
+  app.get('/t/:tree/plan', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    return c.html(html.planPage(ctx(c), t.tree, t.role, { active: hasPlan(plan, store, t.tree), admin: isAdmin(plan, store.user(t.tree.owner_id)), price: price(plan), chains: plan.coinpay ? plan.chains.map((id) => ({ id, label: CHAIN_LABELS[id] ?? id })) : [], payments: store.paymentsFor(t.tree.id), returned: c.req.query('paid') === '1' }))
+  })
+  app.post('/t/:tree/plan/checkout', async (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    if (hasPlan(plan, store, t.tree)) return c.redirect(`/t/${t.tree.id}/plan`)
+    try {
+      const { checkoutUrl } = await startCheckout(plan, store, { tree: t.tree, user: t.user, chain: String((await form(c)).chain ?? ''), successUrl: `${linkBase(c)}/t/${t.tree.id}/plan?paid=1`, cancelUrl: `${linkBase(c)}/t/${t.tree.id}/plan` }, fetcher)
+      return c.redirect(checkoutUrl)
+    } catch (error) {
+      console.error(`[plan] checkout failed: ${(error as Error).message}`)
+      return c.redirect(`/t/${t.tree.id}/plan?ok=${encodeURIComponent(`Could not start the payment: ${(error as Error).message}`)}`)
+    }
+  })
+  /** CoinPay calls this; it proves itself with the signature, not a session. */
+  app.post('/webhooks/coinpay', async (c) => {
+    const raw = await c.req.text()
+    if (!plan.coinpay || !verifyWebhook(plan.coinpay.webhookSecret, raw, c.req.header('coinpay-signature') ?? c.req.header('x-coinpay-signature'))) return c.json({ error: 'bad signature' }, 401)
+    let payload: unknown
+    try {
+      payload = JSON.parse(raw)
+    } catch {
+      return c.json({ error: 'bad json' }, 400)
+    }
+    const { ref, status } = readWebhook(payload)
+    // Only payments we started count; the tree comes from our row, never from the payload.
+    const known = ref ? store.payment(String(ref)) : null
+    if (!known) return c.json({ ok: true, ignored: 'unknown payment' })
+    const settled = store.settlePayment(known.ref, status, payload, SETTLED.has(status))
+    return c.json({ ok: true, status: settled?.status, paid: Boolean(store.tree(known.tree_id)?.plan_paid_at) })
   })
   app.post('/t/:tree/f/:family', async (c) => {
     const t = treeFor(c, 'edit')
@@ -518,13 +655,12 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     const everyone = store.people(t.tree.id, 5000)
     const a = store.person(t.tree.id, c.req.query('a') ?? '') ?? (t.tree.home_person_id ? store.person(t.tree.id, t.tree.home_person_id) : null) ?? everyone[0] ?? null
     const b = store.person(t.tree.id, c.req.query('b') ?? '')
-    const path = a && b ? store.relationship(t.tree.id, a.id, b.id) : null
-    return c.html(html.relatePage(ctx(c), t.tree, everyone, a, b, a && b ? { words: describePath(path), path } : null))
+    return c.html(html.relatePage(ctx(c), t.tree, everyone, a, b, a && b ? relate(t.tree.id, a.id, b.id) : null))
   })
 
   // members + invites
   const membersView = (c: Context, t: { tree: Tree; role: Role }, links: html.InviteLink[] = [], flash: string | null = null) =>
-    c.html(html.membersPage(ctx(c, flash ? { flash } : {}), t.tree, t.role, store.members(t.tree.id), links, { pending: canEdit(t.role) ? store.pendingInvites(t.tree.id) : [], profiles: store.profiles(t.tree.id), people: (id) => store.person(t.tree.id, id) }))
+    c.html(html.membersPage(ctx(c, flash ? { flash } : {}), t.tree, t.role, store.members(t.tree.id), links, { pending: canEdit(t.role) ? store.pendingInvites(t.tree.id) : [], profiles: store.profiles(t.tree.id), people: (id) => store.person(t.tree.id, id), max: pasteMax(t.tree), plan: hasPlan(plan, store, t.tree) }))
   app.get('/t/:tree/members', (c) => {
     const t = treeFor(c)
     if (t.error) return t.error
@@ -541,15 +677,15 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     const body = await form(c)
     const role = t.role === 'owner' && body.role === 'editor' ? 'editor' : 'viewer'
     const personId = body.person_id && store.person(t.tree.id, String(body.person_id)) && !store.profileUser(t.tree.id, String(body.person_id)) ? String(body.person_id) : null
-    const emails = parseEmails(body.emails ?? body.email).slice(0, personId ? 1 : 20)
+    const invitees = parseInvitees(body.emails ?? body.email, personId ? 1 : pasteMax(t.tree))
     const note = body.note ? String(body.note) : null
-    if (!emails.length) {
+    if (!invitees.length) {
       if (body.back === 'person' && personId) return c.redirect(`/t/${t.tree.id}/p/${personId}?ok=${encodeURIComponent('That does not look like an email address.')}`)
       if (t.role !== 'owner') return membersView(c, t, [], 'Only the owner can make invite links. Invite by email instead.')
       return membersView(c, t, [{ email: null, url: `${publicSite}/invite/${store.createInvite(t.tree.id, t.user.id, role, null, { note })}`, mailed: false }])
     }
     const links: html.InviteLink[] = []
-    for (const email of emails) links.push({ email, ...(await inviteToTree(t.user, t.tree.id, email, role, { personId, note })) })
+    for (const i of invitees) links.push({ email: i.email, ...(await inviteToTree(t.user, t.tree.id, i.email, role, { personId: personId ?? matchPerson(t.tree.id, i.name), note, name: i.name })) })
     const sent = links.filter((l) => l.mailed).length
     const flash = sent === links.length ? `Invite emailed to ${sent === 1 ? links[0]!.email : `${sent} people`}.` : `Emailed ${sent} of ${links.length}; that is a day's worth of invitations. The rest are links below.`
     if (body.back === 'person' && personId) return c.redirect(`/t/${t.tree.id}/p/${personId}?ok=${encodeURIComponent(flash)}`)
@@ -601,7 +737,9 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
       net.ensureContact(from.id, user.email, { name: user.name ?? '', circle: 'family' }, { linked_user_id: user.id, tree_id: joined.tree_id, person_id: joined.person_id })
       net.ensureContact(user.id, from.email, { name: from.name ?? '', circle: 'family' }, { linked_user_id: from.id, tree_id: joined.tree_id, person_id: store.profilePerson(joined.tree_id, from.id) })
     }
-    return joined.person_id ? c.redirect(`/t/${joined.tree_id}/p/${joined.person_id}?ok=${encodeURIComponent('Welcome to the family. This is your profile: keep it up to date.')}`) : c.redirect(`/t/${joined.tree_id}?ok=Welcome`)
+    if (joined.person_id) return c.redirect(`/t/${joined.tree_id}/p/${joined.person_id}?welcome=1&ok=${encodeURIComponent('Welcome to the family. This is your profile: add a photo and keep it up to date.')}`)
+    // Not bound to anyone (or bound to someone else's address): let them find themselves.
+    return store.profilePerson(joined.tree_id, user.id) ? c.redirect(`/t/${joined.tree_id}?ok=Welcome`) : c.redirect(`/t/${joined.tree_id}/claim${joined.mismatch ? '?mismatch=1' : ''}`)
   })
 
   // settings
@@ -644,6 +782,9 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
       events: store.events(treeId, p.id),
       sources: store.citationsFor(treeId, p.id),
       photos: store.mediaFor(treeId, p.id).map((m) => ({ ...m, url: `${site}/t/${treeId}/media/${m.id}` })),
+      siblings: store.siblings(treeId, p.id).map((s) => ({ id: s.person.id, name: fullName(s.person), kind: s.kind, via: s.via ? { id: s.via.id, name: fullName(s.via) } : null })),
+      bonds: store.bondsFor(treeId, p.id).map((b) => ({ id: b.id, kind: b.kind, label: b.label, other: { id: b.other.id, name: fullName(b.other), kind: b.other.kind }, note: b.note })),
+      pets: store.petsOf(treeId, p.id).map((x) => ({ id: x.id, name: fullName(x), species: x.species })),
     }
   }
 
@@ -715,6 +856,63 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
       return bad(c, error)
     }
   })
+  api.post('/trees/:tree/people/:person/bonds', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    try {
+      const other = addBondFrom(t.tree.id, c.req.param('person'), await json(c))
+      return c.json({ person: personOut(t.tree.id, store.person(t.tree.id, c.req.param('person'))!, true), other: personOut(t.tree.id, other) }, 201)
+    } catch (error) {
+      return bad(c, error)
+    }
+  })
+  api.delete('/trees/:tree/bonds/:bond', (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    store.removeBond(t.tree.id, c.req.param('bond'))
+    return c.json({ ok: true })
+  })
+  /** {owner_id or owner_ids, given, species, birth_date, notes}. Needs the Family plan. */
+  api.post('/trees/:tree/pets', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    if (!hasPlan(plan, store, t.tree)) return c.json({ error: `pets come with the Family plan (${price(plan)} once): ${site}/t/${t.tree.id}/plan` }, 402)
+    const body = await json(c)
+    if (!String(body.given ?? body.name ?? '').trim()) return bad(c, 'give the pet a name')
+    try {
+      const owners = (Array.isArray(body.owner_ids) ? body.owner_ids : [body.owner_id]).map(String)
+      return c.json({ pet: personOut(t.tree.id, store.addPet(t.tree.id, { given: body.given ?? body.name, ...body, living: body.living ?? 1 }, owners), true) }, 201)
+    } catch (error) {
+      return bad(c, error)
+    }
+  })
+  api.get('/trees/:tree/plan', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    return c.json({ active: hasPlan(plan, store, t.tree), paid_at: t.tree.plan_paid_at, price: price(plan), chains: plan.coinpay ? plan.chains : [], url: `${site}/t/${t.tree.id}/plan` })
+  })
+  api.post('/trees/:tree/plan/checkout', async (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    if (hasPlan(plan, store, t.tree)) return c.json({ active: true })
+    try {
+      const body = await json(c)
+      return c.json(await startCheckout(plan, store, { tree: t.tree, user: t.user, chain: String(body.chain ?? plan.chains[0] ?? ''), successUrl: `${publicSite}/t/${t.tree.id}/plan?paid=1`, cancelUrl: `${publicSite}/t/${t.tree.id}/plan` }, fetcher), 201)
+    } catch (error) {
+      return bad(c, error)
+    }
+  })
+  /** {person_id} to say "this is me", or person fields to add yourself. */
+  api.post('/trees/:tree/claim', async (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    try {
+      const id = claimSelf(t.tree.id, t.user, await json(c))
+      return c.json({ person: personOut(t.tree.id, store.person(t.tree.id, id)!, true) }, 201)
+    } catch (error) {
+      return bad(c, error)
+    }
+  })
   api.get('/trees/:tree/pedigree/:person', (c) => {
     const t = treeFor(c)
     if (t.error) return t.error
@@ -730,8 +928,8 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   api.get('/trees/:tree/relate', (c) => {
     const t = treeFor(c)
     if (t.error) return t.error
-    const path = store.relationship(t.tree.id, c.req.query('a') ?? '', c.req.query('b') ?? '')
-    return c.json({ relationship: describePath(path), path: path?.map((s) => ({ step: s.step, id: s.person.id, name: fullName(s.person) })) ?? null })
+    const { path, words } = relate(t.tree.id, c.req.query('a') ?? '', c.req.query('b') ?? '')
+    return c.json({ relationship: words, path: path?.map((s) => ({ step: s.step, ...(s.relation ? { relation: s.relation } : {}), id: s.person.id, name: fullName(s.person) })) ?? null })
   })
   api.post('/trees/:tree/import', async (c) => {
     const t = treeFor(c, 'edit')
@@ -781,14 +979,17 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     const role = t.role === 'owner' && body.role === 'editor' ? 'editor' : 'viewer'
     const personId = body.person_id && store.person(t.tree.id, String(body.person_id)) ? String(body.person_id) : null
     if (personId && store.profileUser(t.tree.id, personId)) return bad(c, 'that person already manages their own profile')
-    const emails = parseEmails(Array.isArray(body.emails) ? body.emails.join(',') : (body.emails ?? body.email)).slice(0, personId ? 1 : 20)
+    const invitees = parseInvitees(Array.isArray(body.emails) ? body.emails.join('\n') : (body.emails ?? body.email), personId ? 1 : pasteMax(t.tree))
     const note = body.note ? String(body.note) : null
-    if (!emails.length) {
+    if (!invitees.length) {
       if (t.role !== 'owner') return bad(c, 'only the owner can make invite links; give an email')
       return c.json({ invites: [{ email: null, mailed: false, url: `${publicSite}/invite/${store.createInvite(t.tree.id, t.user.id, role, null, { personId, note })}` }] }, 201)
     }
     const invites = []
-    for (const email of emails) invites.push({ email, ...(await inviteToTree(t.user, t.tree.id, email, role, { personId, note })) })
+    for (const i of invitees) {
+      const bound = personId ?? matchPerson(t.tree.id, i.name)
+      invites.push({ email: i.email, name: i.name, person_id: bound, ...(await inviteToTree(t.user, t.tree.id, i.email, role, { personId: bound, note, name: i.name })) })
+    }
     return c.json({ invites }, 201)
   })
   api.delete('/trees/:tree/invites/:id', (c) => {
@@ -805,9 +1006,10 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     ctx,
     form,
     mail: (m) => auth.mail(m),
-    limits: { invite: inviteLimit, message: messageLimit },
+    limits: { invite: senderLimit, message: messageLimit },
     inviteToTree,
   })
+  mountLocal(app, api, { local: new Local(store, net), ctx, form })
   app.route('/api/v1', api)
 
   app.notFound((c) => (c.req.path.startsWith('/api/') ? c.json({ error: 'not found' }, 404) : c.html(html.messagePage(ctx(c), 'Not found', 'There is nothing at this address.'), 404)))
@@ -816,17 +1018,56 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     return c.req.path.startsWith('/api/') ? c.json({ error: 'server error' }, 500) : c.html(html.messagePage(ctx(c), 'Something broke', 'That did not work. Try again in a moment.'), 500)
   })
 
+  /** A bond to an existing person (other / other_id) or a new one from the person fields. */
+  function addBondFrom(treeId: string, personId: string, body: Record<string, any>): Person {
+    const kind = bondKind(body.kind)
+    if (!kind || kind === 'pet') throw new Error(`kind must be one of: ${Object.keys(BONDS).filter((k) => k !== 'pet').join(', ')}`)
+    const existingId = pickId(body.other_id ?? body.existing_id ?? body.existing)
+    if (!existingId && !String(body.given ?? '').trim() && !String(body.surname ?? '').trim()) throw new Error('pick someone in the tree or give a name')
+    return store.tx(() => {
+      const other = existingId ? store.person(treeId, existingId) : store.addPerson(treeId, body)
+      if (!other) throw new Error('that person is not in this tree')
+      store.addBond(treeId, personId, other.id, kind, body.note ?? null)
+      return other
+    })
+  }
+
+  /** Claim a living, unclaimed person as yourself, or add yourself. Your account's email is the proof. */
+  function claimSelf(treeId: string, user: User, body: Record<string, any>): string {
+    if (store.profilePerson(treeId, user.id)) throw new Error('You already have a profile in this tree.')
+    const chosen = pickId(body.person_id)
+    if (chosen) {
+      if (!store.unclaimed(treeId).some((p) => p.id === chosen)) throw new Error('That profile is taken, or is not someone living.')
+      store.claimProfile(treeId, chosen, user.id)
+      return chosen
+    }
+    if (!String(body.given ?? '').trim()) throw new Error('Pick yourself from the list, or give your name to add yourself.')
+    return store.tx(() => {
+      const me = store.addPerson(treeId, { ...body, living: 1 })
+      store.claimProfile(treeId, me.id, user.id)
+      return me.id
+    })
+  }
+
+  /** The one unclaimed person whose name is exactly this, so a pasted "Karen Ettinger <k@x>" lands on her profile. */
+  function matchPerson(treeId: string, name: string | null | undefined): string | null {
+    const want = String(name ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
+    if (!want) return null
+    const hits = store.unclaimed(treeId).filter((p) => fullName(p).toLowerCase() === want)
+    return hits.length === 1 ? hits[0]!.id : null
+  }
+
   /**
    * Make a one-time invite for `email` and mail it, within the sender's daily
    * allowance. The invitee goes into the sender's network as family, so the
    * people you bring into a tree are the first people in your network.
    */
-  async function inviteToTree(from: User, treeId: string, email: string, role: 'editor' | 'viewer', opts: { personId?: string | null; note?: string | null } = {}): Promise<{ url: string; mailed: boolean }> {
+  async function inviteToTree(from: User, treeId: string, email: string, role: 'editor' | 'viewer', opts: { personId?: string | null; note?: string | null; name?: string | null } = {}): Promise<{ url: string; mailed: boolean }> {
     const tree = store.tree(treeId)!
     const person = opts.personId ? store.person(treeId, opts.personId) : null
     const url = `${publicSite}/invite/${store.createInvite(treeId, from.id, role, email, { personId: person?.id ?? null, note: opts.note })}`
-    net.ensureContact(from.id, email, { name: person ? fullName(person) : '', circle: 'family', birthday: person?.birth_date ?? null }, { tree_id: treeId, person_id: person?.id ?? null })
-    const mailed = inviteLimit(`invite:${from.id}`) && inviteLimit(`to:${email}`)
+    net.ensureContact(from.id, email, { name: person ? fullName(person) : (opts.name ?? ''), circle: 'family', birthday: person?.birth_date ?? null }, { tree_id: treeId, person_id: person?.id ?? null })
+    const mailed = senderLimit(`invite:${from.id}`) && inviteLimit(`to:${email}`)
     if (mailed) await sendInvite(email, tree.name, from, url, role, { person, note: opts.note ?? null })
     return { url, mailed }
   }
@@ -854,41 +1095,46 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
 }
 
 /**
- * Add a parent, partner or child to `personId`: an existing person (body.existing
- * or body.existing_id) or a new one from the person fields. Returns the relative.
+ * Add a relative to `personId`: an existing person (body.existing or body.existing_id)
+ * or a new one from the person fields. Returns the relative.
+ *
+ *   as=parent       relation birth | adopted | step | foster
+ *   as=partner      kind married | partners | divorced
+ *   as=child        relation, family_id (which partnership)
+ *   as=sibling      sibling full | half | adopted | foster | step, via (the shared parent,
+ *                   or for step the step-parent); with no parents recorded, a full
+ *                   sibling still works: they share a family whose parents are unknown
+ *   as=grandparent  via (which parent), or none: an "Unknown" parent is put in between,
+ *                   for someone who knows their grandparents but not their parents
+ *
+ * raised=1 also records that the relative raised this person (a "Raised by" bond),
+ * which is how grandparents who brought someone up show as both.
  */
 export function addRelative(store: Store, treeId: string, personId: string, body: Record<string, any>): Person {
   const person = store.person(treeId, personId)
   if (!person) throw new Error('no such person')
+  if (person.kind === 'pet') throw new Error('pets have owners, not relatives')
   const as = String(body.as)
-  if (!['parent', 'partner', 'child'].includes(as)) throw new Error('as must be parent, partner or child')
+  if (!['parent', 'partner', 'child', 'sibling', 'grandparent'].includes(as)) throw new Error('as must be parent, partner, child, sibling or grandparent')
   const existingId = pickId(body.existing_id ?? body.existing)
   const hasNew = Boolean(String(body.given ?? '').trim() || String(body.surname ?? '').trim())
   if (!existingId && !hasNew) throw new Error('pick someone in the tree or give a name')
+  const relationOf = (value: unknown) => ((CHILD_RELATIONS as readonly string[]).includes(String(value)) ? String(value) : 'birth')
   return store.tx(() => {
     const other = existingId ? store.person(treeId, existingId) : store.addPerson(treeId, body)
     if (!other) throw new Error('that person is not in this tree')
     if (other.id === person.id) throw new Error('a person cannot be their own relative')
-    const relation = ['birth', 'adopted', 'step', 'foster'].includes(String(body.relation)) ? String(body.relation) : 'birth'
-    if (as === 'parent') {
-      // Join the person's existing birth family if it has a free slot, else start one.
-      const fams = store.parentFamilies(treeId, person.id).filter((f) => f.relation === relation)
-      const open = fams.find((f) => !f.family.partner1_id || !f.family.partner2_id)
-      if (open) store.setPartner(treeId, open.family.id, other.id)
-      else {
-        // The new parent's existing family with no other partner may already hold siblings; reuse it.
-        const single = store.spouseFamilies(treeId, other.id).find((u) => !u.partner)
-        const fam = single?.family ?? store.createFamily(treeId, other.id, null, { kind: 'partners' })
-        store.addChild(treeId, fam.id, person.id, relation)
-      }
-    } else if (as === 'partner') {
+    if (other.kind === 'pet') throw new Error('pets have owners, not relatives')
+    const relation = relationOf(body.relation)
+    if (as === 'parent') linkParent(store, treeId, person, other, relation)
+    else if (as === 'partner') {
       const single = store.spouseFamilies(treeId, person.id).find((u) => !u.partner)
       const kind = ['married', 'partners', 'divorced'].includes(String(body.kind)) ? String(body.kind) : 'married'
       if (single) {
         store.setPartner(treeId, single.family.id, other.id)
         store.updateFamily(treeId, single.family.id, { kind: kind === 'divorced' ? 'married' : kind, end_date: kind === 'divorced' ? 'Divorced' : undefined })
       } else store.createFamily(treeId, person.id, other.id, { kind: kind === 'divorced' ? 'married' : kind, end_date: kind === 'divorced' ? 'Divorced' : null })
-    } else {
+    } else if (as === 'child') {
       let familyId = body.family_id ? String(body.family_id) : ''
       if (familyId && !store.family(treeId, familyId)) familyId = ''
       if (!familyId) {
@@ -896,9 +1142,58 @@ export function addRelative(store: Store, treeId: string, personId: string, body
         familyId = single?.family.id ?? store.createFamily(treeId, person.id, null, { kind: 'partners' }).id
       }
       store.addChild(treeId, familyId, other.id, relation)
+    } else if (as === 'sibling') linkSibling(store, treeId, person, other, String(body.sibling ?? 'full'), body.via ? pickId(body.via) : null)
+    else {
+      // Grandparent: the parent of one of this person's parents, or of an unknown one.
+      const viaId = body.via ? pickId(body.via) : null
+      const parents = store.parents(treeId, person.id)
+      let parent = viaId ? (parents.find((p) => p.id === viaId) ?? null) : null
+      if (viaId && !parent) throw new Error('that is not one of their parents')
+      if (!parent) {
+        parent = store.addPerson(treeId, { given: 'Unknown', surname: '', notes: `A parent of ${fullName(person)} whose name we do not know yet. Fill this in if you learn who they were.` })
+        linkParent(store, treeId, person, parent, 'birth')
+      }
+      linkParent(store, treeId, parent, other, relation)
     }
+    if (['1', 'on', 'true', 'yes', true].includes(body.raised)) store.addBond(treeId, person.id, other.id, 'raised_by')
     return store.person(treeId, other.id)!
   })
+}
+
+/** Join the child's family of this relation if it has a free parent slot, else start one. */
+function linkParent(store: Store, treeId: string, child: Person, parent: Person, relation: string) {
+  const fams = store.parentFamilies(treeId, child.id).filter((f) => f.relation === relation)
+  const open = fams.find((f) => !f.family.partner1_id || !f.family.partner2_id)
+  if (open) store.setPartner(treeId, open.family.id, parent.id)
+  else {
+    // The new parent's existing family with no other partner may already hold siblings; reuse it.
+    const single = store.spouseFamilies(treeId, parent.id).find((u) => !u.partner)
+    const fam = single?.family ?? store.createFamily(treeId, parent.id, null, { kind: 'partners' })
+    store.addChild(treeId, fam.id, child.id, relation)
+  }
+}
+
+function linkSibling(store: Store, treeId: string, person: Person, sib: Person, kind: string, viaId: string | null) {
+  const families = store.parentFamilies(treeId, person.id)
+  if (kind === 'half' || kind === 'step') {
+    const candidates = kind === 'half' ? families.flatMap((f) => f.parents) : store.stepParents(treeId, person.id)
+    const via = viaId ? candidates.find((p) => p.id === viaId) : candidates.length === 1 ? candidates[0] : undefined
+    if (!via) throw new Error(kind === 'half' ? 'say which parent they share (add the parent first)' : 'say which step-parent is their parent (add the step-parent as a partner of your parent first)')
+    // Their own family with the shared parent: any of that parent's families this person is not in, partnerless first.
+    // For a step-sibling, never the step-parent's family with this person's own parent: that would make them a half-sibling.
+    const mine = new Set(families.map((f) => f.family.id))
+    const myParents = new Set(families.flatMap((f) => f.parents.map((p) => p.id)))
+    const theirs = store.spouseFamilies(treeId, via.id).filter((u) => !mine.has(u.family.id) && (kind === 'half' || !u.partner || !myParents.has(u.partner.id))).sort((a, b) => Number(Boolean(a.partner)) - Number(Boolean(b.partner)))[0]
+    store.addChild(treeId, theirs?.family.id ?? store.createFamily(treeId, via.id, null, { kind: 'partners' }).id, sib.id, 'birth')
+    return
+  }
+  const relation = kind === 'adopted' ? 'adopted' : kind === 'foster' ? 'foster' : 'birth'
+  // Same family as this person: their birth family when there is one. No parents recorded yet is fine,
+  // the family simply has no partners until someone fills them in.
+  const fam = families.find((f) => f.relation === 'birth') ?? families[0]
+  const familyId = fam?.family.id ?? store.createFamily(treeId, null, null, { kind: 'partners' }).id
+  if (!fam) store.addChild(treeId, familyId, person.id, 'birth')
+  store.addChild(treeId, familyId, sib.id, relation)
 }
 
 /** Run the server from the environment (used by `bun src/server.ts`, `ancestry serve` and the desktop app). */
@@ -910,7 +1205,7 @@ export function serve() {
   const auth = new Auth(store, mailer, site)
   // Ours lives at family.ancestry, relayed by pit.world; a self-hosted copy on an ordinary domain needs no relay.
   const publicSite = (process.env.ANCESTRY_PUBLIC_SITE ?? (new URL(site).hostname === 'family.ancestry' ? 'https://family.ancestry.pit.world' : site)).replace(/\/+$/, '')
-  const app = createApp({ store, auth, site, publicSite })
+  const app = createApp({ store, auth, site, publicSite, plan: planFromEnv() })
   const port = Number(process.env.PORT ?? 8792)
   startRingRefresh()
   Bun.serve({ port, hostname: process.env.HOST ?? '127.0.0.1', fetch: app.fetch, maxRequestBodySize: 30 * 1024 * 1024 })

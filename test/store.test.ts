@@ -82,7 +82,7 @@ describe('store', () => {
     const { store, user, tree } = setup()
     const cousin = store.findOrCreateUser('cousin@example.com')
     const token = store.createInvite(tree.id, user.id, 'viewer')
-    expect(store.acceptInvite(token, cousin.id)).toEqual({ tree_id: tree.id, person_id: null })
+    expect(store.acceptInvite(token, cousin.id)).toEqual({ tree_id: tree.id, person_id: null, mismatch: false })
     expect(store.role(tree.id, cousin.id)).toBe('viewer')
     expect(store.acceptInvite(token, cousin.id)).toBeNull()
     const own = store.createInvite(tree.id, user.id, 'viewer')

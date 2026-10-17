@@ -47,10 +47,10 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
 
   server.tool(
     'add_person',
-    'Add someone to a tree. To attach them to an existing person, give relative_of (that person\'s id) and as: parent, partner or child (what the NEW person is to them).',
-    { tree_id: z.string(), ...person, relative_of: z.string().optional(), as: z.enum(['parent', 'partner', 'child']).optional(), relation: z.enum(['birth', 'adopted', 'step', 'foster']).optional() },
+    "Add someone to a tree. To attach them to an existing person, give relative_of (that person's id) and as: parent, partner, child, sibling or grandparent (what the NEW person is to them). sibling takes sibling: full|half|adopted|foster|step and via (the shared parent, or the step-parent). grandparent takes via (which parent); without one, an 'Unknown' parent is put in between, for someone who never knew their parents. raised: true also records that they raised that person.",
+    { tree_id: z.string(), ...person, relative_of: z.string().optional(), as: z.enum(['parent', 'partner', 'child', 'sibling', 'grandparent']).optional(), relation: z.enum(['birth', 'adopted', 'step', 'foster']).optional(), sibling: z.enum(['full', 'half', 'adopted', 'foster', 'step']).optional(), via: z.string().optional(), raised: z.boolean().optional() },
     async ({ tree_id, ...fields }: any) => {
-      const p = await client.addPerson(tree_id, fields)
+      const p = await client.addPerson(tree_id, { ...fields, raised: fields.raised ? '1' : undefined })
       return text(`Added ${p.name} (${p.id}).\n\n${formatPerson(p)}`)
     },
   )
@@ -59,10 +59,42 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
 
   server.tool(
     'link_relative',
-    'Record that two people already in the tree are related: other_id is the parent, partner or child of person_id.',
-    { tree_id: z.string(), person_id: z.string(), other_id: z.string(), as: z.enum(['parent', 'partner', 'child']), relation: z.enum(['birth', 'adopted', 'step', 'foster']).optional() },
-    async ({ tree_id, person_id, other_id, as, relation }: any) => text(formatPerson(await client.addPerson(tree_id, { relative_of: person_id, existing_id: other_id, as, relation }))),
+    'Record that two people already in the tree are related: other_id is the parent, partner, child, sibling or grandparent of person_id.',
+    { tree_id: z.string(), person_id: z.string(), other_id: z.string(), as: z.enum(['parent', 'partner', 'child', 'sibling', 'grandparent']), relation: z.enum(['birth', 'adopted', 'step', 'foster']).optional(), sibling: z.enum(['full', 'half', 'adopted', 'foster', 'step']).optional(), via: z.string().optional() },
+    async ({ tree_id, person_id, other_id, ...rest }: any) => text(formatPerson(await client.addPerson(tree_id, { relative_of: person_id, existing_id: other_id, ...rest }))),
   )
+
+  server.tool(
+    'add_bond',
+    'Record a bond that is not descent: other_id raised, is the guardian, godparent or caregiver of, or is chosen family to person_id. This is how grandparents who raised someone show as both grandparents and "raised by".',
+    { tree_id: z.string(), person_id: z.string(), other_id: z.string(), kind: z.enum(['raised_by', 'guardian', 'godparent', 'caregiver', 'chosen_family', 'neighbor']), note: z.string().max(500).optional() },
+    async ({ tree_id, person_id, ...body }: any) => text(formatPerson((await client.addBond(tree_id, person_id, body)).person)),
+  )
+
+  server.tool(
+    'add_pet',
+    "Add a family pet with its owner(s). Needs the tree's Family plan; without it the answer says how to get it.",
+    { tree_id: z.string(), owner_ids: z.array(z.string()).min(1), name: z.string().max(200), species: z.string().max(80).optional(), birth_date: z.string().max(200).optional(), death_date: z.string().max(200).optional(), notes: z.string().max(20000).optional() },
+    async ({ tree_id, name, ...fields }: any) => {
+      const pet = await client.addPet(tree_id, { given: name, ...fields })
+      return text(`Added ${pet.name} (${pet.id})${pet.species ? `, ${pet.species}` : ''}.`)
+    },
+  )
+
+  server.tool(
+    'local_recommendations',
+    'Local businesses recommended by people the user knows (family, neighbors, friends, tree-mates), best first, with who vouched and why. Search by what they do or a town.',
+    { query: z.string().max(200).default(''), category: z.string().max(60).optional() },
+    async ({ query, category }: any) => json(await client.local(query, category)),
+  )
+  server.tool(
+    'recommend_business',
+    'Recommend a local business to everyone who knows the user. Only do this when the user asked to recommend it.',
+    { name: z.string().max(200), category: z.string().max(60), town: z.string().max(120).optional(), phone: z.string().max(60).optional(), website: z.string().max(500).optional(), note: z.string().max(1000).optional() },
+    async (body: any) => json(await client.recommendBusiness(body)),
+  )
+
+  server.tool('family_plan', "Whether a tree is on the one-time Family plan (pets, invite everyone), its price, and where to pay.", { tree_id: z.string() }, async ({ tree_id }: any) => json(await client.plan(tree_id)))
 
   server.tool(
     'add_event',
@@ -86,8 +118,8 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
 
   server.tool(
     'invite_to_tree',
-    'Email someone an invite to a family tree. Give person_id to invite them to BE that person: once they join, they manage their own profile. Up to 20 emails at once, and a daily limit per sender.',
-    { tree_id: z.string(), emails: z.array(z.string().email()).min(1).max(20), role: z.enum(['viewer', 'editor']).optional(), person_id: z.string().optional(), note: z.string().max(1000).optional() },
+    'Email invites to a family tree. emails may be addresses or pasted lines like "Aunt Rose <rose@x.com>": a name that matches someone in the tree invites them to BE that person (or give person_id). Up to 20 at once on the free plan, 500 on the Family plan.',
+    { tree_id: z.string(), emails: z.array(z.string().max(100_000)).min(1).max(500), role: z.enum(['viewer', 'editor']).optional(), person_id: z.string().optional(), note: z.string().max(1000).optional() },
     async ({ tree_id, emails, ...opts }: any) => json(await client.invite(tree_id, emails, opts)),
   )
 

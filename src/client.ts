@@ -118,6 +118,11 @@ export type PersonDetail = PersonSummary & {
   events: { id: string; type: string; date: string | null; place: string | null; description: string | null }[]
   sources: { id: string; title: string; url: string | null; page: string | null }[]
   photos: { id: string; url: string; caption: string | null }[]
+  siblings?: { id: string; name: string; kind: string; via: { id: string; name: string } | null }[]
+  bonds?: { id: string; kind: string; label: string; other: { id: string; name: string; kind: string }; note: string | null }[]
+  pets?: { id: string; name: string; species: string | null }[]
+  kind?: string
+  species?: string | null
 }
 export type TreeSummary = { id: string; name: string; description: string | null; role: string; people: number; home_person_id: string | null }
 
@@ -237,11 +242,40 @@ export class AncestryClient {
     return this.request<{ ok: boolean; version: string }>('/health')
   }
 
+  /** `other_id` is `kind` (raised_by, guardian, godparent, caregiver, chosen_family) to this person. */
+  addBond(tree: string, person: string, body: { kind: string; other_id?: string; note?: string; [k: string]: unknown }) {
+    return this.request<{ person: PersonDetail; other: PersonSummary }>(`/api/v1/trees/${enc(tree)}/people/${enc(person)}/bonds`, { method: 'POST', json: body })
+  }
+  removeBond(tree: string, id: string) {
+    return this.request<{ ok: boolean }>(`/api/v1/trees/${enc(tree)}/bonds/${enc(id)}`, { method: 'DELETE' })
+  }
+  addPet(tree: string, fields: Record<string, unknown>) {
+    return this.request<{ pet: PersonDetail }>(`/api/v1/trees/${enc(tree)}/pets`, { method: 'POST', json: fields }).then((r) => r.pet)
+  }
+  plan(tree: string) {
+    return this.request<{ active: boolean; paid_at: number | null; price: string; chains: string[]; url: string }>(`/api/v1/trees/${enc(tree)}/plan`)
+  }
+  planCheckout(tree: string, chain?: string) {
+    return this.request<{ checkoutUrl: string; ref: string } | { active: true }>(`/api/v1/trees/${enc(tree)}/plan/checkout`, { method: 'POST', json: { chain } })
+  }
+  claim(tree: string, body: Record<string, unknown>) {
+    return this.request<{ person: PersonDetail }>(`/api/v1/trees/${enc(tree)}/claim`, { method: 'POST', json: body }).then((r) => r.person)
+  }
+
+  // ---- local recommendations ----------------------------------------------
+
+  local(q = '', category?: string) {
+    return this.request<{ results: { name: string; category: string; town: string | null; phone: string | null; website: string | null; score: number; by: { name: string | null; circle: string; note: string | null; mine: boolean }[] }[] }>(`/api/v1/local?q=${encodeURIComponent(q)}${category ? `&category=${enc(category)}` : ''}`).then((r) => r.results)
+  }
+  recommendBusiness(body: Record<string, unknown>) {
+    return this.request<{ recommendation: { id: string; name: string; category: string } }>('/api/v1/local', { method: 'POST', json: body }).then((r) => r.recommendation)
+  }
+
   // ---- invites -----------------------------------------------------------
 
   /** Email invites (or, with no emails, make a link). With person_id, they join as that person. */
   invite(tree: string, emails: string[], opts: { role?: 'editor' | 'viewer'; person_id?: string; note?: string } = {}) {
-    return this.request<{ invites: { email: string | null; url: string; mailed: boolean }[] }>(`/api/v1/trees/${enc(tree)}/invites`, { method: 'POST', json: { emails, ...opts } }).then((r) => r.invites)
+    return this.request<{ invites: { email: string | null; name?: string | null; person_id?: string | null; url: string; mailed: boolean }[] }>(`/api/v1/trees/${enc(tree)}/invites`, { method: 'POST', json: { emails, ...opts } }).then((r) => r.invites)
   }
   invites(tree: string) {
     return this.request<{ invites: { id: string; email: string | null; role: string; person_id: string | null; expires_at: number }[] }>(`/api/v1/trees/${enc(tree)}/invites`).then((r) => r.invites)

@@ -2,7 +2,7 @@
  * Network and Inbox pages. Same rules as html.ts: server-rendered, forms post,
  * nothing needs JavaScript.
  */
-import { csrfField, esc, layout, type Ctx } from './html.js'
+import { adBanner, csrfField, esc, layout, type Ctx } from './html.js'
 import { fullName, lifespan, type Person, type Tree, type User } from './db.js'
 import { CIRCLES, contactName, formatAddresses, formatLabeled, type Circle, type Contact, type Message, type Recommendation, type Thread } from './network.js'
 
@@ -41,10 +41,11 @@ export function networkPage(ctx: Ctx, data: { contacts: Contact[]; circle: Circl
     ctx,
     'Network',
     `<div class="titlebar"><div><h1>Your network</h1><p class="muted">The people in your life: family, friends, neighbors and the people you work with.</p></div>
-<div class="actions"><a class="btn" href="/inbox">Inbox</a><a class="btn" href="/network/export.vcf">Export .vcf</a></div></div>
+<div class="actions"><a class="btn" href="/local">Local recommendations</a><a class="btn" href="/inbox">Inbox</a><a class="btn" href="/network/export.vcf">Export .vcf</a></div></div>
 <p class="actions">${tab(null, 'Everyone', total)}${CIRCLES.map((c) => tab(c, CIRCLE_LABEL[c], data.counts[c])).join('')}</p>
 <form class="search" method="get" action="/network">${data.circle ? `<input type="hidden" name="circle" value="${data.circle}">` : ''}<input name="q" value="${esc(data.q)}" placeholder="Search names, emails, companies, places" aria-label="Search contacts"><button>Search</button></form>
 ${list}
+${adBanner()}
 <details class="panel"${total ? '' : ' open'}><summary>Add someone</summary>${contactForm(ctx, '/network/contacts', null, 'Add to my network', data.circle ?? 'family')}</details>
 <details class="panel"><summary>Import contacts</summary><form method="post" action="/network/import" enctype="multipart/form-data" class="pform">${csrfField(ctx)}<p class="muted small">A .vcf file from your phone, Google Contacts, Outlook or Apple Contacts. People already here (same email) are skipped.</p><div class="grid2"><label>File<input type="file" name="file" accept=".vcf,text/vcard,text/x-vcard" required></label><label>Put them in<select name="circle">${CIRCLES.map((c) => `<option value="${c}">${CIRCLE_LABEL[c]}</option>`).join('')}</select></label></div><button>Import</button></form></details>
 ${principles}`,
