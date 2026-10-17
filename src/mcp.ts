@@ -47,8 +47,8 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
 
   server.tool(
     'add_person',
-    "Add someone to a tree. To attach them to an existing person, give relative_of (that person's id) and as: parent, partner, child, sibling or grandparent (what the NEW person is to them). partner takes kind: married|partners|dating (boyfriend or girlfriend)|divorced. sibling takes sibling: full|half|adopted|foster|step and via (the shared parent, or the step-parent). grandparent takes via (which parent); without one, an 'Unknown' parent is put in between, for someone who never knew their parents. raised: true also records that they raised that person.",
-    { tree_id: z.string(), ...person, relative_of: z.string().optional(), as: z.enum(['parent', 'partner', 'child', 'sibling', 'grandparent']).optional(), relation: z.enum(['birth', 'adopted', 'step', 'foster']).optional(), kind: z.enum(['married', 'partners', 'dating', 'divorced']).optional(), sibling: z.enum(['full', 'half', 'adopted', 'foster', 'step']).optional(), via: z.string().optional(), raised: z.boolean().optional() },
+    "Add someone to a tree. To attach them to an existing person, give relative_of (that person's id) and as: parent, partner, child, sibling, grandparent, great_grandparent, grandchild, aunt_uncle, niece_nephew or cousin (what the NEW person is to them; via picks who is in between, and with none an \"Unknown\" person fills the gap). partner takes kind: married|engaged|partners|dating (boyfriend or girlfriend)|divorced. sibling takes sibling: full|half|adopted|foster|step and via (the shared parent, or the step-parent). grandparent takes via (which parent); without one, an 'Unknown' parent is put in between, for someone who never knew their parents. raised: true also records that they raised that person.",
+    { tree_id: z.string(), ...person, relative_of: z.string().optional(), as: z.enum(['parent', 'partner', 'child', 'sibling', 'grandparent', 'great_grandparent', 'grandchild', 'aunt_uncle', 'niece_nephew', 'cousin']).optional(), relation: z.enum(['birth', 'adopted', 'step', 'foster']).optional(), kind: z.enum(['married', 'engaged', 'partners', 'dating', 'divorced']).optional(), sibling: z.enum(['full', 'half', 'adopted', 'foster', 'step']).optional(), via: z.string().optional(), raised: z.boolean().optional() },
     async ({ tree_id, ...fields }: any) => {
       const p = await client.addPerson(tree_id, { ...fields, raised: fields.raised ? '1' : undefined })
       return text(`Added ${p.name} (${p.id}).\n\n${formatPerson(p)}`)
@@ -60,14 +60,14 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
   server.tool(
     'link_relative',
     'Record that two people already in the tree are related: other_id is the parent, partner, child, sibling or grandparent of person_id. A partner takes kind: married, partners, dating (boyfriend or girlfriend) or divorced.',
-    { tree_id: z.string(), person_id: z.string(), other_id: z.string(), as: z.enum(['parent', 'partner', 'child', 'sibling', 'grandparent']), relation: z.enum(['birth', 'adopted', 'step', 'foster']).optional(), kind: z.enum(['married', 'partners', 'dating', 'divorced']).optional(), sibling: z.enum(['full', 'half', 'adopted', 'foster', 'step']).optional(), via: z.string().optional() },
+    { tree_id: z.string(), person_id: z.string(), other_id: z.string(), as: z.enum(['parent', 'partner', 'child', 'sibling', 'grandparent', 'great_grandparent', 'grandchild', 'aunt_uncle', 'niece_nephew', 'cousin']), relation: z.enum(['birth', 'adopted', 'step', 'foster']).optional(), kind: z.enum(['married', 'engaged', 'partners', 'dating', 'divorced']).optional(), sibling: z.enum(['full', 'half', 'adopted', 'foster', 'step']).optional(), via: z.string().optional() },
     async ({ tree_id, person_id, other_id, ...rest }: any) => text(formatPerson(await client.addPerson(tree_id, { relative_of: person_id, existing_id: other_id, ...rest }))),
   )
 
   server.tool(
     'add_bond',
-    'Record a bond that is not descent: other_id raised, is the guardian, godparent or caregiver of, or is chosen family to person_id. This is how grandparents who raised someone show as both grandparents and "raised by".',
-    { tree_id: z.string(), person_id: z.string(), other_id: z.string(), kind: z.enum(['raised_by', 'guardian', 'godparent', 'caregiver', 'chosen_family', 'friend', 'neighbor']), note: z.string().max(500).optional() },
+    'Record a bond that is not descent: other_id is the friend, best friend, family friend, ex, godparent, guardian, caregiver, neighbor, roommate, classmate, teacher, mentor, coworker, boss or teammate of person_id, served with them, raised them, or is chosen family. This is how grandparents who raised someone show as both grandparents and "raised by".',
+    { tree_id: z.string(), person_id: z.string(), other_id: z.string(), kind: z.enum(['friend', 'best_friend', 'family_friend', 'chosen_family', 'ex', 'raised_by', 'guardian', 'godparent', 'caregiver', 'neighbor', 'roommate', 'classmate', 'teacher', 'mentor', 'coworker', 'boss', 'teammate', 'served_with']), note: z.string().max(500).optional() },
     async ({ tree_id, person_id, ...body }: any) => text(formatPerson((await client.addBond(tree_id, person_id, body)).person)),
   )
 

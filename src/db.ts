@@ -106,7 +106,7 @@ export type Sibling = { person: Person; kind: SiblingKind; via: Person | null }
 /** `union` is the partnership's kind on a partner step: married, partners or dating. */
 export type PathStep = { person: Person; step: 'self' | 'parent' | 'child' | 'partner'; relation?: string; union?: string }
 /** What a partnership can be. Divorced is a marriage with an end date. */
-export const UNION_KINDS = ['married', 'partners', 'dating'] as const
+export const UNION_KINDS = ['married', 'engaged', 'partners', 'dating'] as const
 export type Descendant = { person: Person; unions: { partner: Person | null; children: Descendant[] }[] }
 
 export const PERSON_FIELDS = ['given', 'surname', 'sex', 'birth_date', 'birth_place', 'death_date', 'death_place', 'living', 'notes', 'species'] as const
@@ -129,7 +129,18 @@ export const BONDS: Record<string, { as: string; back: string }> = {
   caregiver: { as: 'Caregiver', back: 'Cared for' },
   chosen_family: { as: 'Chosen family', back: 'Chosen family' },
   friend: { as: 'Friend', back: 'Friend' },
+  best_friend: { as: 'Best friend', back: 'Best friend' },
+  family_friend: { as: 'Family friend', back: 'Family friend' },
+  ex: { as: 'Ex', back: 'Ex' },
   neighbor: { as: 'Neighbor', back: 'Neighbor' },
+  roommate: { as: 'Roommate', back: 'Roommate' },
+  classmate: { as: 'Classmate', back: 'Classmate' },
+  teacher: { as: 'Teacher', back: 'Student' },
+  mentor: { as: 'Mentor', back: 'Mentee' },
+  coworker: { as: 'Coworker', back: 'Coworker' },
+  boss: { as: 'Boss', back: 'Employee' },
+  teammate: { as: 'Teammate', back: 'Teammate' },
+  served_with: { as: 'Served with', back: 'Served with' },
   pet: { as: 'Owner', back: 'Pet' },
 }
 export const bondKind = (value: unknown): string | null => {

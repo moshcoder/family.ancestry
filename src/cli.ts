@@ -19,11 +19,13 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
   ancestry show <person>            everything about one person
   ancestry add --given G --surname S [--sex F|M] [--born DATE] [--birthplace P]
                [--died DATE] [--deathplace P] [--living]
-               [--parent-of ID | --child-of ID | --partner-of ID | --sibling-of ID | --grandparent-of ID]
+               [--parent-of ID | --child-of ID | --partner-of ID | --sibling-of ID | --grandparent-of ID |
+                --great-grandparent-of ID | --grandchild-of ID | --aunt-uncle-of ID | --niece-nephew-of ID | --cousin-of ID]
                [--relation birth|adopted|step|foster] [--sibling full|half|adopted|foster|step]
-               [--kind married|partners|dating|divorced]   (for --partner-of; dating = boyfriend/girlfriend)
+               [--kind married|engaged|partners|dating|divorced]   (for --partner-of; dating = boyfriend/girlfriend)
                [--via PARENT] [--raised]   (--raised: they raised that person)
-  ancestry bond <person> <raised_by|guardian|godparent|caregiver|chosen_family|friend|neighbor> <other>
+  ancestry bond <person> <friend|best_friend|family_friend|chosen_family|ex|raised_by|guardian|godparent|caregiver|
+               neighbor|roommate|classmate|teacher|mentor|coworker|boss|teammate|served_with> <other>
                                     a bond that is not descent: "bond Sam raised_by Rose"
   ancestry pet <owner> <name> [--species Dog] [--born DATE]   (Family plan)
   ancestry plan [buy --chain USDC_POL]     the one-time Family plan for this tree
@@ -542,12 +544,12 @@ export async function runCli(argv: string[]): Promise<number> {
       case 'add': {
         const tree = await pickTree(client, f.tree)
         const fields = personFields(f)
-        const rel = (['parent-of', 'child-of', 'partner-of', 'sibling-of', 'grandparent-of'] as const).find((k) => typeof f[k] === 'string')
+        const rel = (['parent-of', 'child-of', 'partner-of', 'sibling-of', 'grandparent-of', 'great-grandparent-of', 'grandchild-of', 'aunt-uncle-of', 'niece-nephew-of', 'cousin-of'] as const).find((k) => typeof f[k] === 'string')
         if (rel) {
           // "add --parent-of X" adds a parent TO X; "--child-of X" adds a child to X.
           Object.assign(fields, {
             relative_of: await pickPerson(client, tree.id, str(f[rel])),
-            as: rel.replace('-of', ''),
+            as: rel.replace('-of', '').replace(/-/g, '_'),
             relation: str(f.relation) ?? 'birth',
             kind: str(f.kind),
             sibling: str(f.sibling),
@@ -634,7 +636,7 @@ export async function runCli(argv: string[]): Promise<number> {
       case 'bond': {
         const tree = await pickTree(client, f.tree)
         const [who, kind, ...other] = rest
-        if (!who || !kind || !other.length) throw new Error('ancestry bond <person> <raised_by|guardian|godparent|caregiver|chosen_family|friend|neighbor> <other>')
+        if (!who || !kind || !other.length) throw new Error('ancestry bond <person> <friend|best_friend|family_friend|chosen_family|ex|raised_by|guardian|godparent|caregiver|neighbor|roommate|classmate|teacher|mentor|coworker|boss|teammate|served_with> <other>')
         const r = await client.addBond(tree.id, await pickPerson(client, tree.id, who), { kind, other_id: await pickPerson(client, tree.id, other.join(' ')), note: str(f.note) })
         print(r, () => formatPerson(r.person))
         return 0

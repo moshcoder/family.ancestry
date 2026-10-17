@@ -54,6 +54,7 @@ const QUALIFIER: Record<string, { parent: [string, string, string]; child: [stri
 /** The word for a partner, by the partnership's kind. No kind (a hand-built path) is a marriage. */
 function partnerWord(union: string | undefined, sex: string): string {
   if (union === 'dating') return gendered(sex, 'boyfriend', 'girlfriend', 'partner')
+  if (union === 'engaged') return gendered(sex, 'fiancé', 'fiancée', 'fiancé(e)')
   if (union && union !== 'married') return 'partner'
   return gendered(sex, 'husband', 'wife', 'partner')
 }

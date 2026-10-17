@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.10.0'
+export const VERSION = '0.11.0'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -212,7 +212,7 @@ export function personForm(ctx: Ctx, action: string, p: Partial<Person> | null, 
   <button>${esc(label)}</button></form>`
 }
 
-const UNION_LABEL: Record<string, string> = { married: 'married', partners: 'partners', dating: 'boyfriend / girlfriend' }
+const UNION_LABEL: Record<string, string> = { married: 'married', engaged: 'engaged', partners: 'partners', dating: 'boyfriend / girlfriend' }
 const unionLabel = (kind: string) => UNION_LABEL[kind] ?? kind
 /** The kinds a partnership can be, with an imported one (a civil union, say) kept as it was. */
 const unionOptions = (current: string) =>
@@ -220,11 +220,12 @@ const unionOptions = (current: string) =>
 const RELATION_OPTIONS = `<option value="birth">birth</option><option value="adopted">adopted</option><option value="step">step</option><option value="foster">foster</option>`
 const SEX_SELECT = `<label>Sex<select name="sex"><option value="U">Unknown</option><option value="F">Female</option><option value="M">Male</option><option value="X">Other</option></select></label>`
 
-type RelativeKind = 'parent' | 'partner' | 'child' | 'sibling' | 'grandparent'
+type RelativeKind = 'parent' | 'partner' | 'child' | 'sibling' | 'grandparent' | 'great_grandparent' | 'grandchild' | 'aunt_uncle' | 'niece_nephew' | 'cousin'
+type Kin = { families?: { family: Family; partner: Person | null; children?: Person[] }[]; parents?: Person[]; stepParents?: Person[]; siblings?: Person[]; grandparents?: Person[]; auntsUncles?: Person[] }
 
 /** "Add a relative": a new person, or someone already in the tree (picked by name from a datalist). */
-function relativeForm(ctx: Ctx, tree: Tree, person: Person, kind: RelativeKind, opts: { families?: { family: Family; partner: Person | null }[]; parents?: Person[]; stepParents?: Person[] } = {}): string {
-  const titles: Record<RelativeKind, string> = { parent: 'Add a parent', partner: 'Add a partner', child: 'Add a child', sibling: 'Add a brother or sister', grandparent: 'Add a grandparent' }
+function relativeForm(ctx: Ctx, tree: Tree, person: Person, kind: RelativeKind, opts: Kin = {}): string {
+  const titles: Record<RelativeKind, string> = { parent: 'Add a parent', partner: 'Add a partner', child: 'Add a child', sibling: 'Add a brother or sister', grandparent: 'Add a grandparent', great_grandparent: 'Add a great-grandparent', grandchild: 'Add a grandchild', aunt_uncle: 'Add an aunt or uncle', niece_nephew: 'Add a niece or nephew', cousin: 'Add a cousin' }
   const families = opts.families ?? []
   const parents = opts.parents ?? []
   const stepParents = opts.stepParents ?? []
@@ -232,8 +233,8 @@ function relativeForm(ctx: Ctx, tree: Tree, person: Person, kind: RelativeKind, 
     kind === 'child' && families.length
       ? `<label>With<select name="family_id">${families.map((f) => `<option value="${f.family.id}">${f.partner ? esc(fullName(f.partner)) : 'unknown partner'}</option>`).join('')}<option value="">no partner / unknown</option></select></label>`
       : ''
-  const relation = kind === 'parent' || kind === 'child' || kind === 'grandparent' ? `<label>Relationship<select name="relation">${RELATION_OPTIONS}</select></label>` : ''
-  const kindSelect = kind === 'partner' ? `<label>As<select name="kind"><option value="married">married</option><option value="partners">partners</option><option value="dating">boyfriend / girlfriend</option><option value="divorced">divorced</option></select></label>` : ''
+  const relation = ['parent', 'child', 'grandparent', 'great_grandparent', 'grandchild', 'niece_nephew', 'cousin'].includes(kind) ? `<label>Relationship<select name="relation">${RELATION_OPTIONS}</select></label>` : ''
+  const kindSelect = kind === 'partner' ? `<label>As<select name="kind"><option value="married">married</option><option value="engaged">engaged</option><option value="partners">partners</option><option value="dating">boyfriend / girlfriend</option><option value="divorced">divorced</option></select></label>` : ''
   const siblingSelect =
     kind === 'sibling'
       ? `<label>Kind<select name="sibling"><option value="full">full (same parents${parents.length ? '' : ', even if unknown'})</option>${parents.length ? '<option value="half">half (one parent shared)</option>' : ''}<option value="adopted">adopted into the family</option><option value="foster">foster</option>${stepParents.length ? '<option value="step">step (a step-parent\'s child)</option>' : ''}</select></label>${
@@ -246,8 +247,19 @@ function relativeForm(ctx: Ctx, tree: Tree, person: Person, kind: RelativeKind, 
     kind === 'grandparent'
       ? `<label>On whose side<select name="via">${parents.map((pp) => `<option value="${pp.id}">${esc(fullName(pp))}'s parent</option>`).join('')}<option value="">a parent we don't know</option></select></label>`
       : ''
+  // The rest of the family: through whom, or an "Unknown" in between when nobody knows yet.
+  const name = (pp: Person) => esc(fullName(pp))
+  const through = (label: string, options: string, none: string) => `<label>${label}<select name="via">${options}<option value="">${none}</option></select></label>`
+  const children = (opts.families ?? []).flatMap((f) => f.children ?? [])
+  const viaKin: Partial<Record<RelativeKind, string>> = {
+    great_grandparent: through('Through', `${(opts.grandparents ?? []).map((g) => `<option value="${g.id}">${name(g)}'s parent</option>`).join('')}${(opts.parents ?? []).map((pp) => `<option value="${pp.id}">${name(pp)}'s side, grandparent unknown</option>`).join('')}`, 'nobody in between known yet'),
+    grandchild: through('Whose child', children.map((ch) => `<option value="${ch.id}">${name(ch)}'s</option>`).join(''), 'a child we don\'t know'),
+    aunt_uncle: through('Brother or sister of', (opts.parents ?? []).map((pp) => `<option value="${pp.id}">${name(pp)}</option>`).join(''), 'a parent we don\'t know'),
+    niece_nephew: through('Whose child', (opts.siblings ?? []).map((sb) => `<option value="${sb.id}">${name(sb)}'s</option>`).join(''), 'a brother or sister we don\'t know'),
+    cousin: through('Whose child', `${(opts.auntsUncles ?? []).map((a) => `<option value="${a.id}">${name(a)}'s</option>`).join('')}${(opts.parents ?? []).map((pp) => `<option value="${pp.id}">on ${name(pp)}'s side, aunt or uncle unknown</option>`).join('')}`, 'nobody in between known yet'),
+  }
   const raised = kind === 'parent' || kind === 'grandparent' || kind === 'sibling' ? `<label class="check"><input type="checkbox" name="raised" value="1"> They raised ${esc(person.given || 'them')}</label>` : ''
-  const surname = kind === 'child' || kind === 'sibling' || (kind === 'parent' && person.sex !== 'F') ? esc(person.surname) : ''
+  const surname = kind === 'child' || kind === 'sibling' || kind === 'grandchild' || (kind === 'parent' && person.sex !== 'F') ? esc(person.surname) : ''
   return `<details class="panel"><summary>${titles[kind]}</summary>
 <form method="post" action="/t/${tree.id}/p/${person.id}/relative" class="pform">${csrfField(ctx)}<input type="hidden" name="as" value="${kind}">
   ${kind === 'grandparent' && !parents.length ? '<p class="muted small">No parents recorded: we put an "Unknown" parent in between, so you can fill them in later.</p>' : ''}
@@ -256,18 +268,27 @@ function relativeForm(ctx: Ctx, tree: Tree, person: Person, kind: RelativeKind, 
   <p class="muted small">Or someone new:</p>
   <div class="grid2"><label>Given names<input name="given" maxlength="200"></label><label>Surname<input name="surname" maxlength="200" value="${surname}"></label></div>
   <div class="grid3">${SEX_SELECT}<label>Born<input name="birth_date" maxlength="200"></label><label class="check"><input type="checkbox" name="living" value="1"> Living</label></div>
-  <div class="grid3">${famSelect}${relation}${kindSelect}${siblingSelect}${viaGrand}</div>
+  <div class="grid3">${famSelect}${relation}${kindSelect}${siblingSelect}${viaGrand}${viaKin[kind] ?? ''}</div>
   ${raised}
   <button>${titles[kind]}</button>
 </form></details>`
 }
 
-/** Raised by, guardian, godparent, caregiver, chosen family: people who matter and are not a line of descent. */
+/** Every bond that is not descent, grouped for the picker. Pets have their own form. */
+const BOND_GROUPS: [string, string[]][] = [
+  ['Friends', ['friend', 'best_friend', 'family_friend', 'chosen_family', 'ex']],
+  ['Raised and cared for', ['raised_by', 'guardian', 'godparent', 'caregiver']],
+  ['Home, school and work', ['neighbor', 'roommate', 'classmate', 'teacher', 'mentor', 'coworker', 'boss', 'teammate', 'served_with']],
+]
+
+/** Friends, and everyone else who matters and is not a line of descent: raised by, godparent, coworker, neighbor. */
 function bondForm(ctx: Ctx, tree: Tree, person: Person): string {
-  const kinds = Object.entries(BONDS).filter(([k]) => k !== 'pet')
-  return `<details class="panel"><summary>Add someone who raised them, a godparent, a guardian…</summary>
+  const listed = new Set(BOND_GROUPS.flatMap(([, ks]) => ks))
+  const groups: [string, string[]][] = [...BOND_GROUPS, ['Other', Object.keys(BONDS).filter((k) => k !== 'pet' && !listed.has(k))]]
+  const options = groups.filter(([, ks]) => ks.length).map(([label, ks]) => `<optgroup label="${label}">${ks.filter((k) => BONDS[k]).map((k) => `<option value="${k}"${k === 'friend' ? ' selected' : ''}>${esc(BONDS[k]!.as.toLowerCase())}</option>`).join('')}</optgroup>`).join('')
+  return `<details class="panel" open><summary>Add a friend, godparent, neighbor, coworker…</summary>
 <form method="post" action="/t/${tree.id}/p/${person.id}/bonds" class="pform">${csrfField(ctx)}
-  <label>They are ${esc(person.given || 'this person')}'s<select name="kind">${kinds.map(([k, b]) => `<option value="${k}">${esc(b.as.toLowerCase())}</option>`).join('')}</select></label>
+  <label>They are ${esc(person.given || 'this person')}'s<select name="kind">${options}</select></label>
   <p class="muted small">Someone already in the tree:</p>
   <div class="row"><input name="existing" list="people-${tree.id}" placeholder="Start typing a name" autocomplete="off"></div>
   <p class="muted small">Or someone new:</p>
@@ -298,6 +319,8 @@ export type PersonView = {
   unions: { family: Family; partner: Person | null; children: Person[] }[]
   siblings?: Sibling[]
   stepParents?: Person[]
+  grandparents?: Person[]
+  auntsUncles?: Person[]
   bonds?: { id: string; kind: string; label: string; other: Person; note: string | null }[]
   pets?: Person[]
   /** The tree is on the Family plan. */
@@ -374,11 +397,14 @@ ${pet ? '' : `<div class="cols">
 </div>`}
 ${
   v.bonds?.length
-    ? `<section><h2>${pet ? 'Family' : 'Raised by, godparents and pets'}</h2><ul>${v.bonds.map((b) => `<li><span class="tag">${esc(b.label)}</span> ${personLink(tree.id, b.other)}${b.other.kind === 'pet' && b.other.species ? ` <span class="muted small">${esc(b.other.species)}</span>` : ''}${b.note ? ` <span class="muted small">${esc(b.note)}</span>` : ''}${edit ? ` <form method="post" action="/t/${tree.id}/bonds/${b.id}/delete" class="inline">${csrfField(ctx)}<input type="hidden" name="back" value="${p.id}"><button class="x" title="Remove">×</button></form>` : ''}</li>`).join('')}</ul></section>`
+    ? `<section><h2>${pet ? 'Family' : 'Friends, godparents and others'}</h2><ul>${v.bonds.map((b) => `<li><span class="tag">${esc(b.label)}</span> ${personLink(tree.id, b.other)}${b.other.kind === 'pet' && b.other.species ? ` <span class="muted small">${esc(b.other.species)}</span>` : ''}${b.note ? ` <span class="muted small">${esc(b.note)}</span>` : ''}${edit ? ` <form method="post" action="/t/${tree.id}/bonds/${b.id}/delete" class="inline">${csrfField(ctx)}<input type="hidden" name="back" value="${p.id}"><button class="x" title="Remove">×</button></form>` : ''}</li>`).join('')}</ul></section>`
     : ''
 }
 ${v.businesses ?? ''}
-${edit && !pet ? `${datalist}<div class="cols3">${relativeForm(ctx, tree, p, 'parent')}${relativeForm(ctx, tree, p, 'partner')}${relativeForm(ctx, tree, p, 'child', { families: v.unions })}${relativeForm(ctx, tree, p, 'sibling', { parents: v.parents.flatMap((f) => f.parents), stepParents: v.stepParents })}${relativeForm(ctx, tree, p, 'grandparent', { parents: v.parents.flatMap((f) => f.parents) })}${bondForm(ctx, tree, p)}${petForm(ctx, tree, p, Boolean(v.plan))}</div>` : ''}
+${edit && !pet ? (() => {
+  const kin: Kin = { families: v.unions, parents: v.parents.flatMap((f) => f.parents), stepParents: v.stepParents, siblings: (v.siblings ?? []).map((s) => s.person), grandparents: v.grandparents, auntsUncles: v.auntsUncles }
+  return `${datalist}<section class="add-kin"><h2>Add family and friends</h2>${bondForm(ctx, tree, p)}<div class="cols3">${(['parent', 'partner', 'child', 'sibling', 'grandparent', 'great_grandparent', 'grandchild', 'aunt_uncle', 'niece_nephew', 'cousin'] as RelativeKind[]).map((k) => relativeForm(ctx, tree, p, k, kin)).join('')}${petForm(ctx, tree, p, Boolean(v.plan))}</div></section>`
+})() : ''}
 
 <section><h2>Timeline</h2>${
       timeline.length
