@@ -13,7 +13,7 @@ needs [one setting](https://pit.world/connect).
 - **Join the family as yourself.** Right after you add someone, the page quietly offers
   to invite them; they join *as that person* and keep their own profile up to date,
   even as a viewer.
-- **Network (add-on, free for everyone):** family, friends and business contacts with
+- **Network (add-on, free for everyone):** family, friends, neighbors and business contacts with
   every detail you keep (emails, phones, addresses, birthdays, links, notes), vCard
   import/export, and a private **Inbox**. See [Network](#network).
 - **People** with dates, places, notes and stories, photos, and a life timeline.

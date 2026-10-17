@@ -270,6 +270,15 @@ export class AncestryClient {
   connectContact(id: string, note?: string) {
     return this.request<{ result: string }>(`/api/v1/contacts/${enc(id)}/connect`, { method: 'POST', json: { note } }).then((r) => r.result)
   }
+  recommendContact(id: string, to: string, note?: string) {
+    return this.request<{ recommendation: { id: string; card: { name: string } }; to: UserSummary }>(`/api/v1/contacts/${enc(id)}/recommend`, { method: 'POST', json: { to, note } })
+  }
+  recommendations() {
+    return this.request<{ recommendations: { id: string; card: { circle: string; name: string; company: string | null; title: string | null; emails: { value: string }[]; phones: { value: string }[] }; note: string | null; from: UserSummary }[] }>('/api/v1/recommendations').then((r) => r.recommendations)
+  }
+  saveRecommendation(id: string) {
+    return this.request<{ contact: ContactSummary }>(`/api/v1/recommendations/${enc(id)}/save`, { method: 'POST' }).then((r) => r.contact)
+  }
   importContacts(vcf: string, circle = 'friends') {
     return this.request<{ imported: { added: number; skipped: number } }>(`/api/v1/contacts/import?circle=${enc(circle)}`, { method: 'POST', body: vcf, headers: { 'content-type': 'text/vcard; charset=utf-8' } }).then((r) => r.imported)
   }

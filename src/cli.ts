@@ -30,7 +30,7 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
                                     email invites; --as invites them to be that person
   ancestry members                  who is in the tree, and pending invites
 
-  ancestry contacts [search] [--circle family|friends|business]
+  ancestry contacts [search] [--circle family|friends|neighbors|business]
   ancestry contact add --name N [--email E] [--phone P] [--circle C] [--relationship R]
                [--company C] [--title T] [--birthday D] [--address TEXT] [--link URL] [--note TEXT]
   ancestry contact <name|id>        everything about one contact   (contact rm <id> removes)
@@ -38,6 +38,8 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
   ancestry connect <contact> [--note TEXT]   ask them to connect (one email)
   ancestry inbox                    your conversations
   ancestry message <contact> <text...>       write to someone you are connected with
+  ancestry recommend <contact> --to <who> [--note TEXT]   pass a contact on to someone you know
+  ancestry recommendations [save <id>]       what people recommended to you
   ancestry thread <contact>         read a conversation
 
   ancestry open [person]            open the tree (or a person) in the browser
@@ -463,6 +465,24 @@ export async function runCli(argv: string[]): Promise<number> {
       case 'connect': {
         const c = await pickContact(client, rest.join(' '))
         console.log(await client.connectContact(c.id, str(f.note)))
+        return 0
+      }
+      case 'recommend': {
+        const c = await pickContact(client, rest.join(' '))
+        if (typeof f.to !== 'string') throw new Error('ancestry recommend <contact> --to <who>')
+        const r = await client.recommendContact(c.id, await pickCorrespondent(client, f.to), str(f.note))
+        print(r, () => `Recommended ${c.name} to ${r.to.name ?? r.to.email}.`)
+        return 0
+      }
+      case 'recommendations': {
+        if (rest[0] === 'save') {
+          if (!rest[1]) throw new Error('ancestry recommendations save <id>')
+          const saved = await client.saveRecommendation(rest[1])
+          print(saved, () => `Saved: ${formatContactLine(saved)}`)
+          return 0
+        }
+        const recs = await client.recommendations()
+        print(recs, () => (recs.length ? recs.map((r) => `${r.id}  ${r.card.name}  ${[r.card.circle, r.card.title, r.card.company].filter(Boolean).join(' · ')}\n      from ${r.from.name ?? r.from.email}${r.note ? `: ${r.note}` : ''}`).join('\n') : 'Nothing recommended to you yet.'))
         return 0
       }
       case 'inbox': {

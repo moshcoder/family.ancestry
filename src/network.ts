@@ -10,15 +10,17 @@
  *   - you can message someone only after you both said yes (a connection) or
  *     you share a family tree, and only one person at a time: no broadcasts,
  *   - anyone can block anyone, and a block ends the conversation both ways,
- *   - invitations and messages are rate-limited per sender.
+ *   - invitations and messages are rate-limited per sender,
+ *   - a recommendation ("our plumber is great") goes to one person you know, the
+ *     same way a message does, and lands in their inbox with a button to save it.
  *
- * Circles are family, friends and business: the same human network, sorted.
+ * Circles are family, friends, neighbors and business: the same human network, sorted.
  */
 import type { Database } from 'bun:sqlite'
 import { clean, newId, sha256, type Store, type User } from './db.js'
 
-export type Circle = 'family' | 'friends' | 'business'
-export const CIRCLES: Circle[] = ['family', 'friends', 'business']
+export type Circle = 'family' | 'friends' | 'neighbors' | 'business'
+export const CIRCLES: Circle[] = ['family', 'friends', 'neighbors', 'business']
 export const asCircle = (value: unknown): Circle => (CIRCLES.includes(String(value) as Circle) ? (String(value) as Circle) : 'friends')
 
 export type Labeled = { label: string | null; value: string }
@@ -52,6 +54,10 @@ export const CONTACT_FIELDS = ['circle', 'name', 'nickname', 'relationship', 'co
 export type Message = { id: string; sender_id: string; recipient_id: string; body: string; created_at: number }
 export type Thread = { other: User; last: Message; unread: number }
 
+/** What a recommendation carries: the shareable part of a contact, never your private notes or how you know them. */
+export type Card = Pick<Contact, 'circle' | 'name' | 'company' | 'title' | 'emails' | 'phones' | 'addresses' | 'links'>
+export type Recommendation = { id: string; from_user: string; to_user: string; card: Card; note: string | null; created_at: number; saved_contact_id: string | null }
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS contacts (
   id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -84,6 +90,12 @@ CREATE TABLE IF NOT EXISTS blocks (
   blocked_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   created_at INTEGER NOT NULL, PRIMARY KEY (user_id, blocked_id)
 );
+CREATE TABLE IF NOT EXISTS recommendations (
+  id TEXT PRIMARY KEY, from_user TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  to_user TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  card TEXT NOT NULL, note TEXT, created_at INTEGER NOT NULL, saved_contact_id TEXT, dismissed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS recommendations_to ON recommendations(to_user, created_at);
 `
 
 const pair = (a: string, b: string): [string, string] => (a < b ? [a, b] : [b, a])
@@ -186,7 +198,7 @@ export class Network {
   }
 
   circleCounts(ownerId: string): Record<Circle, number> {
-    const out: Record<Circle, number> = { family: 0, friends: 0, business: 0 }
+    const out: Record<Circle, number> = { family: 0, friends: 0, neighbors: 0, business: 0 }
     for (const r of this.db.query<{ circle: Circle; n: number }, [string]>('SELECT circle, COUNT(*) AS n FROM contacts WHERE owner_id = ? GROUP BY circle').all(ownerId)) if (r.circle in out) out[r.circle] = r.n
     return out
   }
@@ -360,6 +372,60 @@ export class Network {
     return (this.db.query<{ n: number }, [string, string]>('SELECT COUNT(*) AS n FROM messages WHERE sender_id = ? AND recipient_id = ? AND read_at IS NULL').get(from, to)?.n ?? 1) - 1
   }
 
+  // ---- recommendations ---------------------------------------------------
+
+  /**
+   * Pass a contact on to someone you know: "Mike next door fixes bikes". It goes
+   * where a message can go, arrives as one, and waits in their inbox to be saved.
+   */
+  recommend(from: User, to: string, contact: Contact, note: string | null = null): Recommendation {
+    const card: Card = { circle: contact.circle, name: contact.name, company: contact.company, title: contact.title, emails: contact.emails, phones: contact.phones, addresses: contact.addresses, links: contact.links }
+    const why = clean(note, 1000)
+    const what = [contactName(card), [card.title, card.company].filter(Boolean).join(', ')].filter(Boolean).join(' · ')
+    const reach = [...card.phones.map((p) => p.value), ...card.emails.map((e) => e.value)].slice(0, 3).join(' · ')
+    const id = newId()
+    this.store.tx(() => {
+      this.send(from.id, to, [`Recommending ${what}`, reach, why].filter(Boolean).join('\n'))
+      this.db.query('INSERT INTO recommendations (id,from_user,to_user,card,note,created_at) VALUES (?,?,?,?,?,?)').run(id, from.id, to, JSON.stringify(card), why, this.now())
+    })
+    return this.recommendation(to, id)!
+  }
+
+  private recRow(r: any): Recommendation {
+    return { id: r.id, from_user: r.from_user, to_user: r.to_user, card: JSON.parse(r.card), note: r.note, created_at: r.created_at, saved_contact_id: r.saved_contact_id }
+  }
+
+  recommendation(to: string, id: string): Recommendation | null {
+    const r = this.db.query<any, [string, string]>('SELECT * FROM recommendations WHERE to_user = ? AND id = ?').get(to, id)
+    return r ? this.recRow(r) : null
+  }
+
+  /** Recommendations waiting for you: not saved, not dismissed, not from someone you blocked. */
+  recommendationsFor(to: string): Recommendation[] {
+    return this.db
+      .query<any, [string]>('SELECT * FROM recommendations WHERE to_user = ? AND saved_contact_id IS NULL AND dismissed_at IS NULL ORDER BY created_at DESC, rowid DESC')
+      .all(to)
+      .filter((r) => !this.blocked(to, r.from_user))
+      .map((r) => this.recRow(r))
+  }
+
+  /** Into your network, with who recommended them in the notes. An email already there is not added twice. */
+  saveRecommendation(to: string, id: string): Contact | null {
+    const rec = this.recommendation(to, id)
+    if (!rec) return null
+    if (rec.saved_contact_id) return this.contact(to, rec.saved_contact_id)
+    const from = this.store.user(rec.from_user)
+    const existing = rec.card.emails.map((e) => this.contactByEmail(to, e.value)).find(Boolean)
+    const notes = `Recommended by ${from?.name ?? from?.email ?? 'someone'}${rec.note ? `: ${rec.note}` : ''}`
+    const saved = existing ?? this.addContact(to, { ...rec.card, notes })
+    this.db.query('UPDATE recommendations SET saved_contact_id = ? WHERE id = ?').run(saved.id, id)
+    return saved
+  }
+
+  dismissRecommendation(to: string, id: string) {
+    this.db.query('UPDATE recommendations SET dismissed_at = ? WHERE to_user = ? AND id = ?').run(this.now(), to, id)
+  }
+
   /** Everyone you could start a conversation with right now. */
   reachable(me: string): User[] {
     const ids = new Set<string>()
@@ -425,8 +491,8 @@ export function parseVcards(text: string, defaultCircle: Circle = 'friends'): Re
       else if (prop === 'ANNIVERSARY') c.anniversary = value
       else if (prop === 'NOTE') c.notes = value
       else if (prop === 'CATEGORIES') {
-        const cat = value.toLowerCase().split(',').map((s) => s.trim()).find((s) => CIRCLES.includes(s as Circle) || s === 'friend')
-        if (cat) c.circle = cat === 'friend' ? 'friends' : cat
+        const cat = value.toLowerCase().split(',').map((s) => s.trim()).find((s) => CIRCLES.includes(s as Circle) || s === 'friend' || s === 'neighbor')
+        if (cat) c.circle = cat === 'friend' ? 'friends' : cat === 'neighbor' ? 'neighbors' : cat
       }
     }
     c.name ||= n
