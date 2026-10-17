@@ -21,11 +21,13 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
                [--parent-of ID | --child-of ID | --partner-of ID | --sibling-of ID | --grandparent-of ID]
                [--relation birth|adopted|step|foster] [--sibling full|half|adopted|foster|step]
                [--via PARENT] [--raised]   (--raised: they raised that person)
-  ancestry bond <person> <raised_by|guardian|godparent|caregiver|chosen_family> <other>
+  ancestry bond <person> <raised_by|guardian|godparent|caregiver|chosen_family|neighbor> <other>
                                     a bond that is not descent: "bond Sam raised_by Rose"
   ancestry pet <owner> <name> [--species Dog] [--born DATE]   (Family plan)
   ancestry plan [buy --chain USDC_POL]     the one-time Family plan for this tree
   ancestry claim [person]           say which person you are (or add yourself)
+  ancestry local [search] [--category Plumber]   businesses people you know recommend
+  ancestry recommend <name> --category C [--town T] [--phone P] [--website W] [--note TEXT]
   ancestry edit <person> --field value ...     (same flags as add)
   ancestry event <person> <type> [--date D] [--place P] [--note TEXT]
   ancestry pedigree <person> [-g 4] ancestors as a chart
@@ -38,7 +40,7 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
                                     --as invites them to be that person
   ancestry members                  who is in the tree, and pending invites
 
-  ancestry contacts [search] [--circle family|friends|business]
+  ancestry contacts [search] [--circle family|neighbors|friends|business]
   ancestry contact add --name N [--email E] [--phone P] [--circle C] [--relationship R]
                [--company C] [--title T] [--birthday D] [--address TEXT] [--link URL] [--note TEXT]
   ancestry contact <name|id>        everything about one contact   (contact rm <id> removes)
@@ -461,6 +463,16 @@ export async function runCli(argv: string[]): Promise<number> {
         }
         const plan = await client.plan(tree.id)
         print(plan, () => (plan.active ? `${tree.name} is on the Family plan: pets, and invite everyone you want.` : `${tree.name} is on the free plan. The Family plan is ${plan.price} once: ancestry plan buy --chain ${plan.chains[0] ?? 'USDC_POL'}\n  or ${plan.url}`))
+        return 0
+      }
+      case 'local': {
+        const results = await client.local(rest.join(' '), str(f.category))
+        print(results, () => (results.length ? results.map((r) => `${r.name}  (${r.category}${r.town ? `, ${r.town}` : ''})${r.phone ? `  ${r.phone}` : ''}${r.website ? `  ${r.website}` : ''}\n  recommended by ${r.by.map((b) => `${b.mine ? 'you' : (b.name ?? 'someone')}${b.mine ? '' : ` (${b.circle})`}${b.note ? `: ${b.note}` : ''}`).join('; ')}`).join('\n') : 'Nobody you know has recommended one yet.'))
+        return 0
+      }
+      case 'recommend': {
+        const r = await client.recommend({ name: rest.join(' '), category: str(f.category), town: str(f.town), phone: str(f.phone), website: str(f.website), note: str(f.note) })
+        print(r, () => `Recommended ${r.name} (${r.category}) to everyone who knows you.`)
         return 0
       }
       case 'claim': {

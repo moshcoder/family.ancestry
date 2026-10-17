@@ -12,13 +12,13 @@
  *   - anyone can block anyone, and a block ends the conversation both ways,
  *   - invitations and messages are rate-limited per sender.
  *
- * Circles are family, friends and business: the same human network, sorted.
+ * Circles are family, neighbors, friends and business: the same human network, sorted.
  */
 import type { Database } from 'bun:sqlite'
 import { clean, newId, sha256, type Store, type User } from './db.js'
 
-export type Circle = 'family' | 'friends' | 'business'
-export const CIRCLES: Circle[] = ['family', 'friends', 'business']
+export type Circle = 'family' | 'neighbors' | 'friends' | 'business'
+export const CIRCLES: Circle[] = ['family', 'neighbors', 'friends', 'business']
 export const asCircle = (value: unknown): Circle => (CIRCLES.includes(String(value) as Circle) ? (String(value) as Circle) : 'friends')
 
 export type Labeled = { label: string | null; value: string }
@@ -186,7 +186,7 @@ export class Network {
   }
 
   circleCounts(ownerId: string): Record<Circle, number> {
-    const out: Record<Circle, number> = { family: 0, friends: 0, business: 0 }
+    const out: Record<Circle, number> = { family: 0, neighbors: 0, friends: 0, business: 0 }
     for (const r of this.db.query<{ circle: Circle; n: number }, [string]>('SELECT circle, COUNT(*) AS n FROM contacts WHERE owner_id = ? GROUP BY circle').all(ownerId)) if (r.circle in out) out[r.circle] = r.n
     return out
   }

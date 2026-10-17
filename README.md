@@ -17,7 +17,11 @@ needs [one setting](https://pit.world/connect).
   person; everyone else picks themselves ("Which one is you?") or adds themselves when
   they join, then adds a photo. A profile is only ever claimed by the email address the
   invite went to: signing in with an emailed link is the proof.
-- **Network (add-on, free for everyone):** family, friends and business contacts with
+- **Local:** businesses recommended by people you know. Your family, neighbors and
+  friends say who they use (the plumber, the dentist, the bakery) and why; you see the
+  picks of your connections and tree-mates, ranked by how many vouch for a place and how
+  close they are to you. No strangers' reviews, nothing paid to the top. See [Local](#local).
+- **Network (add-on, free for everyone):** family, neighbors, friends and business contacts with
   every detail you keep (emails, phones, addresses, birthdays, links, notes), vCard
   import/export, and a private **Inbox**. See [Network](#network).
 - **People** with dates, places, notes and stories, photos, and a life timeline.
@@ -26,7 +30,7 @@ needs [one setting](https://pit.world/connect).
   parents), half through a chosen parent, adopted, foster, or step through a step-parent.
   Add a **grandparent** when the parent between is unknown (an "Unknown" parent holds the
   place). And bonds that are not descent: **raised by**, guardian, godparent, caregiver,
-  chosen family, so grandparents who raised you are both. All of it round-trips through
+  chosen family, neighbor, so grandparents who raised you are both. All of it round-trips through
   GEDCOM (`PEDI`, `ASSO`/`RELA`).
 - **Pets** (Family plan): the dogs, cats and horses that were family too, with owners,
   photos and stories. They never appear as anyone's parent or child, nor in GEDCOM.
@@ -63,6 +67,8 @@ ancestry bond Lily godparent "Aunt Karen"
 ancestry pet Lily Rex --species Dog       # Family plan
 ancestry plan                             # ancestry plan buy --chain USDC_POL
 ancestry claim "Lily Ettinger"            # this is me
+ancestry local plumber                    # who the people you know use
+ancestry recommend "Joe's Plumbing" --category Plumber --town Sacramento --note "Came on a Sunday"
 ancestry pedigree Robert -g 4
 ancestry descendants Johann
 ancestry relate Robert Anna          # Anna Ettinger is Robert Ettinger's aunt.
@@ -84,7 +90,7 @@ server (your own, or `http://127.0.0.1:8792`).
 
 `list_trees`, `search_people`, `get_person`, `add_person`, `update_person`,
 `link_relative` (parent, partner, child, sibling, grandparent), `add_bond`, `add_pet`,
-`family_plan`, `add_event`, `pedigree`, `descendants`, `relationship`,
+`family_plan`, `local_recommendations`, `recommend_business`, `add_event`, `pedigree`, `descendants`, `relationship`,
 `export_gedcom`, `import_gedcom`, `invite_to_tree`, `tree_members`, and for the
 network `list_contacts`, `get_contact`, `add_contact`, `update_contact`,
 `connect_contact`, `inbox`, `read_conversation`, `send_message`. The assistant acts
@@ -111,6 +117,7 @@ as you: it sees the trees you see, and changes only the ones you can edit.
 | `GET /api/v1/trees/:tree/export?privacy=1` | GEDCOM |
 | `GET /api/v1/trees/:tree/members` | members, with the person each one is |
 | `GET/POST /api/v1/trees/:tree/invites`, `DELETE .../invites/:id` | pending invites; invite (`{emails, role?, person_id?, note?}`; no emails = a link) |
+| `GET /api/v1/local?q=&category=`, `POST /api/v1/local`, `DELETE /api/v1/local/:id` | recommendations from people you know; recommend (`{name, category, town?, phone?, website?, note?}` or `{contact_id}`) |
 | `GET/POST /api/v1/contacts?q=&circle=` | your network: list / add |
 | `GET/PATCH/DELETE /api/v1/contacts/:id` | one contact |
 | `POST /api/v1/contacts/:id/connect` | ask them to connect (`{note?}`) |
@@ -130,6 +137,22 @@ with the business's webhook pointed at `/webhooks/coinpay`. A payment is written
 before the buyer leaves; the signed webhook settles it, and only a payment we started
 can mark a tree paid. `COINPAY_CHAINS` limits checkout to chains the business holds
 wallets for.
+
+## Local
+
+`src/local.ts`. A recommendation snapshots the business (name, category, town, phone,
+website, a line on why) when you share it; your contacts themselves stay private. You
+see your own picks and those of everyone you are connected with or share a tree with,
+grouped by phone, then website, then name and town. Score = sum of how close each
+recommender is to you: family and neighbors 3, friends and tree-mates 2, other
+connections 1 (your own circle for them decides). Blocks hide both ways.
+
+## Ads
+
+Pages carry one [crawlproof](https://crawlproof.com) unit: a fluid text link in the
+footer everywhere, and a 300×250 on Local and Network. It is a cross-origin frame
+(`/api/ads/frame`), so the CSP gains one `frame-src` and nothing else: no ad script,
+no cookie. `CRAWLPROOF_AD_SLOT` sets the slot; `off` removes the units.
 
 ## Network
 

@@ -19,6 +19,7 @@ import { CHAIN_LABELS, SETTLED, hasPlan, isAdmin, planFromEnv, price, readWebhoo
 import * as html from './html.js'
 import { Network } from './network.js'
 import { mountNetwork } from './network-routes.js'
+import { Local, mountLocal } from './local.js'
 import { addonsPanel, profileInvite } from './network-html.js'
 
 type Env = { Variables: { user: User | null; csrf: string; via: 'session' | 'token' | null } }
@@ -136,7 +137,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     c.header('referrer-policy', 'same-origin')
     c.header('x-frame-options', 'DENY')
     if ((c.res.headers.get('content-type') ?? '').includes('text/html')) {
-      c.header('content-security-policy', "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' http://127.0.0.1:* http://localhost:*")
+      c.header('content-security-policy', "default-src 'self'; frame-src https://crawlproof.com; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' http://127.0.0.1:* http://localhost:*")
       c.header('cache-control', 'no-store')
     }
   })
@@ -1008,6 +1009,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     limits: { invite: senderLimit, message: messageLimit },
     inviteToTree,
   })
+  mountLocal(app, api, { local: new Local(store, net), ctx, form })
   app.route('/api/v1', api)
 
   app.notFound((c) => (c.req.path.startsWith('/api/') ? c.json({ error: 'not found' }, 404) : c.html(html.messagePage(ctx(c), 'Not found', 'There is nothing at this address.'), 404)))

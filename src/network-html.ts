@@ -2,7 +2,7 @@
  * Network and Inbox pages. Same rules as html.ts: server-rendered, forms post,
  * nothing needs JavaScript.
  */
-import { csrfField, esc, layout, type Ctx } from './html.js'
+import { adBanner, csrfField, esc, layout, type Ctx } from './html.js'
 import { fullName, lifespan, type Person, type Tree, type User } from './db.js'
 import { CIRCLES, contactName, formatAddresses, formatLabeled, type Circle, type Contact, type Message, type Thread } from './network.js'
 
@@ -10,12 +10,12 @@ export const ADDONS = [
   {
     id: 'network',
     name: 'Network',
-    summary: 'Family, friends and business contacts with every detail you keep, plus a private inbox between people who know each other.',
+    summary: 'Family, neighbors, friends and business contacts with every detail you keep, plus a private inbox between people who know each other.',
     href: '/network',
   },
 ]
 
-const CIRCLE_LABEL: Record<Circle, string> = { family: 'Family', friends: 'Friends', business: 'Business' }
+const CIRCLE_LABEL: Record<Circle, string> = { family: 'Family', neighbors: 'Neighbors', friends: 'Friends', business: 'Business' }
 const who = (u: Pick<User, 'name' | 'email'>) => u.name ?? u.email
 const when = (t: number) => new Date(t).toISOString().slice(0, 16).replace('T', ' ')
 
@@ -40,11 +40,12 @@ export function networkPage(ctx: Ctx, data: { contacts: Contact[]; circle: Circl
   return layout(
     ctx,
     'Network',
-    `<div class="titlebar"><div><h1>Your network</h1><p class="muted">The people in your life: family, friends and the people you work with.</p></div>
-<div class="actions"><a class="btn" href="/inbox">Inbox</a><a class="btn" href="/network/export.vcf">Export .vcf</a></div></div>
+    `<div class="titlebar"><div><h1>Your network</h1><p class="muted">The people in your life: family, neighbors, friends and the people you work with.</p></div>
+<div class="actions"><a class="btn" href="/local">Local recommendations</a><a class="btn" href="/inbox">Inbox</a><a class="btn" href="/network/export.vcf">Export .vcf</a></div></div>
 <p class="actions">${tab(null, 'Everyone', total)}${CIRCLES.map((c) => tab(c, CIRCLE_LABEL[c], data.counts[c])).join('')}</p>
 <form class="search" method="get" action="/network">${data.circle ? `<input type="hidden" name="circle" value="${data.circle}">` : ''}<input name="q" value="${esc(data.q)}" placeholder="Search names, emails, companies, places" aria-label="Search contacts"><button>Search</button></form>
 ${list}
+${adBanner()}
 <details class="panel"${total ? '' : ' open'}><summary>Add someone</summary>${contactForm(ctx, '/network/contacts', null, 'Add to my network', data.circle ?? 'family')}</details>
 <details class="panel"><summary>Import contacts</summary><form method="post" action="/network/import" enctype="multipart/form-data" class="pform">${csrfField(ctx)}<p class="muted small">A .vcf file from your phone, Google Contacts, Outlook or Apple Contacts. People already here (same email) are skipped.</p><div class="grid2"><label>File<input type="file" name="file" accept=".vcf,text/vcard,text/x-vcard" required></label><label>Put them in<select name="circle">${CIRCLES.map((c) => `<option value="${c}">${CIRCLE_LABEL[c]}</option>`).join('')}</select></label></div><button>Import</button></form></details>
 ${principles}`,

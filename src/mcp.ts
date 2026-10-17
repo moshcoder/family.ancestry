@@ -67,7 +67,7 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
   server.tool(
     'add_bond',
     'Record a bond that is not descent: other_id raised, is the guardian, godparent or caregiver of, or is chosen family to person_id. This is how grandparents who raised someone show as both grandparents and "raised by".',
-    { tree_id: z.string(), person_id: z.string(), other_id: z.string(), kind: z.enum(['raised_by', 'guardian', 'godparent', 'caregiver', 'chosen_family']), note: z.string().max(500).optional() },
+    { tree_id: z.string(), person_id: z.string(), other_id: z.string(), kind: z.enum(['raised_by', 'guardian', 'godparent', 'caregiver', 'chosen_family', 'neighbor']), note: z.string().max(500).optional() },
     async ({ tree_id, person_id, ...body }: any) => text(formatPerson((await client.addBond(tree_id, person_id, body)).person)),
   )
 
@@ -79,6 +79,19 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
       const pet = await client.addPet(tree_id, { given: name, ...fields })
       return text(`Added ${pet.name} (${pet.id})${pet.species ? `, ${pet.species}` : ''}.`)
     },
+  )
+
+  server.tool(
+    'local_recommendations',
+    'Local businesses recommended by people the user knows (family, neighbors, friends, tree-mates), best first, with who vouched and why. Search by what they do or a town.',
+    { query: z.string().max(200).default(''), category: z.string().max(60).optional() },
+    async ({ query, category }: any) => json(await client.local(query, category)),
+  )
+  server.tool(
+    'recommend_business',
+    'Recommend a local business to everyone who knows the user. Only do this when the user asked to recommend it.',
+    { name: z.string().max(200), category: z.string().max(60), town: z.string().max(120).optional(), phone: z.string().max(60).optional(), website: z.string().max(500).optional(), note: z.string().max(1000).optional() },
+    async (body: any) => json(await client.recommend(body)),
   )
 
   server.tool('family_plan', "Whether a tree is on the one-time Family plan (pets, invite everyone), its price, and where to pay.", { tree_id: z.string() }, async ({ tree_id }: any) => json(await client.plan(tree_id)))
@@ -116,7 +129,7 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
   const contact = {
     name: z.string().max(200).optional(),
     nickname: z.string().max(200).optional(),
-    circle: z.enum(['family', 'friends', 'business']).optional(),
+    circle: z.enum(['family', 'neighbors', 'friends', 'business']).optional(),
     relationship: z.string().max(200).optional().describe('how you know them: "cousin", "college roommate", "our plumber"'),
     company: z.string().max(200).optional(),
     title: z.string().max(200).optional(),
@@ -129,7 +142,7 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
     notes: z.string().max(20000).optional(),
   }
 
-  server.tool('list_contacts', "Search your network (family, friends, business). Private to you; matches names, emails, phones, companies, addresses and notes.", { query: z.string().max(200).default(''), circle: z.enum(['family', 'friends', 'business']).optional() }, async ({ query, circle }: any) => json(await client.contacts(query, circle)))
+  server.tool('list_contacts', "Search your network (family, neighbors, friends, business). Private to you; matches names, emails, phones, companies, addresses and notes.", { query: z.string().max(200).default(''), circle: z.enum(['family', 'neighbors', 'friends', 'business']).optional() }, async ({ query, circle }: any) => json(await client.contacts(query, circle)))
   server.tool('get_contact', 'Everything you keep about one contact.', { contact_id: z.string() }, async ({ contact_id }: any) => json(await client.contact(contact_id)))
   server.tool('add_contact', 'Add someone you know to your network.', contact, async (fields: any) => json(await client.addContact(fields)))
   server.tool('update_contact', 'Change a contact. Lists (emails, phones, addresses, links) are replaced whole.', { contact_id: z.string(), ...contact }, async ({ contact_id, ...fields }: any) => json(await client.updateContact(contact_id, fields)))

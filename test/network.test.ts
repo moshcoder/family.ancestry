@@ -70,7 +70,7 @@ describe('network store', () => {
     expect(net.contact(b.id, c.id)).toBeNull()
     expect(net.contacts(b.id)).toHaveLength(0)
     expect(net.contacts(a.id, { q: 'vinny' })).toHaveLength(1)
-    expect(net.circleCounts(a.id)).toEqual({ family: 1, friends: 0, business: 0 })
+    expect(net.circleCounts(a.id)).toEqual({ family: 1, neighbors: 0, friends: 0, business: 0 })
   })
 
   test('messages only between people who know each other; a block ends it both ways', () => {

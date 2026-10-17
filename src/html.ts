@@ -56,13 +56,14 @@ export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [
 <!--ring-bar-->
 <header class="top">
   <a class="brand" href="/">${leaf()}<span>family<b>.ancestry</b></span></a>
-  <nav>${ctx.user ? `<a href="/trees">Trees</a><a href="/network">Network</a><a href="/inbox">Inbox${ctx.unread ? ` <span class="badge">${ctx.unread}</span>` : ''}</a><a href="/settings">${esc(ctx.user.name ?? ctx.user.email)}</a>` : '<a href="/signin">Sign in</a>'}</nav>
+  <nav>${ctx.user ? `<a href="/trees">Trees</a><a href="/network">Network</a><a href="/local">Local</a><a href="/inbox">Inbox${ctx.unread ? ` <span class="badge">${ctx.unread}</span>` : ''}</a><a href="/settings">${esc(ctx.user.name ?? ctx.user.email)}</a>` : '<a href="/signin">Sign in</a>'}</nav>
 </header>
 <main class="${opts.wide ? 'wide' : ''}">
 ${crumbs}
 ${ctx.flash ? `<p class="flash">${esc(ctx.flash)}</p>` : ''}${ctx.error ? `<p class="flash error">${esc(ctx.error)}</p>` : ''}
 ${body}
 </main>
+${adBanner('text_link')}
 <footer class="foot">
   <span>family.ancestry ${VERSION} · open source (MIT) · <a href="https://github.com/moshcoder/family.ancestry">code</a> · <a href="/about">about</a> · <a href="/connect">reach it from anywhere</a></span>
   <span>A <a href="https://pit.world">Moshpit</a> name. Your tree is private to the people you invite.</span>
@@ -70,6 +71,16 @@ ${body}
 </body>
 </html>`
 }
+
+/**
+ * A crawlproof ad, as a cross-origin frame: our CSP needs one frame-src entry and
+ * nothing else (no script, no cookie). Impressions are metered when it is served,
+ * so a page renders one unit per spot, never a hidden spare. text_link is the only
+ * fluid format; banner_300x250 is the widest that fits a phone.
+ */
+export const AD_SLOT = process.env.CRAWLPROOF_AD_SLOT ?? 'cb4310c4-7001-46ca-b625-159ee73df46b'
+export const adBanner = (format: 'banner_300x250' | 'text_link' = 'banner_300x250') =>
+  AD_SLOT === 'off' ? '' : `<div class="ad-unit ad-${format}"><iframe src="https://crawlproof.com/api/ads/frame?slot=${encodeURIComponent(AD_SLOT)}&amp;format=${format}" title="Advertisement" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation" scrolling="no"></iframe></div>`
 
 const leaf = () => `<svg class="leaf" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 29V14" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round"/><path d="M16 15c-7 0-11-4-11-11 7 0 11 4 11 11zM16 19c6 0 10-3.5 10-10-6 0-10 3.5-10 10z" fill="currentColor"/></svg>`
 

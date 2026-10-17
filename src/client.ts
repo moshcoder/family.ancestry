@@ -262,6 +262,15 @@ export class AncestryClient {
     return this.request<{ person: PersonDetail }>(`/api/v1/trees/${enc(tree)}/claim`, { method: 'POST', json: body }).then((r) => r.person)
   }
 
+  // ---- local recommendations ----------------------------------------------
+
+  local(q = '', category?: string) {
+    return this.request<{ results: { name: string; category: string; town: string | null; phone: string | null; website: string | null; score: number; by: { name: string | null; circle: string; note: string | null; mine: boolean }[] }[] }>(`/api/v1/local?q=${encodeURIComponent(q)}${category ? `&category=${enc(category)}` : ''}`).then((r) => r.results)
+  }
+  recommend(body: Record<string, unknown>) {
+    return this.request<{ recommendation: { id: string; name: string; category: string } }>('/api/v1/local', { method: 'POST', json: body }).then((r) => r.recommendation)
+  }
+
   // ---- invites -----------------------------------------------------------
 
   /** Email invites (or, with no emails, make a link). With person_id, they join as that person. */
