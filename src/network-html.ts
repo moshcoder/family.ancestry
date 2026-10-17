@@ -187,6 +187,14 @@ ${connectFields('note')}
 <p class="muted small">Your network is private to you: ${esc(name)} sees nothing unless you ask to connect.</p><button>Add to my network</button></form></details>`
 }
 
+/** On your own page: bring a friend in. They land in your network and get one email asking to connect. */
+export function inviteFriendBox(ctx: Ctx): string {
+  return `<details class="panel"><summary>Invite a friend</summary><form method="post" action="/network/contacts" class="pform">${csrfField(ctx)}
+<div class="grid3"><label>Name<input name="name" maxlength="200" required></label><label>Their email<input name="emails" type="email" required></label><label>Circle<select name="circle">${CIRCLES.map((x) => `<option value="${x}"${x === 'friends' ? ' selected' : ''}>${CIRCLE_LABEL[x]}</option>`).join('')}</select></label></div>
+<input type="hidden" name="connect" value="1"><label>A line from you (optional)<input name="note_to_them" maxlength="1000" placeholder="Come see the family tree"></label>
+<p class="muted small">One email from you with a link to connect. If they say yes you can message each other here. <a href="/network">Your network</a></p><button>Send invite</button></form></details>`
+}
+
 /** The quiet offer under a person's name: invite them to be themselves in the tree. */
 export function profileInvite(ctx: Ctx, tree: Tree, person: Person, opts: { justAdded: boolean; owner: boolean }): string {
   const name = person.given || fullName(person)

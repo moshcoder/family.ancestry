@@ -284,6 +284,14 @@ describe('join the family', () => {
     expect(w.net.contactForPerson(viewer.id, tree.id, kurt.id)!.circle).toBe('family')
     expect(w.mail.length).toBe(mails)
 
+    // Your own page invites a friend instead.
+    const meAsKurt = w.user('kurt@example.com', 'Kurt')
+    w.store.setMember(tree.id, meAsKurt.id, 'viewer')
+    expect(w.store.claimProfile(tree.id, kurt.id, meAsKurt.id)).toBe(true)
+    const own = await (await w.as(meAsKurt).get(`/t/${tree.id}/p/${kurt.id}`)).text()
+    expect(own).toContain('Invite a friend')
+    expect(own).not.toContain('Add Kurt to my network')
+
     // Pets, strangers to the tree and unknown people get nothing.
     expect((await b.post(`/t/${tree.id}/p/${dog.id}/network`, {})).status).toBe(404)
     expect((await w.as(w.user('nosy@example.com')).post(`/t/${tree.id}/p/${kurt.id}/network`, {})).status).toBe(404)
