@@ -205,3 +205,24 @@ describe('pit.world verification', () => {
     }
   })
 })
+
+describe('the Moshpit ring bar', () => {
+  const page = async (headers: Record<string, string>) => {
+    const { app } = harness()
+    const res = await app.request('http://family.ancestry/', { headers })
+    const body = await res.text()
+    const length = res.headers.get('content-length')
+    if (length) expect(Number(length)).toBe(new TextEncoder().encode(body).length)
+    return body
+  }
+
+  test('direct links for a visitor on Moshpit DNS, gateway links through the gateway', async () => {
+    const direct = await page({ host: 'family.ancestry' })
+    expect(direct).toContain('<a href="https://family.ancestry/" aria-current="page"')
+    expect(direct).toContain('href="https://seo.rank/"')
+    expect(direct).toContain('</html>')
+    const viaGateway = await page({ host: 'family.ancestry', 'x-moshpit-name': 'family.ancestry' })
+    expect(viaGateway).toContain('href="https://pit.moshcode.sh/n/seo.rank"')
+    expect(viaGateway).not.toContain('<!--ring-bar-->')
+  })
+})

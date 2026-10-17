@@ -5,6 +5,7 @@
  *                                RESEND_API_KEY + MAIL_FROM for sign-in links
  */
 import { Hono, type Context } from 'hono'
+import { RING_PLACEHOLDER, ringBar, startRingRefresh, visitorOnMoshpit } from './ring.js'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { join } from 'node:path'
 import { Store, canEdit, fullName, newId, type Person, type Role, type Tree, type User } from './db.js'
@@ -84,6 +85,12 @@ export function createApp({ store, auth, site, publicDir = join(import.meta.dir,
       }
     }
     await next()
+    // The Moshpit ring bar is drawn per request: direct links for a visitor on Moshpit DNS, gateway links otherwise.
+    if ((c.res.headers.get('content-type') ?? '').includes('text/html')) {
+      const page = await c.res.text()
+      const bar = ringBar('family.ancestry', visitorOnMoshpit('family.ancestry', c.req.header('host'), c.req.header('x-moshpit-name')))
+      c.res = new Response(page.replace(RING_PLACEHOLDER, bar), c.res)
+    }
     c.header('x-content-type-options', 'nosniff')
     c.header('referrer-policy', 'same-origin')
     c.header('x-frame-options', 'DENY')
@@ -894,6 +901,7 @@ export function serve() {
   const auth = new Auth(store, mailer, site)
   const app = createApp({ store, auth, site })
   const port = Number(process.env.PORT ?? 8792)
+  startRingRefresh()
   Bun.serve({ port, hostname: process.env.HOST ?? '127.0.0.1', fetch: app.fetch, maxRequestBodySize: 30 * 1024 * 1024 })
   console.log(`family.ancestry ${html.VERSION} on http://${process.env.HOST ?? '127.0.0.1'}:${port} (${site}, data ${dataDir}${process.env.RESEND_API_KEY ? '' : ', mail to console'})`)
 }
