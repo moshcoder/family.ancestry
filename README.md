@@ -21,7 +21,7 @@ needs [one setting](https://pit.world/connect).
   friends say who they use (the plumber, the dentist, the bakery) and why; you see the
   picks of your connections and tree-mates, ranked by how many vouch for a place and how
   close they are to you. No strangers' reviews, nothing paid to the top. See [Local](#local).
-- **Network (add-on, free for everyone):** family, neighbors, friends and business contacts with
+- **Network (add-on, free for everyone):** family, friends, neighbors and business contacts with
   every detail you keep (emails, phones, addresses, birthdays, links, notes), vCard
   import/export, and a private **Inbox**. See [Network](#network).
 - **People** with dates, places, notes and stories, photos, and a life timeline.
@@ -68,7 +68,7 @@ ancestry pet Lily Rex --species Dog       # Family plan
 ancestry plan                             # ancestry plan buy --chain USDC_POL
 ancestry claim "Lily Ettinger"            # this is me
 ancestry local plumber                    # who the people you know use
-ancestry recommend "Joe's Plumbing" --category Plumber --town Sacramento --note "Came on a Sunday"
+ancestry local add "Joe's Plumbing" --category Plumber --town Sacramento --note "Came on a Sunday"
 ancestry pedigree Robert -g 4
 ancestry descendants Johann
 ancestry relate Robert Anna          # Anna Ettinger is Robert Ettinger's aunt.

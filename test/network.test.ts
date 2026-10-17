@@ -70,7 +70,7 @@ describe('network store', () => {
     expect(net.contact(b.id, c.id)).toBeNull()
     expect(net.contacts(b.id)).toHaveLength(0)
     expect(net.contacts(a.id, { q: 'vinny' })).toHaveLength(1)
-    expect(net.circleCounts(a.id)).toEqual({ family: 1, neighbors: 0, friends: 0, business: 0 })
+    expect(net.circleCounts(a.id)).toEqual({ family: 1, friends: 0, neighbors: 0, business: 0 })
   })
 
   test('messages only between people who know each other; a block ends it both ways', () => {
@@ -105,6 +105,35 @@ describe('network store', () => {
     store.setMember(tree.id, stranger.id, 'viewer')
     expect(net.canMessage(stranger.id, a.id)).toBe(true)
     expect(net.reachable(a.id).map((u) => u.id).sort()).toEqual([b.id, stranger.id].sort())
+  })
+  test('recommend a neighbor: only to people you know, card only, saved once', () => {
+    const { store, net, user } = world()
+    const a = user('a@example.com', 'Ann')
+    const b = user('b@example.com', 'Bob')
+    const stranger = user('spam@example.com')
+    const mike = net.addContact(a.id, { name: 'Mike Russo', circle: 'neighbors', relationship: 'next door', title: 'Handyman', phones: 'cell: 555 0111', emails: 'mike@example.com', notes: 'owes us a ladder' })
+    expect(net.circleCounts(a.id).neighbors).toBe(1)
+    expect(() => net.recommend(a, stranger.id, mike)).toThrow()
+    expect(net.recommendationsFor(stranger.id)).toHaveLength(0)
+
+    store.setMember(store.createTree(a.id, 'Fam').id, b.id, 'viewer')
+    const rec = net.recommend(a, b.id, mike, 'Fixed our fence in a day')
+    expect(rec.card).toMatchObject({ name: 'Mike Russo', circle: 'neighbors', title: 'Handyman' })
+    expect(JSON.stringify(rec.card)).not.toContain('ladder')
+    expect(JSON.stringify(rec.card)).not.toContain('next door')
+    expect(net.conversation(b.id, a.id).at(-1)!.body).toBe('Recommending Mike Russo · Handyman\n555 0111 · mike@example.com\nFixed our fence in a day')
+    expect(net.recommendationsFor(b.id).map((r) => r.id)).toEqual([rec.id])
+    expect(net.recommendation(stranger.id, rec.id)).toBeNull()
+
+    const saved = net.saveRecommendation(b.id, rec.id)!
+    expect(saved).toMatchObject({ owner_id: b.id, name: 'Mike Russo', circle: 'neighbors', notes: 'Recommended by Ann: Fixed our fence in a day' })
+    expect(net.saveRecommendation(b.id, rec.id)!.id).toBe(saved.id)
+    expect(net.contacts(b.id)).toHaveLength(1)
+    expect(net.recommendationsFor(b.id)).toHaveLength(0)
+
+    const again = net.recommend(a, b.id, mike)
+    net.dismissRecommendation(b.id, again.id)
+    expect(net.recommendationsFor(b.id)).toHaveLength(0)
   })
 })
 
@@ -199,6 +228,27 @@ describe('join the family', () => {
     const imported = (await (await api('/contacts/import?circle=family', { method: 'POST', body: 'BEGIN:VCARD\nFN:Grandma June\nEMAIL:june@example.com\nEND:VCARD\nBEGIN:VCARD\nFN:Sam again\nEMAIL:sam@example.com\nEND:VCARD\n', headers: { 'content-type': 'text/vcard' } })).json()) as any
     expect(imported.imported).toEqual({ added: 1, skipped: 1 })
     expect((await api('/inbox')).status).toBe(200)
+
+    // Recommend a neighbor to someone in my tree: it shows up in their inbox, one click saves it.
+    const bob = w.user('bob@example.com', 'Bob')
+    w.store.setMember(w.store.createTree(me.id, 'Fam').id, bob.id, 'viewer')
+    const nb = (await b.post('/network/contacts', { name: 'Mike Russo', circle: 'neighbors', phones: '555 0111' })).headers.get('location')!.split('/').pop()!
+    expect(await (await b.get(`/network/c/${nb}`)).text()).toContain('Recommend Mike Russo')
+    expect(await (await b.get('/network?circle=neighbors')).text()).toContain('Mike Russo')
+    const sent = await b.post(`/network/c/${nb}/recommend`, { to: bob.id, note: 'Great with fences' })
+    expect(decodeURIComponent(sent.headers.get('location')!)).toContain('Recommended Mike Russo to Bob.')
+    expect(w.mail.at(-1)!.subject).toBe('Me recommended Mike Russo')
+    const bobPage = w.as(bob)
+    const inbox = await (await bobPage.get('/inbox')).text()
+    expect(inbox).toContain('Recommended to you')
+    expect(inbox).toContain('Great with fences')
+    const recId = w.net.recommendationsFor(bob.id)[0]!.id
+    expect((await w.as(w.user('nosy@example.com')).post(`/network/r/${recId}/save`)).headers.get('location')).toBe('/inbox')
+    const savedAt = (await bobPage.post(`/network/r/${recId}/save`)).headers.get('location')!
+    expect(await (await bobPage.get(savedAt.split('?')[0]!)).text()).toContain('Recommended by Me: Great with fences')
+    const viaApi = (await (await api(`/contacts/${nb}/recommend`, { method: 'POST', body: JSON.stringify({ to: bob.id }) })).json()) as any
+    expect(viaApi.to.id).toBe(bob.id)
+    expect((await api(`/contacts/${nb}/recommend`, { method: 'POST', body: JSON.stringify({ to: w.user('x@example.com').id }) })).status).toBe(400)
     expect(await (await b.get('/settings')).text()).toContain('included free')
   })
 })

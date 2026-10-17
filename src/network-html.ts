@@ -4,18 +4,18 @@
  */
 import { adBanner, csrfField, esc, layout, type Ctx } from './html.js'
 import { fullName, lifespan, type Person, type Tree, type User } from './db.js'
-import { CIRCLES, contactName, formatAddresses, formatLabeled, type Circle, type Contact, type Message, type Thread } from './network.js'
+import { CIRCLES, contactName, formatAddresses, formatLabeled, type Circle, type Contact, type Message, type Recommendation, type Thread } from './network.js'
 
 export const ADDONS = [
   {
     id: 'network',
     name: 'Network',
-    summary: 'Family, neighbors, friends and business contacts with every detail you keep, plus a private inbox between people who know each other.',
+    summary: 'Family, friends, neighbors and business contacts with every detail you keep, a private inbox between people who know each other, and recommendations passed hand to hand.',
     href: '/network',
   },
 ]
 
-const CIRCLE_LABEL: Record<Circle, string> = { family: 'Family', neighbors: 'Neighbors', friends: 'Friends', business: 'Business' }
+const CIRCLE_LABEL: Record<Circle, string> = { family: 'Family', friends: 'Friends', neighbors: 'Neighbors', business: 'Business' }
 const who = (u: Pick<User, 'name' | 'email'>) => u.name ?? u.email
 const when = (t: number) => new Date(t).toISOString().slice(0, 16).replace('T', ' ')
 
@@ -40,7 +40,7 @@ export function networkPage(ctx: Ctx, data: { contacts: Contact[]; circle: Circl
   return layout(
     ctx,
     'Network',
-    `<div class="titlebar"><div><h1>Your network</h1><p class="muted">The people in your life: family, neighbors, friends and the people you work with.</p></div>
+    `<div class="titlebar"><div><h1>Your network</h1><p class="muted">The people in your life: family, friends, neighbors and the people you work with.</p></div>
 <div class="actions"><a class="btn" href="/local">Local recommendations</a><a class="btn" href="/inbox">Inbox</a><a class="btn" href="/network/export.vcf">Export .vcf</a></div></div>
 <p class="actions">${tab(null, 'Everyone', total)}${CIRCLES.map((c) => tab(c, CIRCLE_LABEL[c], data.counts[c])).join('')}</p>
 <form class="search" method="get" action="/network">${data.circle ? `<input type="hidden" name="circle" value="${data.circle}">` : ''}<input name="q" value="${esc(data.q)}" placeholder="Search names, emails, companies, places" aria-label="Search contacts"><button>Search</button></form>
@@ -58,7 +58,7 @@ export function contactForm(ctx: Ctx, action: string, c: Contact | null, label: 
   const current = c?.circle ?? circle
   return `<form method="post" action="${esc(action)}" class="pform">${csrfField(ctx)}
   <div class="grid3"><label>Name<input name="name" value="${v('name')}" maxlength="200" required></label><label>Goes by<input name="nickname" value="${v('nickname')}" maxlength="200"></label><label>Circle<select name="circle">${CIRCLES.map((x) => `<option value="${x}"${x === current ? ' selected' : ''}>${CIRCLE_LABEL[x]}</option>`).join('')}</select></label></div>
-  <div class="grid3"><label>How you know them<input name="relationship" value="${v('relationship')}" maxlength="200" placeholder="cousin, college roommate, our accountant"></label><label>Company<input name="company" value="${v('company')}" maxlength="200"></label><label>Title<input name="title" value="${v('title')}" maxlength="200"></label></div>
+  <div class="grid3"><label>How you know them<input name="relationship" value="${v('relationship')}" maxlength="200" placeholder="cousin, next door, our accountant"></label><label>Company<input name="company" value="${v('company')}" maxlength="200"></label><label>Title<input name="title" value="${v('title')}" maxlength="200"></label></div>
   <div class="grid2"><label>Emails <span class="muted small">one per line, "work: a@b.com"</span><textarea name="emails" rows="2">${esc(formatLabeled(c?.emails ?? []))}</textarea></label><label>Phones <span class="muted small">one per line, "cell: 555 0100"</span><textarea name="phones" rows="2">${esc(formatLabeled(c?.phones ?? []))}</textarea></label></div>
   <label>Addresses <span class="muted small">a blank line between addresses; "home:" before the first line labels it</span><textarea name="addresses" rows="3">${esc(formatAddresses(c?.addresses ?? []))}</textarea></label>
   <div class="grid3"><label>Birthday<input name="birthday" value="${v('birthday')}" maxlength="200" placeholder="14 MAY 1958"></label><label>Anniversary<input name="anniversary" value="${v('anniversary')}" maxlength="200"></label><label>Links <span class="muted small">one per line</span><textarea name="links" rows="1">${esc(formatLabeled(c?.links ?? []))}</textarea></label></div>
@@ -66,7 +66,7 @@ export function contactForm(ctx: Ctx, action: string, c: Contact | null, label: 
   <button>${esc(label)}</button></form>`
 }
 
-export function contactPage(ctx: Ctx, c: Contact, data: { trees: Tree[]; person: { tree: Tree; person: Person } | null; linked: User | null; canMessage: boolean; blocked: boolean }): string {
+export function contactPage(ctx: Ctx, c: Contact, data: { trees: Tree[]; person: { tree: Tree; person: Person } | null; linked: User | null; canMessage: boolean; blocked: boolean; reachable: User[] }): string {
   const rows = [
     ...c.emails.map((e) => [e.label ?? 'email', `<a href="mailto:${esc(e.value)}">${esc(e.value)}</a>`]),
     ...c.phones.map((p) => [p.label ?? 'phone', `<a href="tel:${esc(p.value.replace(/[^\d+]/g, ''))}">${esc(p.value)}</a>`]),
@@ -97,10 +97,20 @@ ${
     ? `<form method="post" action="/network/c/${c.id}/invite" class="panel pform">${csrfField(ctx)}<h2>Invite to a family tree</h2><div class="grid3"><label>Tree<select name="tree_id">${owned.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></label><label>Role<select name="role"><option>viewer</option><option>editor</option></select></label></div><button>Email an invite</button></form>`
     : ''
 }
+${recommendForm(ctx, c, data.reachable.filter((u) => u.id !== c.linked_user_id))}
 <details class="panel"><summary>Edit</summary>${contactForm(ctx, `/network/c/${c.id}`, c, 'Save')}
 <form method="post" action="/network/c/${c.id}/delete" data-confirm="Remove ${esc(contactName(c))} from your network?">${csrfField(ctx)}<button class="danger">Remove from my network</button></form></details>`,
     { crumbs: [['/network', 'Network'], ['', contactName(c)]] },
   )
+}
+
+/** Pass this contact on to someone you know. Only the card travels: never your notes or how you know them. */
+function recommendForm(ctx: Ctx, c: Contact, to: User[]): string {
+  if (!to.length) return ''
+  return `<details class="panel"><summary>Recommend ${esc(contactName(c))}</summary><form method="post" action="/network/c/${c.id}/recommend" class="pform">${csrfField(ctx)}
+<p class="muted small">Send their name, phones, emails, addresses and links to someone you know. Your notes and "how you know them" stay with you.</p>
+<div class="grid2"><label>To<select name="to">${to.map((u) => `<option value="${u.id}">${esc(who(u))}</option>`).join('')}</select></label><label>Why (optional)<input name="note" maxlength="1000" placeholder="Fixed our fence in a day, fair price"></label></div>
+<button>Recommend</button></form></details>`
 }
 
 export function connectInvitePage(ctx: Ctx, from: User, note: string | null, token: string): string {
@@ -114,7 +124,7 @@ ${ctx.user ? `<form method="post" action="/network/accept/${esc(token)}">${csrfF
   )
 }
 
-export function inboxPage(ctx: Ctx, threads: Thread[], reachable: User[]): string {
+export function inboxPage(ctx: Ctx, threads: Thread[], reachable: User[], recs: { rec: Recommendation; from: User }[] = []): string {
   const me = ctx.user!
   const started = new Set(threads.map((t) => t.other.id))
   const fresh = reachable.filter((u) => !started.has(u.id))
@@ -122,6 +132,7 @@ export function inboxPage(ctx: Ctx, threads: Thread[], reachable: User[]): strin
     ctx,
     'Inbox',
     `<h1>Inbox</h1>
+${recs.length ? `<section class="panel"><h2>Recommended to you</h2><ul class="threads">${recs.map(({ rec, from }) => recItem(ctx, rec, from)).join('')}</ul></section>` : ''}
 ${
   threads.length
     ? `<ul class="threads">${threads.map((t) => `<li${t.unread ? ' class="unread"' : ''}><a href="/inbox/${t.other.id}"><b>${esc(who(t.other))}</b>${t.unread ? ` <span class="badge">${t.unread}</span>` : ''}<br><span class="muted small">${t.last.sender_id === me.id ? 'You: ' : ''}${esc(t.last.body.slice(0, 140))}</span></a><span class="muted small">${when(t.last.created_at)}</span></li>`).join('')}</ul>`
@@ -131,6 +142,14 @@ ${fresh.length ? `<section class="panel"><h2>Write to someone</h2><p class="mute
 ${principles}`,
     { crumbs: [['', 'Inbox']] },
   )
+}
+
+function recItem(ctx: Ctx, rec: Recommendation, from: User): string {
+  const c = rec.card
+  const what = [CIRCLE_LABEL[c.circle], [c.title, c.company].filter(Boolean).join(', ')].filter(Boolean).join(' · ')
+  const reach = [...c.phones.map((p) => p.value), ...c.emails.map((e) => e.value)].slice(0, 3).join(' · ')
+  return `<li><div><b>${esc(contactName(c))}</b>${what ? ` <span class="muted small">${esc(what)}</span>` : ''}<br><span class="small">${esc(reach)}</span><br><span class="muted small">from ${esc(who(from))}${rec.note ? `: ${esc(rec.note)}` : ''}</span></div>
+<div class="actions"><form method="post" action="/network/r/${rec.id}/save" class="inline">${csrfField(ctx)}<button>Save to my network</button></form><form method="post" action="/network/r/${rec.id}/dismiss" class="inline">${csrfField(ctx)}<button class="btn">Dismiss</button></form></div></li>`
 }
 
 export function threadPage(ctx: Ctx, other: User, messages: Message[], opts: { canMessage: boolean; blocked: boolean }): string {

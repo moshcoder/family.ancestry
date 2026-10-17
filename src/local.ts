@@ -11,8 +11,9 @@
  *   - ranking is how many people you know vouch for a place, weighted by how
  *     close they are to you: family and neighbors count most.
  *
- * A recommendation snapshots the business (name, category, town, phone, site)
- * at the moment you share it, because your contacts themselves stay private.
+ * A pick snapshots the business (name, category, town, phone, site) at the moment
+ * you share it, because your contacts themselves stay private. (Passing one
+ * contact to one person is the network's recommend; this is the shared list.)
  */
 import type { Context, Hono } from 'hono'
 import { clean, newId, type Store, type User } from './db.js'
@@ -21,7 +22,7 @@ import * as html from './html.js'
 import type { Ctx } from './html.js'
 import { contactName } from './network.js'
 
-export type Recommendation = {
+export type LocalPick = {
   id: string
   owner_id: string
   contact_id: string | null
@@ -51,13 +52,13 @@ export type Ranked = {
 export const CATEGORIES = ['Plumber', 'Electrician', 'Handyman', 'Roofer', 'HVAC', 'Landscaper', 'House cleaner', 'Mechanic', 'Dentist', 'Doctor', 'Pediatrician', 'Vet', 'Groomer', 'Babysitter', 'Tutor', 'Restaurant', 'Bakery', 'Hair salon', 'Barber', 'Accountant', 'Lawyer', 'Realtor', 'Contractor', 'Painter', 'Movers', 'Pest control', 'Locksmith', 'Photographer', 'Florist', 'Daycare']
 
 const SCHEMA = `
-CREATE TABLE IF NOT EXISTS recommendations (
+CREATE TABLE IF NOT EXISTS local_recommendations (
   id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   contact_id TEXT, name TEXT NOT NULL, category TEXT NOT NULL, town TEXT, phone TEXT, website TEXT, note TEXT,
   key TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   UNIQUE (owner_id, key)
 );
-CREATE INDEX IF NOT EXISTS recommendations_key ON recommendations(key);
+CREATE INDEX IF NOT EXISTS local_recommendations_key ON local_recommendations(key);
 `
 
 /** How close a recommender is to you. */
@@ -90,7 +91,7 @@ export class Local {
     store.db.exec(SCHEMA)
   }
 
-  recommend(ownerId: string, input: Record<string, unknown>): Recommendation {
+  recommend(ownerId: string, input: Record<string, unknown>): LocalPick {
     const name = clean(input.name, 200)
     const category = clean(input.category, 60)
     if (!name) throw new Error('give the business a name')
@@ -101,15 +102,15 @@ export class Local {
     const now = this.now()
     this.store.db
       .query(
-        `INSERT INTO recommendations (id,owner_id,contact_id,name,category,town,phone,website,note,key,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        `INSERT INTO local_recommendations (id,owner_id,contact_id,name,category,town,phone,website,note,key,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(owner_id,key) DO UPDATE SET name=excluded.name, category=excluded.category, town=excluded.town, phone=excluded.phone, website=excluded.website, note=excluded.note, updated_at=excluded.updated_at`,
       )
       .run(newId(), ownerId, clean(input.contact_id, 40), r.name, r.category, r.town, r.phone, r.website, r.note, key, now, now)
-    return this.store.db.query<Recommendation, [string, string]>('SELECT * FROM recommendations WHERE owner_id = ? AND key = ?').get(ownerId, key)!
+    return this.store.db.query<LocalPick, [string, string]>('SELECT * FROM local_recommendations WHERE owner_id = ? AND key = ?').get(ownerId, key)!
   }
 
   /** Recommend one of your own business contacts: its details are copied in. */
-  recommendContact(ownerId: string, contactId: string, input: Record<string, unknown>): Recommendation {
+  recommendContact(ownerId: string, contactId: string, input: Record<string, unknown>): LocalPick {
     const c = this.net.contact(ownerId, contactId)
     if (!c) throw new Error('no such contact')
     const town = c.addresses[0]?.lines.split('\n').at(-1) ?? null
@@ -117,11 +118,11 @@ export class Local {
   }
 
   remove(ownerId: string, id: string) {
-    this.store.db.query('DELETE FROM recommendations WHERE owner_id = ? AND id = ?').run(ownerId, id)
+    this.store.db.query('DELETE FROM local_recommendations WHERE owner_id = ? AND id = ?').run(ownerId, id)
   }
 
-  mine(ownerId: string): Recommendation[] {
-    return this.store.db.query<Recommendation, [string]>('SELECT * FROM recommendations WHERE owner_id = ? ORDER BY category, name').all(ownerId)
+  mine(ownerId: string): LocalPick[] {
+    return this.store.db.query<LocalPick, [string]>('SELECT * FROM local_recommendations WHERE owner_id = ? ORDER BY category, name').all(ownerId)
   }
 
   /** How each person you know relates to you, for weighting: your own contact circle for them wins. */
@@ -136,7 +137,7 @@ export class Local {
   search(me: string, opts: { q?: string; category?: string; limit?: number } = {}): Ranked[] {
     const close = this.closeness(me)
     const owners = [me, ...close.keys()]
-    const rows = owners.flatMap((id) => this.store.db.query<Recommendation, [string]>('SELECT * FROM recommendations WHERE owner_id = ?').all(id))
+    const rows = owners.flatMap((id) => this.store.db.query<LocalPick, [string]>('SELECT * FROM local_recommendations WHERE owner_id = ?').all(id))
     const words = (opts.q ?? '').toLowerCase().split(/\s+/).filter(Boolean).slice(0, 6)
     const category = (opts.category ?? '').toLowerCase()
     const groups = new Map<string, Ranked>()

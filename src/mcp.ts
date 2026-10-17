@@ -91,7 +91,7 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
     'recommend_business',
     'Recommend a local business to everyone who knows the user. Only do this when the user asked to recommend it.',
     { name: z.string().max(200), category: z.string().max(60), town: z.string().max(120).optional(), phone: z.string().max(60).optional(), website: z.string().max(500).optional(), note: z.string().max(1000).optional() },
-    async (body: any) => json(await client.recommend(body)),
+    async (body: any) => json(await client.recommendBusiness(body)),
   )
 
   server.tool('family_plan', "Whether a tree is on the one-time Family plan (pets, invite everyone), its price, and where to pay.", { tree_id: z.string() }, async ({ tree_id }: any) => json(await client.plan(tree_id)))
@@ -129,7 +129,7 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
   const contact = {
     name: z.string().max(200).optional(),
     nickname: z.string().max(200).optional(),
-    circle: z.enum(['family', 'neighbors', 'friends', 'business']).optional(),
+    circle: z.enum(['family', 'friends', 'neighbors', 'business']).optional(),
     relationship: z.string().max(200).optional().describe('how you know them: "cousin", "college roommate", "our plumber"'),
     company: z.string().max(200).optional(),
     title: z.string().max(200).optional(),
@@ -142,11 +142,14 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
     notes: z.string().max(20000).optional(),
   }
 
-  server.tool('list_contacts', "Search your network (family, neighbors, friends, business). Private to you; matches names, emails, phones, companies, addresses and notes.", { query: z.string().max(200).default(''), circle: z.enum(['family', 'neighbors', 'friends', 'business']).optional() }, async ({ query, circle }: any) => json(await client.contacts(query, circle)))
+  server.tool('list_contacts', "Search your network (family, friends, neighbors, business). Private to you; matches names, emails, phones, companies, addresses and notes.", { query: z.string().max(200).default(''), circle: z.enum(['family', 'friends', 'neighbors', 'business']).optional() }, async ({ query, circle }: any) => json(await client.contacts(query, circle)))
   server.tool('get_contact', 'Everything you keep about one contact.', { contact_id: z.string() }, async ({ contact_id }: any) => json(await client.contact(contact_id)))
   server.tool('add_contact', 'Add someone you know to your network.', contact, async (fields: any) => json(await client.addContact(fields)))
   server.tool('update_contact', 'Change a contact. Lists (emails, phones, addresses, links) are replaced whole.', { contact_id: z.string(), ...contact }, async ({ contact_id, ...fields }: any) => json(await client.updateContact(contact_id, fields)))
   server.tool('connect_contact', 'Ask a contact to connect: one email from you, and if they say yes you can message each other. Use it for people the user actually knows, one at a time.', { contact_id: z.string(), note: z.string().max(1000).optional() }, async ({ contact_id, note }: any) => text(await client.connectContact(contact_id, note)))
+  server.tool('recommend_contact', 'Recommend a contact (a neighbor, a plumber, a babysitter) to one person you are connected with or share a tree with; user_id comes from inbox().reachable. Sends their name, phones, emails, addresses and links, never your notes. Only when the user asked.', { contact_id: z.string(), user_id: z.string(), note: z.string().max(1000).optional() }, async ({ contact_id, user_id, note }: any) => json(await client.recommendContact(contact_id, user_id, note)))
+  server.tool('recommendations', 'Contacts people you know recommended to you, waiting to be saved.', {}, async () => json(await client.recommendations()))
+  server.tool('save_recommendation', 'Save a recommended contact into your network.', { recommendation_id: z.string() }, async ({ recommendation_id }: any) => json(await client.saveRecommendation(recommendation_id)))
   server.tool('inbox', 'Your conversations, newest first, with unread counts, and who you could write to.', {}, async () => json(await client.inbox()))
   server.tool('read_conversation', 'The messages between you and one person (marks them read).', { user_id: z.string() }, async ({ user_id }: any) => json(await client.conversation(user_id)))
   server.tool('send_message', 'Send a private message to one person you are connected with or share a tree with. Only send what the user asked you to send.', { user_id: z.string(), body: z.string().min(1).max(5000) }, async ({ user_id, body }: any) => json(await client.sendMessage(user_id, body)))

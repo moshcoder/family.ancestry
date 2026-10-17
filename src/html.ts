@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { BONDS, fullName, lifespan, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.3.0'
+export const VERSION = '0.4.0'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)

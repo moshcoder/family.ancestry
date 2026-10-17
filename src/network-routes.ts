@@ -61,6 +61,27 @@ export function mountNetwork(app: Hono<any>, api: Hono<any>, d: NetworkDeps) {
     return `Request sent to ${email}.`
   }
 
+  /** Recommend a contact to someone you could message; the same hourly limit as messages. */
+  function recommend(from: User, contact: Contact, toId: string, note: string | null) {
+    const to = store.user(toId)
+    if (!to || !net.canMessage(from.id, to.id)) throw new Error('You can recommend to people you are connected with or share a tree with.')
+    if (!d.limits.message(`msg:${from.id}`)) throw new Error('Slow down a little: too many messages in the last hour.')
+    const first = net.unreadBefore(from.id, to.id) < 0
+    const rec = net.recommend(from, to.id, contact, note)
+    if (first) {
+      const url = `${site}/inbox`
+      d.mail({
+        to: to.email,
+        subject: `${who(from)} recommended ${contactName(rec.card)}`,
+        text: `${who(from)} recommended ${contactName(rec.card)} to you on family.ancestry.${rec.note ? `\n\n"${rec.note}"` : ''}\n\nSee it and save it: ${url}`,
+        html: `<p><b>${html.esc(who(from))}</b> recommended <b>${html.esc(contactName(rec.card))}</b> to you on family.ancestry.</p>${rec.note ? `<blockquote style="border-left:3px solid #ccc;margin:0;padding:4px 12px;color:#444">${html.esc(rec.note)}</blockquote>` : ''}<p><a href="${html.esc(url)}">See it and save it</a></p>`,
+      }).catch((error) => console.error(`[recommend] notify failed: ${(error as Error).message}`))
+    }
+    return { rec, to }
+  }
+
+  const recsFor = (u: User) => net.recommendationsFor(u.id).map((rec) => ({ rec, from: store.user(rec.from_user)! })).filter((r) => r.from)
+
   async function sendMessage(from: User, to: User, body: string) {
     if (!d.limits.message(`msg:${from.id}`)) throw new Error('Slow down a little: too many messages in the last hour.')
     const message = net.send(from.id, to.id, body)
@@ -88,6 +109,7 @@ export function mountNetwork(app: Hono<any>, api: Hono<any>, d: NetworkDeps) {
         linked,
         canMessage: Boolean(linked && net.canMessage(u.id, linked.id)),
         blocked: Boolean(linked && net.blocked(u.id, linked.id)),
+        reachable: net.reachable(u.id),
       }),
     )
   }
@@ -152,6 +174,29 @@ export function mountNetwork(app: Hono<any>, api: Hono<any>, d: NetworkDeps) {
     const r = await d.inviteToTree(u, tree.id, email, body.role === 'editor' ? 'editor' : 'viewer', { personId: contact.tree_id === tree.id ? contact.person_id : null })
     return c.redirect(back(`/network/c/${contact.id}`, r.mailed ? `Invited ${email} to ${tree.name}.` : 'That is a lot of invitations for one day. Try again tomorrow.'))
   })
+  app.post('/network/c/:id/recommend', async (c) => {
+    if (needUser(c)) return needUser(c)!
+    const u = user(c)!
+    const contact = net.contact(u.id, c.req.param('id'))
+    if (!contact) return c.notFound()
+    const body = await d.form(c)
+    try {
+      const { to } = recommend(u, contact, String(body.to ?? ''), body.note ? String(body.note) : null)
+      return c.redirect(back(`/network/c/${contact.id}`, `Recommended ${contactName(contact)} to ${who(to)}.`))
+    } catch (error) {
+      return c.redirect(back(`/network/c/${contact.id}`, (error as Error).message))
+    }
+  })
+  app.post('/network/r/:id/save', (c) => {
+    if (needUser(c)) return needUser(c)!
+    const saved = net.saveRecommendation(user(c)!.id, c.req.param('id'))
+    return saved ? c.redirect(back(`/network/c/${saved.id}`, 'Saved to your network')) : c.redirect('/inbox')
+  })
+  app.post('/network/r/:id/dismiss', (c) => {
+    if (needUser(c)) return needUser(c)!
+    net.dismissRecommendation(user(c)!.id, c.req.param('id'))
+    return c.redirect('/inbox')
+  })
   app.get('/network/accept/:token', (c) => {
     const req = net.connectRequest(c.req.param('token'))
     const from = req ? store.user(req.from_user) : null
@@ -170,7 +215,7 @@ export function mountNetwork(app: Hono<any>, api: Hono<any>, d: NetworkDeps) {
   app.get('/inbox', (c) => {
     if (needUser(c)) return needUser(c)!
     const u = user(c)!
-    return c.html(page.inboxPage(d.ctx(c), net.threads(u.id), net.reachable(u.id)))
+    return c.html(page.inboxPage(d.ctx(c), net.threads(u.id), net.reachable(u.id), recsFor(u)))
   })
   const thread = (c: Context, other: User, error: string | null = null) => {
     const u = user(c)!
@@ -246,6 +291,26 @@ export function mountNetwork(app: Hono<any>, api: Hono<any>, d: NetworkDeps) {
     if (!contact) return c.json({ error: 'no such contact' }, 404)
     const body = await json(c)
     return c.json({ result: await askToConnect(user(c)!, contact, body.note ? String(body.note) : null) })
+  })
+  api.post('/contacts/:id/recommend', async (c) => {
+    const contact = net.contact(user(c)!.id, c.req.param('id'))
+    if (!contact) return c.json({ error: 'no such contact' }, 404)
+    const body = await json(c)
+    try {
+      const { rec, to } = recommend(user(c)!, contact, String(body.to ?? ''), body.note ? String(body.note) : null)
+      return c.json({ recommendation: rec, to: userOut(to) }, 201)
+    } catch (error) {
+      return c.json({ error: (error as Error).message }, 400)
+    }
+  })
+  api.get('/recommendations', (c) => c.json({ recommendations: recsFor(user(c)!).map(({ rec, from }) => ({ ...rec, from: userOut(from) })) }))
+  api.post('/recommendations/:id/save', (c) => {
+    const contact = net.saveRecommendation(user(c)!.id, c.req.param('id'))
+    return contact ? c.json({ contact }) : c.json({ error: 'no such recommendation' }, 404)
+  })
+  api.post('/recommendations/:id/dismiss', (c) => {
+    net.dismissRecommendation(user(c)!.id, c.req.param('id'))
+    return c.json({ ok: true })
   })
   api.post('/contacts/import', async (c) => {
     const text = await c.req.text()
