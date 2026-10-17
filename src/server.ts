@@ -24,7 +24,12 @@ const MAX_PHOTO = 8 * 1024 * 1024
 const MAX_GEDCOM = 25 * 1024 * 1024
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif'])
 
-export type AppOptions = { store: Store; auth: Auth; site: string; publicDir?: string; net?: Network }
+/**
+ * `publicSite` opens in any browser: family.ancestry.pit.world, pit.world's relay of
+ * the Moshpit name for people who are not on Moshpit DNS. Links we email to someone
+ * else (invites) use it, because we cannot know which internet they are on.
+ */
+export type AppOptions = { store: Store; auth: Auth; site: string; publicSite?: string; publicDir?: string; net?: Network }
 
 /** Up to 20 addresses from "a@b.com, c@d.com" or one per line. */
 export const parseEmails = (value: unknown): string[] => [...new Set(String(value ?? '').split(/[\s,;]+/).map((e) => validEmail(e)).filter(Boolean) as string[])].slice(0, 20)
@@ -48,7 +53,11 @@ function limiter(limit: number, windowMs: number) {
 /** "Jane Doe (1901–1980) #abc123" from the datalist -> abc123. */
 export const pickId = (value: unknown): string | null => String(value ?? '').match(/#([A-Za-z0-9_-]{6,})\s*$/)?.[1] ?? (/^[A-Za-z0-9_-]{6,}$/.test(String(value ?? '').trim()) ? String(value).trim() : null)
 
-export function createApp({ store, auth, site, publicDir = join(import.meta.dir, '..', 'public'), net = new Network(store) }: AppOptions) {
+export function createApp({ store, auth, site, publicSite = site, publicDir = join(import.meta.dir, '..', 'public'), net = new Network(store) }: AppOptions) {
+  // A request relayed by pit.world says so in X-Forwarded-Host; a sign-in link for it must open there too.
+  // Only the one configured address is believed, so a forged header can at worst pick that address.
+  const publicHost = new URL(publicSite).host
+  const linkBase = (c: Context) => (publicSite !== site && c.req.header('x-forwarded-host') === publicHost ? publicSite : site)
   const app = new Hono<Env>()
   const linkLimit = limiter(10, 15 * 60_000)
   // People, not campaigns: a day's worth of invitations per sender (and per recipient), an hour's worth of messages.
@@ -160,7 +169,7 @@ export function createApp({ store, auth, site, publicDir = join(import.meta.dir,
     const email = validEmail(body.email)
     if (!email) return c.html(html.signInPage(ctx(c, { error: 'That does not look like an email address.' }), safeNext(body.next)), 400)
     // Same answer whether the address is new, known, or rate-limited.
-    if (linkLimit(`ip:${ip(c)}`) && linkLimit(`email:${email}`)) await auth.sendLink(email, safeNext(body.next))
+    if (linkLimit(`ip:${ip(c)}`) && linkLimit(`email:${email}`)) await auth.sendLink(email, safeNext(body.next), linkBase(c))
     return c.html(html.checkEmailPage(ctx(c)))
   })
 
@@ -537,7 +546,7 @@ export function createApp({ store, auth, site, publicDir = join(import.meta.dir,
     if (!emails.length) {
       if (body.back === 'person' && personId) return c.redirect(`/t/${t.tree.id}/p/${personId}?ok=${encodeURIComponent('That does not look like an email address.')}`)
       if (t.role !== 'owner') return membersView(c, t, [], 'Only the owner can make invite links. Invite by email instead.')
-      return membersView(c, t, [{ email: null, url: `${site}/invite/${store.createInvite(t.tree.id, t.user.id, role, null, { note })}`, mailed: false }])
+      return membersView(c, t, [{ email: null, url: `${publicSite}/invite/${store.createInvite(t.tree.id, t.user.id, role, null, { note })}`, mailed: false }])
     }
     const links: html.InviteLink[] = []
     for (const email of emails) links.push({ email, ...(await inviteToTree(t.user, t.tree.id, email, role, { personId, note })) })
@@ -776,7 +785,7 @@ export function createApp({ store, auth, site, publicDir = join(import.meta.dir,
     const note = body.note ? String(body.note) : null
     if (!emails.length) {
       if (t.role !== 'owner') return bad(c, 'only the owner can make invite links; give an email')
-      return c.json({ invites: [{ email: null, mailed: false, url: `${site}/invite/${store.createInvite(t.tree.id, t.user.id, role, null, { personId, note })}` }] }, 201)
+      return c.json({ invites: [{ email: null, mailed: false, url: `${publicSite}/invite/${store.createInvite(t.tree.id, t.user.id, role, null, { personId, note })}` }] }, 201)
     }
     const invites = []
     for (const email of emails) invites.push({ email, ...(await inviteToTree(t.user, t.tree.id, email, role, { personId, note })) })
@@ -815,7 +824,7 @@ export function createApp({ store, auth, site, publicDir = join(import.meta.dir,
   async function inviteToTree(from: User, treeId: string, email: string, role: 'editor' | 'viewer', opts: { personId?: string | null; note?: string | null } = {}): Promise<{ url: string; mailed: boolean }> {
     const tree = store.tree(treeId)!
     const person = opts.personId ? store.person(treeId, opts.personId) : null
-    const url = `${site}/invite/${store.createInvite(treeId, from.id, role, email, { personId: person?.id ?? null, note: opts.note })}`
+    const url = `${publicSite}/invite/${store.createInvite(treeId, from.id, role, email, { personId: person?.id ?? null, note: opts.note })}`
     net.ensureContact(from.id, email, { name: person ? fullName(person) : '', circle: 'family', birthday: person?.birth_date ?? null }, { tree_id: treeId, person_id: person?.id ?? null })
     const mailed = inviteLimit(`invite:${from.id}`) && inviteLimit(`to:${email}`)
     if (mailed) await sendInvite(email, tree.name, from, url, role, { person, note: opts.note ?? null })
@@ -899,7 +908,9 @@ export function serve() {
   const store = new Store(join(dataDir, 'family.db'))
   const mailer: Mailer = process.env.RESEND_API_KEY ? resendMailer(process.env.RESEND_API_KEY, process.env.MAIL_FROM ?? 'family.ancestry <hello@pit.world>') : consoleMailer
   const auth = new Auth(store, mailer, site)
-  const app = createApp({ store, auth, site })
+  // Ours lives at family.ancestry, relayed by pit.world; a self-hosted copy on an ordinary domain needs no relay.
+  const publicSite = (process.env.ANCESTRY_PUBLIC_SITE ?? (new URL(site).hostname === 'family.ancestry' ? 'https://family.ancestry.pit.world' : site)).replace(/\/+$/, '')
+  const app = createApp({ store, auth, site, publicSite })
   const port = Number(process.env.PORT ?? 8792)
   startRingRefresh()
   Bun.serve({ port, hostname: process.env.HOST ?? '127.0.0.1', fetch: app.fetch, maxRequestBodySize: 30 * 1024 * 1024 })

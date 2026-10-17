@@ -7,11 +7,11 @@ import { SAMPLE_GED } from './fixtures.ts'
 
 const SITE = 'http://family.test'
 
-function harness() {
+function harness(publicSite?: string) {
   const store = new Store(':memory:')
   const mail: Mail[] = []
   const auth = new Auth(store, async (m) => void mail.push(m), SITE)
-  const app = createApp({ store, auth, site: SITE })
+  const app = createApp({ store, auth, site: SITE, ...(publicSite ? { publicSite } : {}) })
   const jar = new Map<string, string>()
   const cookie = () => [...jar].map(([k, v]) => `${k}=${v}`).join('; ')
   const keep = (res: Response) => {
@@ -222,7 +222,32 @@ describe('the Moshpit ring bar', () => {
     expect(direct).toContain('href="https://seo.rank/"')
     expect(direct).toContain('</html>')
     const viaGateway = await page({ host: 'family.ancestry', 'x-moshpit-name': 'family.ancestry' })
-    expect(viaGateway).toContain('href="https://pit.moshcode.sh/n/seo.rank"')
+    expect(viaGateway).toContain('href="https://seo.rank.pit.world/"')
     expect(viaGateway).not.toContain('<!--ring-bar-->')
+  })
+})
+
+describe('pit.world relay (family.ancestry.pit.world)', () => {
+  const RELAY = 'https://family.test.pit.world'
+
+  test('a sign-in asked for through the relay is a relay link; a direct one is direct', async () => {
+    const h = harness(RELAY)
+    await h.req('/signin')
+    await h.req('/auth/link', { method: 'POST', body: new URLSearchParams({ _csrf: h.jar.get('fa_csrf') ?? '', email: 'kurt@example.com' }), headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-forwarded-host': 'family.test.pit.world' } })
+    expect(h.mail[0]!.text).toContain(`${RELAY}/auth/verify?token=`)
+    await h.formPost('/auth/link', { email: 'me@example.com' })
+    expect(h.mail[1]!.text).toContain(`${SITE}/auth/verify?token=`)
+    // Any other forwarded host is ignored.
+    await h.req('/auth/link', { method: 'POST', body: new URLSearchParams({ _csrf: h.jar.get('fa_csrf') ?? '', email: 'x@example.com' }), headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-forwarded-host': 'evil.example' } })
+    expect(h.mail[2]!.text).toContain(`${SITE}/auth/verify?token=`)
+  })
+
+  test('invites always use the relay, which opens in any browser', async () => {
+    const h = harness(RELAY)
+    await h.signIn('owner@example.com')
+    const treeId = (await h.formPost('/trees', { name: 'Fam' })).headers.get('location')!.split('/').pop()!
+    const page = await (await h.formPost(`/t/${treeId}/invites`, { role: 'viewer', email: 'kurt@example.com' })).text()
+    expect(page).toContain(`value="${RELAY}/invite/`)
+    expect(h.mail.at(-1)!.text).toContain(`${RELAY}/invite/`)
   })
 })
