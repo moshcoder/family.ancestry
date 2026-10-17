@@ -188,3 +188,20 @@ describe('server', () => {
     expect(h.store.mediaFor(treeId, person.id)).toHaveLength(1)
   })
 })
+
+describe('pit.world verification', () => {
+  test('PIT_VERIFY puts the meta tag on the homepage only, and only hex', async () => {
+    const before = process.env.PIT_VERIFY
+    process.env.PIT_VERIFY = 'c1fa41c17a1de9fb50b21164203d6df3'
+    try {
+      const h = harness()
+      expect(await (await h.req('/')).text()).toContain('<meta name="pit-verify" content="c1fa41c17a1de9fb50b21164203d6df3">')
+      expect(await (await h.req('/about')).text()).not.toContain('pit-verify')
+      process.env.PIT_VERIFY = '"><script>'
+      expect(await (await h.req('/')).text()).not.toContain('pit-verify')
+    } finally {
+      if (before === undefined) delete process.env.PIT_VERIFY
+      else process.env.PIT_VERIFY = before
+    }
+  })
+})

@@ -28,7 +28,15 @@ export type Ctx = { user: User | null; csrf?: string; flash?: string | null; err
 
 const csrfField = (ctx: Ctx) => (ctx.csrf ? `<input type="hidden" name="_csrf" value="${esc(ctx.csrf)}">` : '')
 
-export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [string, string][]; wide?: boolean } = {}): string {
+/**
+ * pit.world proves a listing's owner by a meta tag on the homepage. PIT_VERIFY
+ * comes from app.env, so the tag survives every deploy; anything but hex is ignored.
+ */
+export function pitVerifyMeta(value = process.env.PIT_VERIFY): string {
+  return value && /^[0-9a-f]{16,64}$/i.test(value) ? `\n<meta name="pit-verify" content="${value}">` : ''
+}
+
+export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [string, string][]; wide?: boolean; head?: string } = {}): string {
   const crumbs = opts.crumbs?.length ? `<nav class="crumbs">${opts.crumbs.map(([href, label]) => (href ? `<a href="${esc(href)}">${esc(label)}</a>` : `<span>${esc(label)}</span>`)).join('<span class="sep">/</span>')}</nav>` : ''
   return `<!doctype html>
 <html lang="en">
@@ -37,7 +45,7 @@ export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}${title === 'family.ancestry' ? '' : ' · family.ancestry'}</title>
 <meta name="description" content="Private family trees for your family: GEDCOM import and export, pedigree charts, photos, sources, invites. Open source.">
-<meta name="theme-color" content="#2f5d43">
+<meta name="theme-color" content="#2f5d43">${opts.head ?? ''}
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -83,6 +91,7 @@ export function homePage(ctx: Ctx): string {
   <div><h3>Invite the family</h3><p>Editors add and fix; viewers just look. Links expire, roles can change.</p></div>
   <div><h3>Everywhere you are</h3><p>Install it as an app, or use the desktop app, the <code>ancestry</code> CLI, the terminal UI, or let your AI assistant read it over MCP.</p></div>
 </section>`,
+    { head: pitVerifyMeta() },
   )
 }
 
