@@ -1,0 +1,241 @@
+/**
+ * The family.ancestry API, as a client. The CLI, the TUI and the MCP server all use it.
+ *
+ * family.ancestry is a Moshpit name: it lives outside the public DNS and its
+ * certificate chains to the Moshpit Root CA, not to a root your OS ships. So:
+ *
+ *   1. resolve the host with the system resolver (works if you run moshcode dns),
+ *   2. else ask the Moshpit DNS-over-HTTPS resolver (dns.moshcode.sh),
+ *   3. connect to that address with SNI set to the name, and verify the
+ *      certificate against the Moshpit root bundled in public/moshpit-root-ca.crt.
+ *
+ * ANCESTRY_URL points it at another instance (your own, or http://127.0.0.1:8792);
+ * ordinary public hosts go through plain fetch. The token comes from
+ * ANCESTRY_TOKEN or the file `ancestry login` writes.
+ */
+import { lookup } from 'node:dns/promises'
+import { isIP } from 'node:net'
+import { rootCertificates } from 'node:tls'
+import { mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { homedir } from 'node:os'
+
+export const DEFAULT_URL = 'https://family.ancestry'
+export const MOSHPIT_DOH = 'https://dns.moshcode.sh/dns-query'
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+  }
+}
+
+export type Config = { url?: string; token?: string; email?: string; tree?: string }
+
+export const configPath = () => process.env.ANCESTRY_CONFIG ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'family-ancestry', 'config.json')
+
+export function readConfig(): Config {
+  try {
+    return JSON.parse(readFileSync(configPath(), 'utf8')) as Config
+  } catch {
+    return {}
+  }
+}
+
+export function writeConfig(config: Config) {
+  const path = configPath()
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
+  chmodSync(path, 0o600)
+}
+
+let rootPem: string | null | undefined
+function moshpitRoot(): string | null {
+  if (rootPem !== undefined) return rootPem
+  try {
+    rootPem = readFileSync(new URL('../public/moshpit-root-ca.crt', import.meta.url), 'utf8')
+  } catch {
+    rootPem = null
+  }
+  return rootPem
+}
+
+function dnsQuery(name: string): Uint8Array<ArrayBuffer> {
+  const parts: number[] = [0x5e, 0x0a, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0]
+  for (const label of name.replace(/\.$/, '').split('.')) {
+    const bytes = new TextEncoder().encode(label)
+    parts.push(bytes.length, ...bytes)
+  }
+  parts.push(0, 0, 1, 0, 1)
+  return new Uint8Array(parts)
+}
+
+function skipName(buf: Uint8Array, at: number): number {
+  while (at < buf.length) {
+    const len = buf[at]!
+    if (len === 0) return at + 1
+    if ((len & 0xc0) === 0xc0) return at + 2
+    at += len + 1
+  }
+  return at
+}
+
+/** The A records in a DNS wire-format answer. */
+export function parseDnsAnswer(buf: Uint8Array): string[] {
+  if (buf.length < 12) return []
+  const qd = (buf[4]! << 8) | buf[5]!
+  const an = (buf[6]! << 8) | buf[7]!
+  let at = 12
+  for (let i = 0; i < qd; i++) at = skipName(buf, at) + 4
+  const out: string[] = []
+  for (let i = 0; i < an && at + 10 <= buf.length; i++) {
+    at = skipName(buf, at)
+    const type = (buf[at]! << 8) | buf[at + 1]!
+    const rdlen = (buf[at + 8]! << 8) | buf[at + 9]!
+    at += 10
+    if (type === 1 && rdlen === 4) out.push(`${buf[at]}.${buf[at + 1]}.${buf[at + 2]}.${buf[at + 3]}`)
+    at += rdlen
+  }
+  return out
+}
+
+export async function resolveMoshpit(host: string, fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  try {
+    const r = await fetchImpl(MOSHPIT_DOH, { method: 'POST', headers: { 'content-type': 'application/dns-message', accept: 'application/dns-message' }, body: dnsQuery(host), signal: AbortSignal.timeout(6_000) })
+    if (!r.ok) return null
+    return parseDnsAnswer(new Uint8Array(await r.arrayBuffer()))[0] ?? null
+  } catch {
+    return null
+  }
+}
+
+export type PersonSummary = { id: string; name: string; given: string; surname: string; sex: string; birth_date: string | null; birth_place: string | null; death_date: string | null; death_place: string | null; living: number; notes: string | null; url: string }
+export type PersonDetail = PersonSummary & {
+  parents: { family_id: string; relation: string; parents: { id: string; name: string }[]; siblings: { id: string; name: string }[] }[]
+  unions: { family_id: string; kind: string; start_date: string | null; start_place: string | null; end_date: string | null; partner: { id: string; name: string } | null; children: { id: string; name: string }[] }[]
+  events: { id: string; type: string; date: string | null; place: string | null; description: string | null }[]
+  sources: { id: string; title: string; url: string | null; page: string | null }[]
+  photos: { id: string; url: string; caption: string | null }[]
+}
+export type TreeSummary = { id: string; name: string; description: string | null; role: string; people: number; home_person_id: string | null }
+
+export class AncestryClient {
+  private route: Promise<{ origin: string; init: Record<string, unknown> }> | null = null
+  readonly base: string
+  token: string | null
+
+  constructor(opts: { url?: string; token?: string | null; fetchImpl?: typeof fetch } = {}) {
+    const config = readConfig()
+    this.base = (opts.url ?? process.env.ANCESTRY_URL ?? config.url ?? DEFAULT_URL).replace(/\/+$/, '')
+    this.token = opts.token !== undefined ? opts.token : (process.env.ANCESTRY_TOKEN ?? config.token ?? null)
+    this.fetchImpl = opts.fetchImpl ?? fetch
+  }
+
+  private fetchImpl: typeof fetch
+
+  /** Work out once how to reach the instance: directly, or by address with SNI. */
+  private connect() {
+    this.route ??= (async () => {
+      const url = new URL(this.base)
+      const ca = moshpitRoot()
+      const tls = url.protocol === 'https:' && ca ? { tls: { ca: [ca, ...rootCertificates] } } : {}
+      if (isIP(url.hostname) || url.hostname === 'localhost') return { origin: url.origin, init: {} }
+      try {
+        await lookup(url.hostname)
+        return { origin: url.origin, init: tls }
+      } catch {}
+      const ip = await resolveMoshpit(url.hostname, this.fetchImpl)
+      if (!ip) throw new Error(`${url.hostname} does not resolve (not in the public DNS, and the Moshpit resolver did not answer).`)
+      const origin = `${url.protocol}//${ip}${url.port ? `:${url.port}` : ''}`
+      return { origin, init: { headers: { host: url.host }, ...(url.protocol === 'https:' && ca ? { tls: { ca, serverName: url.hostname } } : {}) } }
+    })()
+    return this.route
+  }
+
+  async raw(path: string, init: RequestInit = {}): Promise<Response> {
+    let route: { origin: string; init: Record<string, unknown> }
+    try {
+      route = await this.connect()
+    } catch (error) {
+      this.route = null
+      throw error
+    }
+    try {
+      return await this.fetchImpl(`${route.origin}${path}`, {
+        ...route.init,
+        ...init,
+        redirect: 'manual',
+        headers: {
+          accept: 'application/json',
+          ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
+          ...((route.init.headers as Record<string, string>) ?? {}),
+          ...((init.headers as Record<string, string>) ?? {}),
+        },
+        signal: AbortSignal.timeout(60_000),
+      } as RequestInit)
+    } catch (error) {
+      this.route = null
+      throw new Error(`Could not reach ${this.base}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  async request<T>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
+    const { json, ...rest } = init
+    const response = await this.raw(path, json !== undefined ? { ...rest, body: JSON.stringify(json), headers: { 'content-type': 'application/json', ...((rest.headers as Record<string, string>) ?? {}) } } : rest)
+    const body = (await response.json().catch(() => ({}))) as any
+    if (!response.ok) throw new ApiError(body?.error ?? `HTTP ${response.status}`, response.status)
+    return body as T
+  }
+
+  me() {
+    return this.request<{ user: { id: string; email: string; name: string | null }; trees: TreeSummary[] }>('/api/v1/me')
+  }
+  trees() {
+    return this.request<{ trees: TreeSummary[] }>('/api/v1/trees').then((r) => r.trees)
+  }
+  createTree(name: string, description?: string) {
+    return this.request<{ tree: TreeSummary }>('/api/v1/trees', { method: 'POST', json: { name, description } }).then((r) => r.tree)
+  }
+  tree(id: string) {
+    return this.request<{ tree: TreeSummary; role: string; stats: Record<string, number>; surnames: { surname: string; n: number }[] }>(`/api/v1/trees/${enc(id)}`)
+  }
+  people(tree: string, q = '', limit = 100) {
+    return this.request<{ people: PersonSummary[] }>(`/api/v1/trees/${enc(tree)}/people?q=${encodeURIComponent(q)}&limit=${limit}`).then((r) => r.people)
+  }
+  person(tree: string, id: string) {
+    return this.request<{ person: PersonDetail }>(`/api/v1/trees/${enc(tree)}/people/${enc(id)}`).then((r) => r.person)
+  }
+  addPerson(tree: string, fields: Record<string, unknown>) {
+    return this.request<{ person: PersonDetail }>(`/api/v1/trees/${enc(tree)}/people`, { method: 'POST', json: fields }).then((r) => r.person)
+  }
+  updatePerson(tree: string, id: string, fields: Record<string, unknown>) {
+    return this.request<{ person: PersonDetail }>(`/api/v1/trees/${enc(tree)}/people/${enc(id)}`, { method: 'PATCH', json: fields }).then((r) => r.person)
+  }
+  addEvent(tree: string, id: string, event: { type: string; date?: string; place?: string; description?: string }) {
+    return this.request<{ event: unknown }>(`/api/v1/trees/${enc(tree)}/people/${enc(id)}/events`, { method: 'POST', json: event })
+  }
+  pedigree(tree: string, id: string, generations = 4) {
+    return this.request<{ ancestors: { n: number; generation: number; id: string; name: string; birth_date: string | null; death_date: string | null; sex: string }[] }>(`/api/v1/trees/${enc(tree)}/pedigree/${enc(id)}?generations=${generations}`).then((r) => r.ancestors)
+  }
+  descendants(tree: string, id: string, generations = 3) {
+    return this.request<{ descendants: any }>(`/api/v1/trees/${enc(tree)}/descendants/${enc(id)}?generations=${generations}`).then((r) => r.descendants)
+  }
+  relate(tree: string, a: string, b: string) {
+    return this.request<{ relationship: string; path: { step: string; id: string; name: string }[] | null }>(`/api/v1/trees/${enc(tree)}/relate?a=${enc(a)}&b=${enc(b)}`)
+  }
+  importGedcom(tree: string, text: string) {
+    return this.request<{ imported: { people: number; families: number; sources: number; events: number; skipped: number; warnings: string[] } }>(`/api/v1/trees/${enc(tree)}/import`, { method: 'POST', body: text, headers: { 'content-type': 'text/plain; charset=utf-8' } }).then((r) => r.imported)
+  }
+  async exportGedcom(tree: string, privacy = false): Promise<string> {
+    const res = await this.raw(`/api/v1/trees/${enc(tree)}/export${privacy ? '?privacy=1' : ''}`, { headers: { accept: 'text/plain' } })
+    if (!res.ok) throw new ApiError(((await res.json().catch(() => ({}))) as any)?.error ?? `HTTP ${res.status}`, res.status)
+    return res.text()
+  }
+  health() {
+    return this.request<{ ok: boolean; version: string }>('/health')
+  }
+}
+
+const enc = encodeURIComponent
