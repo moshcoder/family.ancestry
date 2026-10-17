@@ -236,6 +236,77 @@ export class AncestryClient {
   health() {
     return this.request<{ ok: boolean; version: string }>('/health')
   }
+
+  // ---- invites -----------------------------------------------------------
+
+  /** Email invites (or, with no emails, make a link). With person_id, they join as that person. */
+  invite(tree: string, emails: string[], opts: { role?: 'editor' | 'viewer'; person_id?: string; note?: string } = {}) {
+    return this.request<{ invites: { email: string | null; url: string; mailed: boolean }[] }>(`/api/v1/trees/${enc(tree)}/invites`, { method: 'POST', json: { emails, ...opts } }).then((r) => r.invites)
+  }
+  invites(tree: string) {
+    return this.request<{ invites: { id: string; email: string | null; role: string; person_id: string | null; expires_at: number }[] }>(`/api/v1/trees/${enc(tree)}/invites`).then((r) => r.invites)
+  }
+  members(tree: string) {
+    return this.request<{ members: { user_id: string; email: string; name: string | null; role: string; person_id: string | null }[] }>(`/api/v1/trees/${enc(tree)}/members`).then((r) => r.members)
+  }
+
+  // ---- network -----------------------------------------------------------
+
+  contacts(q = '', circle?: string) {
+    return this.request<{ contacts: ContactSummary[] }>(`/api/v1/contacts?q=${encodeURIComponent(q)}${circle ? `&circle=${enc(circle)}` : ''}`).then((r) => r.contacts)
+  }
+  contact(id: string) {
+    return this.request<{ contact: ContactSummary }>(`/api/v1/contacts/${enc(id)}`).then((r) => r.contact)
+  }
+  addContact(fields: Record<string, unknown>) {
+    return this.request<{ contact: ContactSummary }>('/api/v1/contacts', { method: 'POST', json: fields }).then((r) => r.contact)
+  }
+  updateContact(id: string, fields: Record<string, unknown>) {
+    return this.request<{ contact: ContactSummary }>(`/api/v1/contacts/${enc(id)}`, { method: 'PATCH', json: fields }).then((r) => r.contact)
+  }
+  deleteContact(id: string) {
+    return this.request<{ ok: boolean }>(`/api/v1/contacts/${enc(id)}`, { method: 'DELETE' })
+  }
+  connectContact(id: string, note?: string) {
+    return this.request<{ result: string }>(`/api/v1/contacts/${enc(id)}/connect`, { method: 'POST', json: { note } }).then((r) => r.result)
+  }
+  importContacts(vcf: string, circle = 'friends') {
+    return this.request<{ imported: { added: number; skipped: number } }>(`/api/v1/contacts/import?circle=${enc(circle)}`, { method: 'POST', body: vcf, headers: { 'content-type': 'text/vcard; charset=utf-8' } }).then((r) => r.imported)
+  }
+  async exportContacts(): Promise<string> {
+    const res = await this.raw('/api/v1/contacts.vcf', { headers: { accept: 'text/vcard' } })
+    if (!res.ok) throw new ApiError(((await res.json().catch(() => ({}))) as any)?.error ?? `HTTP ${res.status}`, res.status)
+    return res.text()
+  }
+  inbox() {
+    return this.request<{ unread: number; threads: { with: UserSummary; unread: number; last: MessageSummary }[]; reachable: UserSummary[] }>('/api/v1/inbox')
+  }
+  conversation(user: string) {
+    return this.request<{ with: UserSummary; can_message: boolean; messages: MessageSummary[] }>(`/api/v1/inbox/${enc(user)}`)
+  }
+  sendMessage(user: string, body: string) {
+    return this.request<{ message: MessageSummary }>(`/api/v1/inbox/${enc(user)}`, { method: 'POST', json: { body } }).then((r) => r.message)
+  }
+}
+
+export type UserSummary = { id: string; name: string | null; email: string }
+export type MessageSummary = { id: string; sender_id: string; recipient_id: string; body: string; created_at: number }
+export type ContactSummary = {
+  id: string
+  circle: string
+  name: string
+  nickname: string | null
+  relationship: string | null
+  company: string | null
+  title: string | null
+  birthday: string | null
+  anniversary: string | null
+  emails: { label: string | null; value: string }[]
+  phones: { label: string | null; value: string }[]
+  addresses: { label: string | null; lines: string }[]
+  links: { label: string | null; value: string }[]
+  notes: string | null
+  linked_user_id: string | null
 }
 
 const enc = encodeURIComponent

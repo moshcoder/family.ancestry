@@ -1,7 +1,7 @@
 {
   "name": "familyancestry",
-  "version": "0.1.0",
-  "description": "family.ancestry: private family trees for your family. GEDCOM import/export, pedigree and descendant charts, photos, sources, invites. Web app (PWA), API, CLI, TUI, MCP server and desktop app.",
+  "version": "0.2.0",
+  "description": "family.ancestry: private family trees for your family. GEDCOM import/export, pedigree and descendant charts, photos, sources, invites, plus a private family-and-friends network with an inbox. Web app (PWA), API, CLI, TUI, MCP server and desktop app.",
   "license": "MIT",
   "type": "module",
   "homepage": "https://family.ancestry",

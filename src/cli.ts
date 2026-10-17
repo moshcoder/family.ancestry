@@ -26,6 +26,20 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
   ancestry relate <person> <person> how two people are related
   ancestry import <file.ged> [--name N]   into a new tree (or --tree to merge into one)
   ancestry export [-o file.ged] [--privacy]
+  ancestry invite <email...> [--role editor|viewer] [--as <person>] [--note TEXT]
+                                    email invites; --as invites them to be that person
+  ancestry members                  who is in the tree, and pending invites
+
+  ancestry contacts [search] [--circle family|friends|business]
+  ancestry contact add --name N [--email E] [--phone P] [--circle C] [--relationship R]
+               [--company C] [--title T] [--birthday D] [--address TEXT] [--link URL] [--note TEXT]
+  ancestry contact <name|id>        everything about one contact   (contact rm <id> removes)
+  ancestry contacts import <file.vcf> [--circle C] | export [-o file.vcf]
+  ancestry connect <contact> [--note TEXT]   ask them to connect (one email)
+  ancestry inbox                    your conversations
+  ancestry message <contact> <text...>       write to someone you are connected with
+  ancestry thread <contact>         read a conversation
+
   ancestry open [person]            open the tree (or a person) in the browser
   ancestry tui                      browse in a terminal app
   ancestry mcp                      MCP server on stdio (claude mcp add ancestry -- ancestry mcp)
@@ -68,6 +82,58 @@ export function personFields(flags: Record<string, string | true>): Record<strin
   if (flags.living === true) out.living = true
   if (flags['not-living'] === true) out.living = false
   return out
+}
+
+/** Flags to contact fields. --email/--phone/--address/--link take one value; the web form takes many. */
+export function contactFields(flags: Record<string, string | true>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const key of ['name', 'nickname', 'circle', 'relationship', 'company', 'title', 'birthday', 'anniversary'] as const) if (typeof flags[key] === 'string') out[key] = flags[key]
+  if (typeof flags.note === 'string' || typeof flags.notes === 'string') out.notes = str(flags.note) ?? str(flags.notes)
+  if (typeof flags.email === 'string') out.emails = [flags.email]
+  if (typeof flags.phone === 'string') out.phones = [flags.phone]
+  if (typeof flags.address === 'string') out.addresses = [{ label: null, lines: flags.address.replace(/,\s*/g, '\n') }]
+  if (typeof flags.link === 'string') out.links = [flags.link]
+  return out
+}
+
+type Contact = Awaited<ReturnType<AncestryClient['contacts']>>[number]
+const formatContactLine = (c: Contact) => `${c.id}  ${c.name || c.emails[0]?.value}  ${[c.circle, c.relationship, c.company].filter(Boolean).join(' · ')}${c.linked_user_id ? '  (connected)' : ''}`
+
+export function formatContact(c: Contact): string {
+  const lines = [`${c.name || c.emails[0]?.value}${c.nickname ? ` "${c.nickname}"` : ''}  [${c.id}]`, `  ${[c.circle, c.relationship, [c.title, c.company].filter(Boolean).join(' at ')].filter(Boolean).join(' · ')}`]
+  for (const e of c.emails) lines.push(`  ${(e.label ?? 'email').padEnd(10)} ${e.value}`)
+  for (const p of c.phones) lines.push(`  ${(p.label ?? 'phone').padEnd(10)} ${p.value}`)
+  for (const a of c.addresses) lines.push(`  ${(a.label ?? 'address').padEnd(10)} ${a.lines.replace(/\n/g, ', ')}`)
+  for (const l of c.links) lines.push(`  ${(l.label ?? 'link').padEnd(10)} ${l.value}`)
+  if (c.birthday) lines.push(`  ${'birthday'.padEnd(10)} ${c.birthday}`)
+  if (c.anniversary) lines.push(`  ${'anniversary'.padEnd(10)} ${c.anniversary}`)
+  if (c.linked_user_id) lines.push(`  connected; message with: ancestry message ${c.id} ...`)
+  if (c.notes) lines.push('', ...c.notes.split('\n').map((l) => `  ${l}`))
+  return lines.join('\n')
+}
+
+async function pickContact(client: AncestryClient, ref: string | undefined): Promise<Contact> {
+  if (!ref) throw new Error('which contact? give a name, email or id')
+  if (/^[A-Za-z0-9_-]{12}$/.test(ref)) {
+    const hit = await client.contact(ref).catch(() => null)
+    if (hit) return hit
+  }
+  const found = await client.contacts(ref)
+  if (found.length === 1) return found[0]!
+  if (!found.length) throw new Error(`nobody in your network matches "${ref}"`)
+  throw new Error(`"${ref}" matches ${found.length} contacts:\n${found.slice(0, 10).map((c) => `  ${formatContactLine(c)}`).join('\n')}`)
+}
+
+/** A user id to talk to: from a connected contact, or someone already in your inbox. */
+async function pickCorrespondent(client: AncestryClient, ref: string | undefined): Promise<string> {
+  if (!ref) throw new Error('who? give a contact name or id')
+  const box = await client.inbox()
+  const people = [...box.threads.map((t) => t.with), ...box.reachable]
+  const direct = people.find((u) => u.id === ref || u.email === ref.toLowerCase() || (u.name ?? '').toLowerCase() === ref.toLowerCase())
+  if (direct) return direct.id
+  const c = await pickContact(client, ref)
+  if (!c.linked_user_id) throw new Error(`you are not connected with ${c.name} yet: ancestry connect "${c.name}"`)
+  return c.linked_user_id
 }
 
 export function openUrl(url: string): void {
@@ -341,6 +407,81 @@ export async function runCli(argv: string[]): Promise<number> {
           writeFileSync(f.output, ged)
           console.error(`Wrote ${f.output} (${ged.split('\n').filter((l) => / INDI\r?$/.test(l)).length} people).`)
         } else process.stdout.write(ged)
+        return 0
+      }
+      case 'invite': {
+        const tree = await pickTree(client, f.tree)
+        const person = typeof f.as === 'string' ? await pickPerson(client, tree.id, f.as) : undefined
+        const invites = await client.invite(tree.id, rest, { role: f.role === 'editor' ? 'editor' : 'viewer', person_id: person, note: str(f.note) })
+        print(invites, () => invites.map((i) => `${i.email ?? 'link'}: ${i.mailed ? 'emailed' : 'not emailed'}  ${i.url}`).join('\n'))
+        return 0
+      }
+      case 'members': {
+        const tree = await pickTree(client, f.tree)
+        const [members, pending] = await Promise.all([client.members(tree.id), client.invites(tree.id).catch(() => [])])
+        print({ members, pending }, () => [...members.map((m) => `${m.role.padEnd(7)} ${m.name ?? m.email}${m.name ? ` <${m.email}>` : ''}${m.person_id ? `  as ${m.person_id}` : ''}`), ...pending.map((i) => `invited ${i.email ?? 'link'} (${i.role})`)].join('\n'))
+        return 0
+      }
+      case 'contacts': {
+        if (rest[0] === 'import') {
+          if (!rest[1]) throw new Error('ancestry contacts import <file.vcf>')
+          const r = await client.importContacts(readFileSync(rest[1], 'utf8'), str(f.circle) ?? 'friends')
+          print(r, () => `Imported ${r.added}, skipped ${r.skipped} already in your network.`)
+          return 0
+        }
+        if (rest[0] === 'export') {
+          const vcf = await client.exportContacts()
+          if (typeof f.output === 'string') writeFileSync(f.output, vcf), console.error(`Wrote ${f.output}.`)
+          else process.stdout.write(vcf)
+          return 0
+        }
+        const contacts = await client.contacts(rest.join(' '), str(f.circle))
+        print(contacts, () => (contacts.length ? contacts.map(formatContactLine).join('\n') : 'Nobody in your network yet: ancestry contact add --name "Aunt Rose" --email rose@example.com --circle family'))
+        return 0
+      }
+      case 'contact': {
+        if (rest[0] === 'add') {
+          const c = await client.addContact(contactFields(f))
+          print(c, () => `Added ${c.name || c.emails[0]?.value} (${c.id}).`)
+          return 0
+        }
+        if (rest[0] === 'rm' || rest[0] === 'remove') {
+          const c = await pickContact(client, rest.slice(1).join(' '))
+          await client.deleteContact(c.id)
+          console.log(`Removed ${c.name}.`)
+          return 0
+        }
+        if (rest[0] === 'edit') {
+          const c = await client.updateContact((await pickContact(client, rest[1])).id, contactFields(f))
+          print(c, () => formatContact(c))
+          return 0
+        }
+        const c = await pickContact(client, rest.join(' '))
+        print(c, () => formatContact(c))
+        return 0
+      }
+      case 'connect': {
+        const c = await pickContact(client, rest.join(' '))
+        console.log(await client.connectContact(c.id, str(f.note)))
+        return 0
+      }
+      case 'inbox': {
+        const box = await client.inbox()
+        print(box, () => (box.threads.length ? box.threads.map((t) => `${t.unread ? `(${t.unread}) ` : '    '}${t.with.name ?? t.with.email}  [${t.with.id}]\n      ${t.last.body.split('\n')[0]!.slice(0, 100)}`).join('\n') : 'No messages yet.'))
+        return 0
+      }
+      case 'message':
+      case 'thread': {
+        const who = await pickCorrespondent(client, rest[0])
+        if (cmd === 'message') {
+          const body = rest.slice(1).join(' ') || str(f.body)
+          if (!body) throw new Error('ancestry message <contact> <text...>')
+          const m = await client.sendMessage(who, body)
+          print(m, () => 'Sent.')
+          return 0
+        }
+        const t = await client.conversation(who)
+        print(t, () => t.messages.map((m) => `${new Date(m.created_at).toISOString().slice(0, 16).replace('T', ' ')}  ${m.sender_id === t.with.id ? (t.with.name ?? t.with.email) : 'you'}: ${m.body}`).join('\n') || 'No messages yet.')
         return 0
       }
       case 'open': {

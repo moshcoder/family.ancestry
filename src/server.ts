@@ -12,6 +12,9 @@ import { Auth, SESSION_COOKIE, consoleMailer, resendMailer, safeNext, validEmail
 import { exportGedcom, importGedcom, describeImport } from './gedcom.js'
 import { describePath } from './relate.js'
 import * as html from './html.js'
+import { Network } from './network.js'
+import { mountNetwork } from './network-routes.js'
+import { addonsPanel, profileInvite } from './network-html.js'
 
 type Env = { Variables: { user: User | null; csrf: string; via: 'session' | 'token' | null } }
 
@@ -20,7 +23,10 @@ const MAX_PHOTO = 8 * 1024 * 1024
 const MAX_GEDCOM = 25 * 1024 * 1024
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif'])
 
-export type AppOptions = { store: Store; auth: Auth; site: string; publicDir?: string }
+export type AppOptions = { store: Store; auth: Auth; site: string; publicDir?: string; net?: Network }
+
+/** Up to 20 addresses from "a@b.com, c@d.com" or one per line. */
+export const parseEmails = (value: unknown): string[] => [...new Set(String(value ?? '').split(/[\s,;]+/).map((e) => validEmail(e)).filter(Boolean) as string[])].slice(0, 20)
 
 /** Tiny fixed-window limiter, per key. Enough to stop a script from mailing a stranger 1,000 sign-in links. */
 function limiter(limit: number, windowMs: number) {
@@ -41,9 +47,12 @@ function limiter(limit: number, windowMs: number) {
 /** "Jane Doe (1901–1980) #abc123" from the datalist -> abc123. */
 export const pickId = (value: unknown): string | null => String(value ?? '').match(/#([A-Za-z0-9_-]{6,})\s*$/)?.[1] ?? (/^[A-Za-z0-9_-]{6,}$/.test(String(value ?? '').trim()) ? String(value).trim() : null)
 
-export function createApp({ store, auth, site, publicDir = join(import.meta.dir, '..', 'public') }: AppOptions) {
+export function createApp({ store, auth, site, publicDir = join(import.meta.dir, '..', 'public'), net = new Network(store) }: AppOptions) {
   const app = new Hono<Env>()
   const linkLimit = limiter(10, 15 * 60_000)
+  // People, not campaigns: a day's worth of invitations per sender (and per recipient), an hour's worth of messages.
+  const inviteLimit = limiter(40, 24 * 60 * 60_000)
+  const messageLimit = limiter(120, 60 * 60_000)
   const secure = (c: Context) => (c.req.header('x-forwarded-proto') ?? new URL(c.req.url).protocol.replace(':', '')) === 'https'
   const ip = (c: Context) => c.req.header('x-real-ip') ?? c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? 'local'
 
@@ -85,7 +94,7 @@ export function createApp({ store, auth, site, publicDir = join(import.meta.dir,
   })
 
   const form = async (c: Context): Promise<Record<string, any>> => (c as any).formBody ?? (await c.req.parseBody().catch(() => ({})))
-  const ctx = (c: Context, extra: Partial<html.Ctx> = {}): html.Ctx => ({ user: c.get('user'), csrf: c.get('csrf'), flash: c.req.query('ok') ?? null, ...extra })
+  const ctx = (c: Context, extra: Partial<html.Ctx> = {}): html.Ctx => ({ user: c.get('user'), csrf: c.get('csrf'), flash: c.req.query('ok') ?? null, unread: c.get('user') ? net.unreadCount(c.get('user')!.id) : 0, ...extra })
   const signIn = (c: Context, user: User) => {
     setCookie(c, SESSION_COOKIE, auth.createSession(user.id), { path: '/', httpOnly: true, sameSite: 'Lax', secure: secure(c), maxAge: 60 * 60 * 24 * 90 })
   }
@@ -307,13 +316,16 @@ export function createApp({ store, auth, site, publicDir = join(import.meta.dir,
     const t = treeFor(c, 'edit')
     if (t.error) return t.error
     const p = store.addPerson(t.tree.id, await form(c))
-    return c.redirect(`/t/${t.tree.id}/p/${p.id}`)
+    return c.redirect(`/t/${t.tree.id}/p/${p.id}?added=1`)
   })
   app.get('/t/:tree/p/:person', (c) => {
     const t = treeFor(c)
     if (t.error) return t.error
     const person = store.person(t.tree.id, c.req.param('person'))
     if (!person) return c.html(html.messagePage(ctx(c), 'Not found', 'Nobody by that id in this tree.'), 404)
+    const profile = store.profileUser(t.tree.id, person.id)
+    // Only the living can join; the offer is a quiet line unless they were just added.
+    const invitable = canEdit(t.role) && !profile && !person.death_date && !person.death_place
     return c.html(
       html.personPage(ctx(c), t.tree, t.role, {
         person,
@@ -324,11 +336,22 @@ export function createApp({ store, auth, site, publicDir = join(import.meta.dir,
         media: store.mediaFor(t.tree.id, person.id),
         sources: store.sources(t.tree.id),
         everyone: canEdit(t.role) ? store.people(t.tree.id, 5000) : [],
+        profile,
+        self: profile?.id === t.user.id,
+        invite: invitable ? profileInvite(ctx(c), t.tree, person, { justAdded: c.req.query('added') === '1', owner: t.role === 'owner' }) : '',
       }),
     )
   })
+  /** Editors, or the member who is this person (their own profile). */
+  const personFor = (c: Context): TreeAccess => {
+    const t = treeFor(c)
+    if (t.error) return t
+    if (store.canEditPerson(t.tree.id, c.req.param('person')!, t.user.id)) return t
+    const api = c.req.path.startsWith('/api/')
+    return { error: (api ? c.json({ error: 'you can change only your own profile' }, 403) : c.html(html.messagePage(ctx(c), 'Not allowed', 'You can view this tree but change only your own profile.'), 403)) as Response }
+  }
   app.post('/t/:tree/p/:person', async (c) => {
-    const t = treeFor(c, 'edit')
+    const t = personFor(c)
     if (t.error) return t.error
     const body = await form(c)
     if (!('living' in body)) body.living = '0'
@@ -373,7 +396,7 @@ export function createApp({ store, auth, site, publicDir = join(import.meta.dir,
     return c.redirect(`/t/${t.tree.id}?ok=Partnership%20removed`)
   })
   app.post('/t/:tree/p/:person/events', async (c) => {
-    const t = treeFor(c, 'edit')
+    const t = personFor(c)
     if (t.error) return t.error
     const body = await form(c)
     store.addEvent(t.tree.id, c.req.param('person'), { type: String(body.type ?? ''), date: body.date, place: body.place, description: body.description })
@@ -424,7 +447,7 @@ export function createApp({ store, auth, site, publicDir = join(import.meta.dir,
 
   // media
   app.post('/t/:tree/p/:person/media', async (c) => {
-    const t = treeFor(c, 'edit')
+    const t = personFor(c)
     if (t.error) return t.error
     const body = await form(c)
     const file = body.file
@@ -484,22 +507,49 @@ export function createApp({ store, auth, site, publicDir = join(import.meta.dir,
   })
 
   // members + invites
+  const membersView = (c: Context, t: { tree: Tree; role: Role }, links: html.InviteLink[] = [], flash: string | null = null) =>
+    c.html(html.membersPage(ctx(c, flash ? { flash } : {}), t.tree, t.role, store.members(t.tree.id), links, { pending: canEdit(t.role) ? store.pendingInvites(t.tree.id) : [], profiles: store.profiles(t.tree.id), people: (id) => store.person(t.tree.id, id) }))
   app.get('/t/:tree/members', (c) => {
     const t = treeFor(c)
     if (t.error) return t.error
-    return c.html(html.membersPage(ctx(c), t.tree, t.role, store.members(t.tree.id), null))
+    return membersView(c, t)
   })
+  /**
+   * Invite by email (one address or up to 20) or make a link to send yourself.
+   * Owners pick the role; editors can invite viewers, which is how a new person
+   * gets asked to join as themselves right after they are added.
+   */
   app.post('/t/:tree/invites', async (c) => {
-    const t = treeFor(c, 'owner')
+    const t = treeFor(c, 'edit')
     if (t.error) return t.error
     const body = await form(c)
-    const role = body.role === 'editor' ? 'editor' : 'viewer'
-    const email = validEmail(body.email)
-    const token = store.createInvite(t.tree.id, t.user.id, role, email)
-    const url = `${site}/invite/${token}`
-    const mailed = Boolean(email && linkLimit(`invite:${t.user.id}`))
-    if (mailed) await sendInvite(email!, t.tree.name, t.user, url, role)
-    return c.html(html.membersPage(ctx(c, { flash: mailed ? `Invite emailed to ${email}.` : null }), t.tree, t.role, store.members(t.tree.id), url))
+    const role = t.role === 'owner' && body.role === 'editor' ? 'editor' : 'viewer'
+    const personId = body.person_id && store.person(t.tree.id, String(body.person_id)) && !store.profileUser(t.tree.id, String(body.person_id)) ? String(body.person_id) : null
+    const emails = parseEmails(body.emails ?? body.email).slice(0, personId ? 1 : 20)
+    const note = body.note ? String(body.note) : null
+    if (!emails.length) {
+      if (body.back === 'person' && personId) return c.redirect(`/t/${t.tree.id}/p/${personId}?ok=${encodeURIComponent('That does not look like an email address.')}`)
+      if (t.role !== 'owner') return membersView(c, t, [], 'Only the owner can make invite links. Invite by email instead.')
+      return membersView(c, t, [{ email: null, url: `${site}/invite/${store.createInvite(t.tree.id, t.user.id, role, null, { note })}`, mailed: false }])
+    }
+    const links: html.InviteLink[] = []
+    for (const email of emails) links.push({ email, ...(await inviteToTree(t.user, t.tree.id, email, role, { personId, note })) })
+    const sent = links.filter((l) => l.mailed).length
+    const flash = sent === links.length ? `Invite emailed to ${sent === 1 ? links[0]!.email : `${sent} people`}.` : `Emailed ${sent} of ${links.length}; that is a day's worth of invitations. The rest are links below.`
+    if (body.back === 'person' && personId) return c.redirect(`/t/${t.tree.id}/p/${personId}?ok=${encodeURIComponent(flash)}`)
+    return membersView(c, t, links, flash)
+  })
+  app.post('/t/:tree/invites/:id/revoke', (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    store.revokeInvite(t.tree.id, c.req.param('id'))
+    return c.redirect(`/t/${t.tree.id}/members?ok=Invite%20cancelled`)
+  })
+  app.post('/t/:tree/p/:person/release', (c) => {
+    const t = treeFor(c, 'owner')
+    if (t.error) return t.error
+    store.releaseProfile(t.tree.id, c.req.param('person'))
+    return c.redirect(`/t/${t.tree.id}/members?ok=Profile%20unlinked`)
   })
   app.post('/t/:tree/members/:user', async (c) => {
     const t = treeFor(c, 'owner')
@@ -518,17 +568,28 @@ export function createApp({ store, auth, site, publicDir = join(import.meta.dir,
     const invite = store.invite(c.req.param('token'))
     const tree = invite ? store.tree(invite.tree_id) : null
     if (!invite || !tree) return c.html(html.messagePage(ctx(c), 'Invite expired', 'This invite was already used or has expired. Ask for a new one.'), 404)
-    return c.html(html.invitePage(ctx(c), tree, invite.role, c.req.param('token')))
+    const from = store.user(invite.created_by)
+    const person = invite.person_id ? store.person(tree.id, invite.person_id) : null
+    return c.html(html.invitePage(ctx(c), tree, invite.role, c.req.param('token'), { from, person, note: invite.note }))
   })
   app.post('/invite/:token', (c) => {
     const user = c.get('user')
     if (!user) return c.redirect(`/signin?next=${encodeURIComponent(c.req.path)}`)
-    const treeId = store.acceptInvite(c.req.param('token'), user.id)
-    return treeId ? c.redirect(`/t/${treeId}?ok=Welcome`) : c.html(html.messagePage(ctx(c), 'Invite expired', 'This invite was already used or has expired.'), 404)
+    const invite = store.invite(c.req.param('token'))
+    const joined = store.acceptInvite(c.req.param('token'), user.id)
+    if (!joined || !invite) return c.html(html.messagePage(ctx(c), 'Invite expired', 'This invite was already used or has expired.'), 404)
+    // Whoever invited you is in your network now, and you in theirs: family is the first circle.
+    const from = store.user(invite.created_by)
+    if (from && from.id !== user.id) {
+      net.connect(from.id, user.id)
+      net.ensureContact(from.id, user.email, { name: user.name ?? '', circle: 'family' }, { linked_user_id: user.id, tree_id: joined.tree_id, person_id: joined.person_id })
+      net.ensureContact(user.id, from.email, { name: from.name ?? '', circle: 'family' }, { linked_user_id: from.id, tree_id: joined.tree_id, person_id: store.profilePerson(joined.tree_id, from.id) })
+    }
+    return joined.person_id ? c.redirect(`/t/${joined.tree_id}/p/${joined.person_id}?ok=${encodeURIComponent('Welcome to the family. This is your profile: keep it up to date.')}`) : c.redirect(`/t/${joined.tree_id}?ok=Welcome`)
   })
 
   // settings
-  const settings = (c: Context, newToken: string | null = null) => c.html(html.settingsPage(ctx(c), { passkeys: auth.passkeys(c.get('user')!.id), tokens: auth.tokens(c.get('user')!.id), newToken }))
+  const settings = (c: Context, newToken: string | null = null) => c.html(html.settingsPage(ctx(c), { passkeys: auth.passkeys(c.get('user')!.id), tokens: auth.tokens(c.get('user')!.id), newToken, addons: addonsPanel() }))
   app.get('/settings', (c) => needUser(c) ?? settings(c))
   app.post('/settings/name', async (c) => {
     if (needUser(c)) return needUser(c)!
@@ -557,7 +618,8 @@ export function createApp({ store, auth, site, publicDir = join(import.meta.dir,
   const bad = (c: Context, error: unknown, status: 400 | 404 = 400) => c.json({ error: error instanceof Error ? error.message : String(error) }, status)
   const json = async (c: Context): Promise<Record<string, any>> => ((await c.req.json().catch(() => ({}))) as Record<string, any>) ?? {}
   const personOut = (treeId: string, p: Person, full = false) => {
-    const base = { ...p, name: fullName(p), url: `${site}/t/${treeId}/p/${p.id}` }
+    const holder = store.profileUser(treeId, p.id)
+    const base = { ...p, name: fullName(p), url: `${site}/t/${treeId}/p/${p.id}`, profile: holder ? { user_id: holder.id, name: holder.name ?? holder.email } : null }
     if (!full) return base
     return {
       ...base,
@@ -616,7 +678,7 @@ export function createApp({ store, auth, site, publicDir = join(import.meta.dir,
     return p ? c.json({ person: personOut(t.tree.id, p, true) }) : bad(c, 'no such person', 404)
   })
   api.patch('/trees/:tree/people/:person', async (c) => {
-    const t = treeFor(c, 'edit')
+    const t = personFor(c)
     if (t.error) return t.error
     const p = store.updatePerson(t.tree.id, c.req.param('person'), await json(c))
     return p ? c.json({ person: personOut(t.tree.id, p, true) }) : bad(c, 'no such person', 404)
@@ -628,7 +690,7 @@ export function createApp({ store, auth, site, publicDir = join(import.meta.dir,
     return c.json({ ok: true })
   })
   api.post('/trees/:tree/people/:person/events', async (c) => {
-    const t = treeFor(c, 'edit')
+    const t = personFor(c)
     if (t.error) return t.error
     const body = await json(c)
     try {
@@ -684,6 +746,52 @@ export function createApp({ store, auth, site, publicDir = join(import.meta.dir,
     if (body.person_id) store.cite(t.tree.id, source.id, String(body.person_id), body.page ?? null)
     return c.json({ source }, 201)
   })
+  api.get('/trees/:tree/members', (c) => {
+    const t = treeFor(c)
+    if (t.error) return t.error
+    const profiles = store.profiles(t.tree.id)
+    return c.json({ members: store.members(t.tree.id).map((m) => ({ ...m, person_id: profiles.get(m.user_id) ?? null })) })
+  })
+  api.get('/trees/:tree/invites', (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    return c.json({ invites: store.pendingInvites(t.tree.id) })
+  })
+  /** {emails: [...]} or {email}, role, person_id (invite them to be that person), note. Without an email: a link. */
+  api.post('/trees/:tree/invites', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const body = await json(c)
+    const role = t.role === 'owner' && body.role === 'editor' ? 'editor' : 'viewer'
+    const personId = body.person_id && store.person(t.tree.id, String(body.person_id)) ? String(body.person_id) : null
+    if (personId && store.profileUser(t.tree.id, personId)) return bad(c, 'that person already manages their own profile')
+    const emails = parseEmails(Array.isArray(body.emails) ? body.emails.join(',') : (body.emails ?? body.email)).slice(0, personId ? 1 : 20)
+    const note = body.note ? String(body.note) : null
+    if (!emails.length) {
+      if (t.role !== 'owner') return bad(c, 'only the owner can make invite links; give an email')
+      return c.json({ invites: [{ email: null, mailed: false, url: `${site}/invite/${store.createInvite(t.tree.id, t.user.id, role, null, { personId, note })}` }] }, 201)
+    }
+    const invites = []
+    for (const email of emails) invites.push({ email, ...(await inviteToTree(t.user, t.tree.id, email, role, { personId, note })) })
+    return c.json({ invites }, 201)
+  })
+  api.delete('/trees/:tree/invites/:id', (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    store.revokeInvite(t.tree.id, c.req.param('id'))
+    return c.json({ ok: true })
+  })
+
+  mountNetwork(app, api, {
+    store,
+    net,
+    site,
+    ctx,
+    form,
+    mail: (m) => auth.mail(m),
+    limits: { invite: inviteLimit, message: messageLimit },
+    inviteToTree,
+  })
   app.route('/api/v1', api)
 
   app.notFound((c) => (c.req.path.startsWith('/api/') ? c.json({ error: 'not found' }, 404) : c.html(html.messagePage(ctx(c), 'Not found', 'There is nothing at this address.'), 404)))
@@ -692,13 +800,34 @@ export function createApp({ store, auth, site, publicDir = join(import.meta.dir,
     return c.req.path.startsWith('/api/') ? c.json({ error: 'server error' }, 500) : c.html(html.messagePage(ctx(c), 'Something broke', 'That did not work. Try again in a moment.'), 500)
   })
 
-  async function sendInvite(email: string, treeName: string, from: User, url: string, role: string) {
+  /**
+   * Make a one-time invite for `email` and mail it, within the sender's daily
+   * allowance. The invitee goes into the sender's network as family, so the
+   * people you bring into a tree are the first people in your network.
+   */
+  async function inviteToTree(from: User, treeId: string, email: string, role: 'editor' | 'viewer', opts: { personId?: string | null; note?: string | null } = {}): Promise<{ url: string; mailed: boolean }> {
+    const tree = store.tree(treeId)!
+    const person = opts.personId ? store.person(treeId, opts.personId) : null
+    const url = `${site}/invite/${store.createInvite(treeId, from.id, role, email, { personId: person?.id ?? null, note: opts.note })}`
+    net.ensureContact(from.id, email, { name: person ? fullName(person) : '', circle: 'family', birthday: person?.birth_date ?? null }, { tree_id: treeId, person_id: person?.id ?? null })
+    const mailed = inviteLimit(`invite:${from.id}`) && inviteLimit(`to:${email}`)
+    if (mailed) await sendInvite(email, tree.name, from, url, role, { person, note: opts.note ?? null })
+    return { url, mailed }
+  }
+
+  async function sendInvite(email: string, treeName: string, from: User, url: string, role: string, opts: { person?: Person | null; note?: string | null } = {}) {
+    const name = from.name ?? from.email
+    const as = role === 'editor' ? 'an editor' : 'a viewer'
+    const subject = opts.person ? `${name} added you to the ${treeName} family tree` : `${name} invited you to the ${treeName} family tree`
+    const lead = opts.person
+      ? `${name} added you to ${treeName} on family.ancestry as ${fullName(opts.person)}, and invited you to join the family: claim your profile and keep it up to date.`
+      : `${name} invited you to ${treeName} on family.ancestry, as ${as}.`
     try {
       await auth.mail({
         to: email,
-        subject: `${from.name ?? from.email} invited you to the ${treeName} family tree`,
-        text: `${from.name ?? from.email} invited you to ${treeName} on family.ancestry, as ${role === 'editor' ? 'an editor' : 'a viewer'}.\n\nJoin: ${url}\n\nThe link works once and expires in 14 days.`,
-        html: `<p><b>${html.esc(from.name ?? from.email)}</b> invited you to <b>${html.esc(treeName)}</b> on family.ancestry, as ${role === 'editor' ? 'an editor' : 'a viewer'}.</p><p><a href="${html.esc(url)}" style="display:inline-block;padding:10px 18px;background:#3d6b4f;color:#fff;border-radius:6px;text-decoration:none">Join the tree</a></p><p style="color:#666;font-size:13px">${html.esc(url)}<br>The link works once and expires in 14 days.</p>`,
+        subject,
+        text: `${lead}${opts.note ? `\n\n"${opts.note}"` : ''}\n\nJoin: ${url}\n\nThe link works once and expires in 14 days.`,
+        html: `<p>${html.esc(lead).replace(html.esc(name), `<b>${html.esc(name)}</b>`)}</p>${opts.note ? `<blockquote style="border-left:3px solid #ccc;margin:0;padding:4px 12px;color:#444">${html.esc(opts.note)}</blockquote>` : ''}<p><a href="${html.esc(url)}" style="display:inline-block;padding:10px 18px;background:#3d6b4f;color:#fff;border-radius:6px;text-decoration:none">${opts.person ? 'Join the family' : 'Join the tree'}</a></p><p style="color:#666;font-size:13px">${html.esc(url)}<br>The link works once and expires in 14 days.</p>`,
       })
     } catch (error) {
       console.error(`[invite] mail failed: ${(error as Error).message}`)

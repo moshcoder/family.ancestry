@@ -55,6 +55,7 @@ export type Family = {
 export type Event = { id: string; tree_id: string; person_id: string; type: string; date: string | null; place: string | null; description: string | null; created_at: number }
 export type Source = { id: string; tree_id: string; title: string; author: string | null; url: string | null; citation: string | null; created_at: number }
 export type Media = { id: string; tree_id: string; person_id: string | null; filename: string; mime: string; size: number; caption: string | null; created_at: number }
+export type Invite = { id: string; tree_id: string; role: 'editor' | 'viewer'; email: string | null; person_id: string | null; note: string | null; created_by: string; created_at: number; expires_at: number; used_by: string | null }
 export type Descendant = { person: Person; unions: { partner: Person | null; children: Descendant[] }[] }
 
 export const PERSON_FIELDS = ['given', 'surname', 'sex', 'birth_date', 'birth_place', 'death_date', 'death_place', 'living', 'notes'] as const
@@ -98,6 +99,13 @@ CREATE TABLE IF NOT EXISTS invites (
   token_hash TEXT PRIMARY KEY, tree_id TEXT NOT NULL REFERENCES trees(id) ON DELETE CASCADE,
   role TEXT NOT NULL CHECK (role IN ('editor','viewer')), email TEXT, created_by TEXT NOT NULL,
   created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, used_by TEXT
+);
+CREATE TABLE IF NOT EXISTS profiles (
+  tree_id TEXT NOT NULL REFERENCES trees(id) ON DELETE CASCADE,
+  person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (tree_id, person_id), UNIQUE (tree_id, user_id)
 );
 CREATE TABLE IF NOT EXISTS people (
   id TEXT PRIMARY KEY, tree_id TEXT NOT NULL REFERENCES trees(id) ON DELETE CASCADE,
@@ -147,6 +155,8 @@ CREATE TABLE IF NOT EXISTS media (
 CREATE INDEX IF NOT EXISTS media_person ON media(person_id);
 `
 
+const INVITE_COLS = 'token_hash AS id, tree_id, role, email, person_id, note, created_by, created_at, expires_at, used_by'
+
 export const clean = (value: unknown, max = 500): string | null => {
   if (value === undefined || value === null) return null
   const text = String(value).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').trim()
@@ -192,6 +202,10 @@ export class Store {
     this.db.run('PRAGMA foreign_keys = ON')
     this.db.run('PRAGMA busy_timeout = 5000')
     this.db.exec(SCHEMA)
+    // Columns added after 0.1.0. SQLite has no ADD COLUMN IF NOT EXISTS.
+    const has = (table: string, column: string) => this.db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().some((c) => c.name === column)
+    if (!has('invites', 'person_id')) this.db.run('ALTER TABLE invites ADD COLUMN person_id TEXT')
+    if (!has('invites', 'note')) this.db.run('ALTER TABLE invites ADD COLUMN note TEXT')
   }
 
   tx<T>(fn: () => T): T {
@@ -278,29 +292,89 @@ export class Store {
     this.db.query("DELETE FROM members WHERE tree_id = ? AND user_id = ? AND role != 'owner'").run(treeId, userId)
   }
 
-  createInvite(treeId: string, createdBy: string, role: 'editor' | 'viewer', email: string | null = null, days = 14): string {
+  /**
+   * A one-time link into a tree. With a person, it is also an invitation to be
+   * that person: whoever accepts it can keep their own profile up to date.
+   */
+  createInvite(treeId: string, createdBy: string, role: 'editor' | 'viewer', email: string | null = null, opts: { days?: number; personId?: string | null; note?: string | null } = {}): string {
     const token = newId(18)
+    const personId = opts.personId && this.person(treeId, opts.personId) ? opts.personId : null
     this.db
-      .query('INSERT INTO invites (token_hash,tree_id,role,email,created_by,created_at,expires_at) VALUES (?,?,?,?,?,?,?)')
-      .run(sha256(token), treeId, role, email ? email.trim().toLowerCase() : null, createdBy, this.now(), this.now() + days * 86_400_000)
+      .query('INSERT INTO invites (token_hash,tree_id,role,email,created_by,created_at,expires_at,person_id,note) VALUES (?,?,?,?,?,?,?,?,?)')
+      .run(sha256(token), treeId, role, email ? email.trim().toLowerCase() : null, createdBy, this.now(), this.now() + (opts.days ?? 14) * 86_400_000, personId, clean(opts.note, 1000))
     return token
   }
 
-  invite(token: string): { tree_id: string; role: 'editor' | 'viewer'; email: string | null; expires_at: number } | null {
-    const row = this.db.query<any, [string]>('SELECT tree_id, role, email, expires_at, used_by FROM invites WHERE token_hash = ?').get(sha256(token))
+  invite(token: string): Invite | null {
+    const row = this.db.query<any, [string]>(`SELECT ${INVITE_COLS} FROM invites WHERE token_hash = ?`).get(sha256(token))
     return row && row.expires_at > this.now() && !row.used_by ? row : null
   }
 
-  acceptInvite(token: string, userId: string): string | null {
+  /** Invites not yet used or expired, newest first. `id` is the token's hash, safe to show. */
+  pendingInvites(treeId: string): Invite[] {
+    return this.db.query<Invite, [string, number]>(`SELECT ${INVITE_COLS} FROM invites WHERE tree_id = ? AND used_by IS NULL AND expires_at > ? ORDER BY created_at DESC`).all(treeId, this.now())
+  }
+
+  revokeInvite(treeId: string, id: string) {
+    this.db.query('DELETE FROM invites WHERE tree_id = ? AND token_hash = ? AND used_by IS NULL').run(treeId, id)
+  }
+
+  /** The tree joined and, for a profile invite, the person the new member now is. */
+  acceptInvite(token: string, userId: string): { tree_id: string; person_id: string | null } | null {
     const invite = this.invite(token)
     if (!invite) return null
+    let claimed: string | null = null
     this.tx(() => {
       const current = this.role(invite.tree_id, userId)
       // An invite never demotes: an owner who clicks a viewer link stays owner.
       if (!current || (current === 'viewer' && invite.role === 'editor')) this.setMember(invite.tree_id, userId, invite.role)
+      if (invite.person_id && this.claimProfile(invite.tree_id, invite.person_id, userId)) claimed = invite.person_id
       this.db.query('UPDATE invites SET used_by = ? WHERE token_hash = ?').run(userId, sha256(token))
     })
-    return invite.tree_id
+    return { tree_id: invite.tree_id, person_id: claimed }
+  }
+
+  // ---- profiles: a member who is a person in the tree --------------------
+
+  /** Link a member to the person they are. One person per member, one member per person. */
+  claimProfile(treeId: string, personId: string, userId: string): boolean {
+    if (!this.person(treeId, personId) || !this.role(treeId, userId)) return false
+    const holder = this.profileUser(treeId, personId)
+    if (holder && holder.id !== userId) return false
+    this.db.query('DELETE FROM profiles WHERE tree_id = ? AND user_id = ?').run(treeId, userId)
+    this.db.query('INSERT OR REPLACE INTO profiles (tree_id,person_id,user_id,created_at) VALUES (?,?,?,?)').run(treeId, personId, userId, this.now())
+    return true
+  }
+
+  releaseProfile(treeId: string, personId: string) {
+    this.db.query('DELETE FROM profiles WHERE tree_id = ? AND person_id = ?').run(treeId, personId)
+  }
+
+  /** The member who manages this person's profile, if anyone does. */
+  profileUser(treeId: string, personId: string): User | null {
+    return this.db.query<User, [string, string]>('SELECT u.id,u.email,u.name,u.created_at FROM profiles p JOIN users u ON u.id = p.user_id WHERE p.tree_id = ? AND p.person_id = ?').get(treeId, personId) ?? null
+  }
+
+  /** The person this member is, in this tree. */
+  profilePerson(treeId: string, userId: string | null | undefined): string | null {
+    if (!userId) return null
+    return this.db.query<{ person_id: string }, [string, string]>('SELECT person_id FROM profiles WHERE tree_id = ? AND user_id = ?').get(treeId, userId)?.person_id ?? null
+  }
+
+  /** user id -> person id, for everyone in the tree who has claimed a profile. */
+  profiles(treeId: string): Map<string, string> {
+    return new Map(this.db.query<{ user_id: string; person_id: string }, [string]>('SELECT user_id, person_id FROM profiles WHERE tree_id = ?').all(treeId).map((r) => [r.user_id, r.person_id]))
+  }
+
+  /** Editors change anyone; everyone else may change only the person they are. */
+  canEditPerson(treeId: string, personId: string, userId: string | null | undefined): boolean {
+    if (canEdit(this.role(treeId, userId))) return true
+    return Boolean(userId && this.profilePerson(treeId, userId) === personId)
+  }
+
+  /** Users who share at least one tree with this one. */
+  sharesTree(a: string, b: string): boolean {
+    return Boolean(this.db.query<{ n: number }, [string, string]>('SELECT 1 AS n FROM members x JOIN members y ON y.tree_id = x.tree_id WHERE x.user_id = ? AND y.user_id = ? LIMIT 1').get(a, b))
   }
 
   // ---- people ------------------------------------------------------------

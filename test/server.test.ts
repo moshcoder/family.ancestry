@@ -85,7 +85,7 @@ describe('server', () => {
     const treeUrl = made.headers.get('location')!
     const treeId = treeUrl.split('/').pop()!
     const add = await h.formPost(`${treeUrl}/people`, { given: 'Johann', surname: 'Ettinger', sex: 'M', birth_date: '1871' })
-    const personUrl = add.headers.get('location')!
+    const personUrl = add.headers.get('location')!.split('?')[0]!
     expect(personUrl).toMatch(/\/p\//)
     await h.formPost(`${personUrl}/relative`, { as: 'child', given: 'Karl', surname: 'Ettinger', relation: 'birth' })
     const page = await (await h.req(personUrl)).text()
@@ -170,7 +170,7 @@ describe('server', () => {
     const h = harness()
     await h.signIn('p@example.com')
     const treeUrl = (await h.formPost('/trees', { name: 'Pics' })).headers.get('location')!
-    const personUrl = (await h.formPost(`${treeUrl}/people`, { given: 'Pic' })).headers.get('location')!
+    const personUrl = (await h.formPost(`${treeUrl}/people`, { given: 'Pic' })).headers.get('location')!.split('?')[0]!
     const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='), (c) => c.charCodeAt(0))
     const fd = new FormData()
     fd.set('_csrf', h.jar.get('fa_csrf')!)
