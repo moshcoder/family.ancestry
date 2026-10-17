@@ -55,6 +55,9 @@ export type Family = {
   start_date: string | null
   start_place: string | null
   end_date: string | null
+  /** How it ended: divorced, separated or widowed. Null with an end_date is a divorce (before 0.6.1). */
+  end_kind?: string | null
+  end_place?: string | null
   created_at: number
 }
 export type Event = { id: string; tree_id: string; person_id: string; type: string; date: string | null; place: string | null; description: string | null; created_at: number }
@@ -91,6 +94,8 @@ export type Descendant = { person: Person; unions: { partner: Person | null; chi
 export const PERSON_FIELDS = ['given', 'surname', 'sex', 'birth_date', 'birth_place', 'death_date', 'death_place', 'living', 'notes', 'species'] as const
 
 /** How a child belongs to a family. GEDCOM's PEDI values, minus LDS sealing. */
+/** How a partnership ended. */
+export const UNION_ENDS = ['divorced', 'separated', 'widowed'] as const
 export const CHILD_RELATIONS = ['birth', 'adopted', 'step', 'foster'] as const
 
 /**
@@ -295,6 +300,9 @@ CREATE TABLE IF NOT EXISTS payments (
 `
 
 
+/** divorced, separated or widowed; anything else is no ending kind. */
+export const unionEnd = (value: unknown): string | null => ((UNION_ENDS as readonly string[]).includes(String(value ?? '').toLowerCase()) ? String(value).toLowerCase() : null)
+
 export const clean = (value: unknown, max = 500): string | null => {
   if (value === undefined || value === null) return null
   const text = String(value).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').trim()
@@ -354,6 +362,10 @@ export class Store {
     // 0.5.0: photos of a business.
     const mediaCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('media')").all().map((c) => c.name)
     if (!mediaCols.includes('business_id')) this.db.run('ALTER TABLE media ADD COLUMN business_id TEXT REFERENCES businesses(id) ON DELETE SET NULL')
+    // 0.6.1: how a partnership ended, and where.
+    const familyCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('families')").all().map((c) => c.name)
+    if (!familyCols.includes('end_kind')) this.db.run('ALTER TABLE families ADD COLUMN end_kind TEXT')
+    if (!familyCols.includes('end_place')) this.db.run('ALTER TABLE families ADD COLUMN end_place TEXT')
     // 0.6.0: the family photo album. Who uploaded a photo, and which album it is in.
     if (!mediaCols.includes('album_id')) this.db.run('ALTER TABLE media ADD COLUMN album_id TEXT REFERENCES albums(id) ON DELETE SET NULL')
     if (!mediaCols.includes('uploaded_by')) this.db.run('ALTER TABLE media ADD COLUMN uploaded_by TEXT')
@@ -635,23 +647,24 @@ export class Store {
     return this.db.query<Family, [string]>('SELECT * FROM families WHERE tree_id = ? ORDER BY created_at').all(treeId)
   }
 
-  createFamily(treeId: string, partner1: string | null, partner2: string | null, fields: { kind?: string; start_date?: string | null; start_place?: string | null; end_date?: string | null } = {}): Family {
+  createFamily(treeId: string, partner1: string | null, partner2: string | null, fields: { kind?: string; start_date?: string | null; start_place?: string | null; end_date?: string | null; end_kind?: string | null; end_place?: string | null } = {}): Family {
     for (const pid of [partner1, partner2]) if (pid && !this.person(treeId, pid)) throw new Error('partner is not in this tree')
     for (const pid of [partner1, partner2]) if (pid && this.person(treeId, pid)!.kind === 'pet') throw new Error('pets have owners, not partners')
     if (partner1 && partner1 === partner2) throw new Error('a person cannot partner themselves')
     const id = newId()
     this.db
-      .query('INSERT INTO families (id,tree_id,partner1_id,partner2_id,kind,start_date,start_place,end_date,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run(id, treeId, partner1, partner2, clean(fields.kind, 40) ?? 'married', clean(fields.start_date, 200), clean(fields.start_place, 200), clean(fields.end_date, 200), this.now())
+      .query('INSERT INTO families (id,tree_id,partner1_id,partner2_id,kind,start_date,start_place,end_date,end_kind,end_place,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .run(id, treeId, partner1, partner2, clean(fields.kind, 40) ?? 'married', clean(fields.start_date, 200), clean(fields.start_place, 200), clean(fields.end_date, 200), unionEnd(fields.end_kind), clean(fields.end_place, 200), this.now())
     return this.family(treeId, id)!
   }
 
-  updateFamily(treeId: string, id: string, fields: { kind?: string; start_date?: string | null; start_place?: string | null; end_date?: string | null }) {
+  updateFamily(treeId: string, id: string, fields: { kind?: string; start_date?: string | null; start_place?: string | null; end_date?: string | null; end_kind?: string | null; end_place?: string | null }) {
     const f = this.family(treeId, id)
     if (!f) return
-    const pick = (key: 'start_date' | 'start_place' | 'end_date') => (fields[key] !== undefined ? clean(fields[key], 200) : f[key])
+    const pick = (key: 'start_date' | 'start_place' | 'end_date' | 'end_place') => (fields[key] !== undefined ? clean(fields[key], 200) : (f[key] ?? null))
     const kind = fields.kind !== undefined ? (clean(fields.kind, 40) ?? 'married') : f.kind
-    this.db.query('UPDATE families SET kind = ?, start_date = ?, start_place = ?, end_date = ? WHERE tree_id = ? AND id = ?').run(kind, pick('start_date'), pick('start_place'), pick('end_date'), treeId, id)
+    const endKind = fields.end_kind !== undefined ? unionEnd(fields.end_kind) : (f.end_kind ?? null)
+    this.db.query('UPDATE families SET kind = ?, start_date = ?, start_place = ?, end_date = ?, end_kind = ?, end_place = ? WHERE tree_id = ? AND id = ?').run(kind, pick('start_date'), pick('start_place'), pick('end_date'), endKind, pick('end_place'), treeId, id)
   }
 
   /** Fill an empty partner slot (a single parent who later gets a known partner). */
@@ -850,6 +863,16 @@ export class Store {
       }
     }
     return [...out.values()].sort((x, y) => order.indexOf(x.kind) - order.indexOf(y.kind) || (x.person.birth_date ?? '').localeCompare(y.person.birth_date ?? ''))
+  }
+
+  /** Per partnership: the partner's children by someone else, who are this person's step-children. */
+  stepChildren(treeId: string, personId: string): { familyId: string; children: Person[] }[] {
+    const unions = this.spouseFamilies(treeId, personId)
+    const mine = new Set(unions.flatMap((u) => u.children.map((c) => c.id)))
+    return unions
+      .filter((u) => u.partner)
+      .map((u) => ({ familyId: u.family.id, children: this.spouseFamilies(treeId, u.partner!.id).filter((x) => x.family.id !== u.family.id && x.partner?.id !== personId).flatMap((x) => x.children).filter((c) => !mine.has(c.id) && c.id !== personId) }))
+      .filter((x) => x.children.length)
   }
 
   /** People who are partners of this person's parents but not their parent. */

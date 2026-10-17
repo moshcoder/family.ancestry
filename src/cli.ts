@@ -46,7 +46,11 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
   ancestry local add <name> --category C [--town T] [--phone P] [--website W] [--note TEXT]
                                     recommend a business to everyone who knows you
   ancestry edit <person> --field value ...     (same flags as add)
-  ancestry event <person> <type> [--date D] [--place P] [--note TEXT]
+  ancestry event <person> <what> [--date D] [--place P] [--note TEXT] [--with PERSON] [--child PERSON]
+               what: birth | death (their own dates) | marriage | remarriage | divorce | separation |
+               widowed | started dating | engagement (--with the partner) | child born | adopted a child |
+               became a step-parent (--child, or --child-given/--child-surname for someone new) |
+               job change | retirement | graduation | military | moved | … or any other name
   ancestry pedigree <person> [-g 4] ancestors as a chart
   ancestry descendants <person> [-g 3]
   ancestry relate <person> <person> how two people are related
@@ -556,8 +560,17 @@ export async function runCli(argv: string[]): Promise<number> {
       case 'event': {
         const tree = await pickTree(client, f.tree)
         const id = await pickPerson(client, tree.id, rest[0])
-        await client.addEvent(tree.id, id, { type: rest.slice(1).join(' ') || 'Event', date: str(f.date), place: str(f.place), description: str(f.note) ?? str(f.description) })
-        console.log('Event added.')
+        const r = await client.addEvent(tree.id, id, {
+          type: rest.slice(1).join(' ') || 'Event',
+          date: str(f.date),
+          place: str(f.place),
+          description: str(f.note) ?? str(f.description),
+          with_person: typeof f.with === 'string' ? await pickPerson(client, tree.id, f.with) : undefined,
+          child: typeof f.child === 'string' ? await pickPerson(client, tree.id, f.child) : undefined,
+          child_given: str(f['child-given']),
+          child_surname: str(f['child-surname']),
+        })
+        console.log(r.message ?? 'Event added.')
         return 0
       }
       case 'pedigree':

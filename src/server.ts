@@ -23,6 +23,7 @@ import { mountNetwork } from './network-routes.js'
 import { Local, mountLocal } from './local.js'
 import { mountBusinesses, personBusinesses, personBusinessesOut } from './business.js'
 import { mountAlbums } from './album.js'
+import { changesTree, lifeEventForm, lifeKey, recordLifeEvent, timeline as lifeTimeline } from './life.js'
 import { addonsPanel, inviteFriendBox, personNetworkBox, profileInvite } from './network-html.js'
 
 type Env = { Variables: { user: User | null; csrf: string; via: 'session' | 'token' | null } }
@@ -452,6 +453,9 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
         parents: store.parentFamilies(t.tree.id, person.id),
         unions: store.spouseFamilies(t.tree.id, person.id),
         events: store.events(t.tree.id, person.id),
+        timeline: lifeTimeline(person, store.spouseFamilies(t.tree.id, person.id), store.events(t.tree.id, person.id)),
+        eventForm: lifeEventForm(ctx(c), t.tree.id, person, store.spouseFamilies(t.tree.id, person.id), canEdit(t.role)),
+        stepChildren: store.stepChildren(t.tree.id, person.id),
         citations: store.citationsFor(t.tree.id, person.id),
         media: store.mediaFor(t.tree.id, person.id),
         sources: store.sources(t.tree.id),
@@ -475,6 +479,16 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     )
   })
   /** Editors, or the member who is this person (their own profile). */
+  /**
+   * "Add an event": `what` (a life event key) or `type` (a label; one that names a life event,
+   * like Death or Divorce, does what that event does; anything else is a plain event).
+   * Partnerships and children change the tree, so they need an editor.
+   */
+  const recordEvent = (t: { tree: Tree; role: Role }, personId: string, body: Record<string, any>) => {
+    const key = lifeKey(body.what) ?? lifeKey(body.type) ?? 'other'
+    if (changesTree(key) && !canEdit(t.role)) throw new Error('marriages, divorces and children change the tree; ask an editor to add those')
+    return recordLifeEvent(store, t.tree.id, personId, { ...body, what: key, custom: body.custom ?? (key === 'other' ? body.type : undefined) }, addRelative)
+  }
   const personFor = (c: Context): TreeAccess => {
     const t = treeFor(c)
     if (t.error) return t
@@ -607,7 +621,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     const t = treeFor(c, 'edit')
     if (t.error) return t.error
     const body = await form(c)
-    store.updateFamily(t.tree.id, c.req.param('family'), { kind: body.kind, start_date: body.start_date, start_place: body.start_place, end_date: body.end_date })
+    store.updateFamily(t.tree.id, c.req.param('family'), { kind: body.kind, start_date: body.start_date, start_place: body.start_place, end_date: body.end_date, end_kind: body.end_kind, end_place: body.end_place })
     return c.redirect(c.req.header('referer')?.startsWith(site) ? c.req.header('referer')! : `/t/${t.tree.id}`)
   })
   app.post('/t/:tree/f/:family/delete', (c) => {
@@ -620,8 +634,13 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     const t = personFor(c)
     if (t.error) return t.error
     const body = await form(c)
-    store.addEvent(t.tree.id, c.req.param('person'), { type: String(body.type ?? ''), date: body.date, place: body.place, description: body.description })
-    return c.redirect(`/t/${t.tree.id}/p/${c.req.param('person')}`)
+    const back = `/t/${t.tree.id}/p/${c.req.param('person')}`
+    try {
+      const r = recordEvent(t, c.req.param('person')!, body)
+      return c.redirect(`${back}?ok=${encodeURIComponent(r.message)}`)
+    } catch (error) {
+      return c.redirect(`${back}?error=${encodeURIComponent((error as Error).message)}#add-event`)
+    }
   })
   app.post('/t/:tree/e/:event/delete', async (c) => {
     const t = treeFor(c, 'edit')
@@ -922,7 +941,8 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     if (t.error) return t.error
     const body = await json(c)
     try {
-      return c.json({ event: store.addEvent(t.tree.id, c.req.param('person'), { type: String(body.type ?? 'Event'), date: body.date, place: body.place, description: body.description }) }, 201)
+      const r = recordEvent(t, c.req.param('person')!, body)
+      return c.json({ message: r.message, event: r.event ?? null, family: r.family ?? null, person: personOut(t.tree.id, store.person(t.tree.id, c.req.param('person'))!, true), relative: r.person ? personOut(t.tree.id, r.person) : null }, 201)
     } catch (error) {
       return bad(c, error)
     }

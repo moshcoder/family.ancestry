@@ -104,6 +104,24 @@
     })
   }
 
+  // "Add an event": show only the fields the chosen event needs.
+  for (const form of document.querySelectorAll('form[data-life-event]')) {
+    const what = form.querySelector('[name=what]')
+    const show = () => {
+      const opt = what.selectedOptions[0]
+      const effect = opt ? opt.dataset.effect : ''
+      const need = {
+        other: what.value === 'other',
+        partner: Boolean(opt && opt.dataset.partner) || effect === 'child',
+        child: effect === 'child' || effect === 'step-child',
+        'child-only': effect === 'child',
+      }
+      for (const el of form.querySelectorAll('[data-show]')) el.hidden = !need[el.dataset.show]
+    }
+    what.addEventListener('change', show)
+    show()
+  }
+
   // The family album: send photos one at a time, so a big batch is never one huge request, and show progress.
   // A photo over 8 MB is scaled down in the browser first (longest side 4096px, JPEG).
   const MAX_PHOTO = 8 * 1024 * 1024

@@ -164,6 +164,8 @@ export function importGedcom(store: Store, treeId: string, text: string): Import
       const wife = childValue(rec, 'WIFE')
       const marr = child(rec, 'MARR')
       const div = child(rec, 'DIV')
+      // Our own ending record for a partnership that ended without a divorce: `1 _END separated|widowed`.
+      const end = child(rec, '_END')
       const p1 = husb ? (people.get(husb) ?? null) : null
       const p2 = wife ? (people.get(wife) ?? null) : null
       const kids = rec.children.filter((c) => c.tag === 'CHIL').map((c) => c.value.trim())
@@ -175,7 +177,9 @@ export function importGedcom(store: Store, treeId: string, text: string): Import
         kind: marr ? 'married' : childValue(rec, 'TYPE')?.toLowerCase() ?? 'partners',
         start_date: marr ? childValue(marr, 'DATE') : null,
         start_place: marr ? childValue(marr, 'PLAC') : null,
-        end_date: div ? (childValue(div, 'DATE') ?? 'Divorced') : null,
+        end_date: div ? (childValue(div, 'DATE') ?? 'Divorced') : end ? (childValue(end, 'DATE') ?? (end.value.trim() === 'widowed' ? 'Widowed' : 'Separated')) : null,
+        end_kind: div ? 'divorced' : end ? end.value.trim().toLowerCase() : null,
+        end_place: div ? childValue(div, 'PLAC') : end ? childValue(end, 'PLAC') : null,
       })
       result.families++
       for (const kid of kids) {
@@ -378,7 +382,10 @@ export function exportGedcom(store: Store, treeId: string, options: ExportOption
       }
       // Not a marriage: say what it is (dating, partners), which import reads back from TYPE.
       else if (f.kind && f.kind !== 'partners') out.push(`1 TYPE ${gedSafe(f.kind)}`)
-      if (f.end_date) out.push('1 DIV', ...(f.end_date === 'Divorced' ? [] : [`2 DATE ${gedSafe(f.end_date)}`]))
+      if (f.end_date || f.end_kind) {
+        const ending = f.end_kind && f.end_kind !== 'divorced' ? `1 _END ${f.end_kind}` : '1 DIV'
+        out.push(ending, ...(f.end_date && f.end_date !== 'Divorced' ? [`2 DATE ${gedSafe(f.end_date)}`] : []), ...(f.end_place ? [`2 PLAC ${gedSafe(f.end_place)}`] : []))
+      }
     }
     for (const l of links.filter((l) => l.family_id === f.id)) out.push(`1 CHIL ${pid.get(l.person_id)}`)
   }

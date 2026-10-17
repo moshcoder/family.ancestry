@@ -213,3 +213,5 @@ ul.plain { list-style: none; padding: 0; }
 /* Businesses: square-ish, so a company never looks like a person. */
 .portrait.biz, .portrait.none.biz { width: 170px; height: 120px; border-radius: 4px; }
 .pl.biz { font-style: italic; }
+fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px 2px; margin: 8px 0; }
+fieldset legend { font-weight: 600; padding: 0 4px; }
