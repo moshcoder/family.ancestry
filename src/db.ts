@@ -18,9 +18,27 @@ import { randomBytes, createHash } from 'node:crypto'
 export const newId = (bytes = 9) => randomBytes(bytes).toString('base64url')
 export const sha256 = (value: string) => createHash('sha256').update(value).digest('hex')
 
-export type Role = 'owner' | 'editor' | 'viewer'
-export const ROLES: Role[] = ['owner', 'editor', 'viewer']
-export const canEdit = (role: Role | null | undefined) => role === 'owner' || role === 'editor'
+/**
+ * Roles in a family, highest first. One owner (the super user: the only one who can delete the
+ * tree or hand it over); admins run the family (invites, members, roles, settings); editors add
+ * and change people; viewers look, and keep their own profile up to date.
+ */
+export type Role = 'owner' | 'admin' | 'editor' | 'viewer'
+export const ROLES: Role[] = ['owner', 'admin', 'editor', 'viewer']
+/** What an invite or a role change can give: anything below owner. */
+export type InviteRole = Exclude<Role, 'owner'>
+export const INVITE_ROLES: InviteRole[] = ['admin', 'editor', 'viewer']
+export const RANK: Record<Role, number> = { owner: 3, admin: 2, editor: 1, viewer: 0 }
+export const canEdit = (role: Role | null | undefined) => role === 'owner' || role === 'admin' || role === 'editor'
+export const canManage = (role: Role | null | undefined) => role === 'owner' || role === 'admin'
+/** The roles this member may hand out: owners and admins any below owner, editors viewers only. */
+export const grantable = (role: Role | null | undefined): InviteRole[] => (canManage(role) ? INVITE_ROLES : canEdit(role) ? ['viewer'] : [])
+/** The role asked for, if this member may give it; otherwise the most they may give that is not above it, else viewer. */
+export const inviteRole = (asker: Role | null | undefined, wanted: unknown): InviteRole => {
+  const w = String(wanted ?? '').toLowerCase()
+  const allowed = grantable(asker)
+  return (allowed.includes(w as InviteRole) ? w : 'viewer') as InviteRole
+}
 /** Signed in with an email of their own (a magic link proved it), not only through pit.world. */
 export const emailVerified = (user: Pick<User, 'email'> | null | undefined) => Boolean(user?.email) && !user!.email.endsWith('@pit.invalid')
 
@@ -65,7 +83,7 @@ export type Source = { id: string; tree_id: string; title: string; author: strin
 export type Media = { id: string; tree_id: string; person_id: string | null; business_id?: string | null; album_id?: string | null; uploaded_by?: string | null; filename: string; mime: string; size: number; caption: string | null; created_at: number }
 /** A named set of photos in a tree: "Christmas 1985", "Grandma's 90th". */
 export type Album = { id: string; tree_id: string; title: string; description: string | null; created_by: string; cover_id: string | null; created_at: number }
-export type Invite = { id: string; tree_id: string; role: 'editor' | 'viewer'; email: string | null; person_id: string | null; note: string | null; created_by: string; created_at: number; expires_at: number; used_by: string | null }
+export type Invite = { id: string; tree_id: string; role: InviteRole; email: string | null; person_id: string | null; note: string | null; created_by: string; created_at: number; expires_at: number; used_by: string | null }
 export type Association = { id: string; tree_id: string; person_id: string; other_id: string; kind: string; note: string | null; created_at: number }
 export type Payment = { ref: string; tree_id: string; user_id: string; amount_cents: number; currency: string; chain: string | null; status: string; created_at: number; updated_at: number }
 export type Business = {
@@ -202,12 +220,12 @@ CREATE TABLE IF NOT EXISTS trees (
 CREATE TABLE IF NOT EXISTS members (
   tree_id TEXT NOT NULL REFERENCES trees(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  role TEXT NOT NULL CHECK (role IN ('owner','editor','viewer')), created_at INTEGER NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('owner','admin','editor','viewer')), created_at INTEGER NOT NULL,
   PRIMARY KEY (tree_id, user_id)
 );
 CREATE TABLE IF NOT EXISTS invites (
   token_hash TEXT PRIMARY KEY, tree_id TEXT NOT NULL REFERENCES trees(id) ON DELETE CASCADE,
-  role TEXT NOT NULL CHECK (role IN ('editor','viewer')), email TEXT, created_by TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('admin','editor','viewer')), email TEXT, created_by TEXT NOT NULL,
   created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, used_by TEXT
 );
 CREATE TABLE IF NOT EXISTS profiles (
@@ -355,6 +373,10 @@ export class Store {
     this.db.exec(SCHEMA)
     // Columns added after 0.1.0. SQLite has no ADD COLUMN IF NOT EXISTS.
     const inviteCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('invites')").all().map((c) => c.name)
+    // Admins (0.9.0): the role CHECKs predate them, and SQLite cannot alter a CHECK, so the two
+    // tables are rebuilt from their own definitions with only the CHECK widened.
+    this.widenRoleCheck('members', "CHECK (role IN ('owner','editor','viewer'))", "CHECK (role IN ('owner','admin','editor','viewer'))")
+    this.widenRoleCheck('invites', "CHECK (role IN ('editor','viewer'))", "CHECK (role IN ('admin','editor','viewer'))")
     if (!inviteCols.includes('person_id')) this.db.run('ALTER TABLE invites ADD COLUMN person_id TEXT')
     if (!inviteCols.includes('note')) this.db.run('ALTER TABLE invites ADD COLUMN note TEXT')
     // 0.3.0: pets, and the one-time Family plan.
@@ -502,6 +524,28 @@ export class Store {
       .all(treeId)
   }
 
+  /** Rebuild `table` with one CHECK replaced, keeping every row, column and index. Runs once: a no-op when already wide. */
+  private widenRoleCheck(table: 'members' | 'invites', from: string, to: string) {
+    const row = this.db.query<{ sql: string }, [string]>("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)
+    if (!row || !row.sql.includes(from)) return
+    const indexes = this.db.query<{ sql: string }, [string]>("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL").all(table).map((r) => r.sql)
+    // The stored text may say CREATE TABLE members, "members", or IF NOT EXISTS members (and a renamed table is quoted).
+    const created = row.sql.replace(from, to).replace(new RegExp(`^CREATE TABLE\\s+(?:IF NOT EXISTS\\s+)?["\`\\[]?${table}["\`\\]]?`, 'i'), 'CREATE TABLE role_rebuild')
+    if (!created.startsWith('CREATE TABLE role_rebuild')) throw new Error(`cannot rebuild ${table}: unexpected definition`)
+    this.db.run('PRAGMA foreign_keys = OFF')
+    try {
+      this.tx(() => {
+        this.db.run(created)
+        this.db.run(table === 'members' ? 'INSERT INTO role_rebuild SELECT * FROM members' : 'INSERT INTO role_rebuild SELECT * FROM invites')
+        this.db.run(table === 'members' ? 'DROP TABLE members' : 'DROP TABLE invites')
+        this.db.run(table === 'members' ? 'ALTER TABLE role_rebuild RENAME TO members' : 'ALTER TABLE role_rebuild RENAME TO invites')
+        for (const sql of indexes) this.db.run(sql)
+      })
+    } finally {
+      this.db.run('PRAGMA foreign_keys = ON')
+    }
+  }
+
   setMember(treeId: string, userId: string, role: Role) {
     this.db.query('INSERT INTO members (tree_id,user_id,role,created_at) VALUES (?,?,?,?) ON CONFLICT(tree_id,user_id) DO UPDATE SET role = excluded.role').run(treeId, userId, role, this.now())
   }
@@ -514,7 +558,7 @@ export class Store {
    * A one-time link into a tree. With a person, it is also an invitation to be
    * that person: whoever accepts it can keep their own profile up to date.
    */
-  createInvite(treeId: string, createdBy: string, role: 'editor' | 'viewer', email: string | null = null, opts: { days?: number; personId?: string | null; note?: string | null } = {}): string {
+  createInvite(treeId: string, createdBy: string, role: InviteRole, email: string | null = null, opts: { days?: number; personId?: string | null; note?: string | null } = {}): string {
     const token = newId(18)
     const personId = opts.personId && this.person(treeId, opts.personId) ? opts.personId : null
     this.db
@@ -547,7 +591,7 @@ export class Store {
     this.tx(() => {
       const current = this.role(invite.tree_id, userId)
       // An invite never demotes: an owner who clicks a viewer link stays owner.
-      if (!current || (current === 'viewer' && invite.role === 'editor')) this.setMember(invite.tree_id, userId, invite.role)
+      if (!current || RANK[invite.role as Role] > RANK[current]) this.setMember(invite.tree_id, userId, invite.role)
       if (invite.person_id && !mismatch && this.claimProfile(invite.tree_id, invite.person_id, userId)) claimed = invite.person_id
       this.db.query('UPDATE invites SET used_by = ? WHERE token_hash = ?').run(userId, sha256(token))
     })

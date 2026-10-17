@@ -4,9 +4,9 @@
  */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { BONDS, UNION_KINDS, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
+import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.8.2'
+export const VERSION = '0.9.0'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -499,7 +499,7 @@ export function membersPage(
   links: InviteLink[],
   extra: { pending: Invite[]; profiles: Map<string, string>; people: (id: string) => Person | null; max?: number; plan?: boolean; listing?: string } = { pending: [], profiles: new Map(), people: () => null },
 ): string {
-  const owner = role === 'owner'
+  const owner = canManage(role)
   const edit = canEdit(role)
   const days = (t: number) => Math.max(1, Math.ceil((t - Date.now()) / 86_400_000))
   const asPerson = (personId: string | null | undefined) => {
@@ -514,7 +514,7 @@ export function membersPage(
       .map(
         (m) => `<tr><td>${esc(m.name ?? m.email)}${m.name ? ` <span class="muted small">${esc(m.email)}</span>` : ''}${asPerson(extra.profiles.get(m.user_id))}</td><td>${
           owner && m.role !== 'owner'
-            ? `<form method="post" action="/t/${tree.id}/members/${m.user_id}" class="inline">${csrfField(ctx)}<select name="role" data-autosubmit>${['editor', 'viewer'].map((r) => `<option${r === m.role ? ' selected' : ''}>${r}</option>`).join('')}</select><noscript><button>Save</button></noscript></form>`
+            ? `<form method="post" action="/t/${tree.id}/members/${m.user_id}" class="inline">${csrfField(ctx)}<select name="role" data-autosubmit>${grantable(role).map((r) => `<option${r === m.role ? ' selected' : ''}>${r}</option>`).join('')}</select><noscript><button>Save</button></noscript></form>`
             : m.role
         }</td><td>${owner && m.role !== 'owner' ? `<form method="post" action="/t/${tree.id}/members/${m.user_id}/remove" class="inline" data-confirm="Remove ${esc(m.email)}?">${csrfField(ctx)}<button class="x">×</button></form>` : ''}</td></tr>`,
       )
@@ -526,11 +526,11 @@ ${
 }
 ${
   edit
-    ? `<form method="post" action="/t/${tree.id}/invites" class="panel pform" id="invite">${csrfField(ctx)}<h2>Invite family by email</h2><p class="muted small">Each person gets their own link from you, by email. It works once and expires in 14 days.${owner ? ' Editors can add and change people; viewers can only look.' : ' You can invite viewers; the owner can make them editors.'}</p>
+    ? `<form method="post" action="/t/${tree.id}/invites" class="panel pform" id="invite">${csrfField(ctx)}<h2>Invite family by email</h2><p class="muted small">Each person gets their own link from you, by email. It works once and expires in 14 days.${owner ? ' Admins can invite and manage the family; editors can add and change people; viewers look and keep their own profile.' : ' You can invite viewers; the owner or an admin can make them editors.'}</p>
 <label>Their emails <span class="muted small">paste a list, up to ${extra.max ?? 20} at once: one per line, a To: line from your mail, a spreadsheet column, "Aunt Rose &lt;rose@example.com&gt;"</span><textarea name="emails" rows="6" required placeholder="Karen Ettinger <karen@example.com>&#10;cousin@example.com, aunt.rose@example.com"></textarea></label>
 <p class="muted small">When a name you paste matches someone in the tree, their invite is to be that person. Everyone else picks themselves when they join. A profile is only ever claimed from the email address it was sent to.${extra.plan ? '' : ` Need more? The <a href="/t/${tree.id}/plan">Family plan</a> lifts the limits.`}</p>
-<div class="grid2">${owner ? `<label>Role<select name="role"><option>editor</option><option selected>viewer</option></select></label>` : ''}<label>A line from you (optional)<input name="note" maxlength="1000" placeholder="Help me fill in Grandpa's side!"></label></div><button>Email invites</button></form>
-${owner ? `<form method="post" action="/t/${tree.id}/invites" class="row">${csrfField(ctx)}<select name="role" aria-label="Role"><option>editor</option><option selected>viewer</option></select><button class="btn">Just make a link</button> <span class="muted small">to send yourself, by text or chat</span></form>` : ''}`
+<div class="grid2">${owner ? `<label>Role<select name="role">${grantable(role).map((r) => `<option${r === 'viewer' ? ' selected' : ''}>${r}</option>`).join('')}</select></label>` : ''}<label>A line from you (optional)<input name="note" maxlength="1000" placeholder="Help me fill in Grandpa's side!"></label></div><button>Email invites</button></form>
+${owner ? `<form method="post" action="/t/${tree.id}/invites" class="row">${csrfField(ctx)}<select name="role" aria-label="Role">${grantable(role).map((r) => `<option${r === 'viewer' ? ' selected' : ''}>${r}</option>`).join('')}</select><button class="btn">Just make a link</button> <span class="muted small">to send yourself, by text or chat</span></form>` : ''}`
     : ''
 }
 ${
@@ -606,7 +606,7 @@ export function invitePage(ctx: Ctx, tree: Tree, role: string, token: string, ex
     `${
       extra.person
         ? `<h1>Join the family</h1><p>${from} added you to <b>${esc(tree.name)}</b> as ${personLink(tree.id, extra.person)}. Join, and that profile is yours: fix the dates, add your photos and your story.</p>`
-        : `<h1>You're invited to ${esc(tree.name)}</h1><p>${from} invited you, as ${role === 'editor' ? 'an editor: you can add and change people' : 'a viewer: you can look at everything'}.</p>`
+        : `<h1>You're invited to ${esc(tree.name)}</h1><p>${from} invited you, as ${role === 'admin' ? 'an admin: you can add and change people, and invite and manage the family' : role === 'editor' ? 'an editor: you can add and change people' : 'a viewer: you can look at everything'}.</p>`
     }
 ${extra.note ? `<blockquote class="notes">${esc(extra.note)}</blockquote>` : ''}
 ${ctx.user ? `<form method="post" action="/invite/${esc(token)}">${csrfField(ctx)}<button>Join as ${esc(ctx.user.email)}</button></form>` : `<p>Sign in or sign up first; you'll come straight back here.</p>${signInForm(ctx, `/invite/${token}`)}`}`,

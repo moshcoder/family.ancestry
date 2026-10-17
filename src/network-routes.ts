@@ -3,7 +3,7 @@
  * /api/v1/contacts and /api/v1/inbox. Mounted by createApp next to the trees.
  */
 import type { Context, Hono } from 'hono'
-import { fullName, type Role, type Store, type Tree, type User } from './db.js'
+import { canManage, fullName, inviteRole, type InviteRole, type Role, type Store, type Tree, type User } from './db.js'
 import type { Ctx } from './html.js'
 import * as html from './html.js'
 import * as page from './network-html.js'
@@ -20,9 +20,9 @@ export type NetworkDeps = {
   /** Per-sender limits: connection requests and tree invites by email, and messages. */
   limits: { invite: (key: string) => boolean; message: (key: string) => boolean }
   /** Email a tree invite (the same mail the Members page sends). */
-  inviteToTree: (from: User, treeId: string, email: string, role: 'editor' | 'viewer', opts?: { personId?: string | null; note?: string | null }) => Promise<{ url: string; mailed: boolean }>
+  inviteToTree: (from: User, treeId: string, email: string, role: InviteRole, opts?: { personId?: string | null; note?: string | null }) => Promise<{ url: string; mailed: boolean }>
   /** The tree and the caller's role in it, or a response that ends the request. */
-  treeFor: (c: Context, need?: 'view' | 'edit' | 'owner') => { error: Response } | { error?: undefined; tree: Tree; role: Role; user: User }
+  treeFor: (c: Context, need?: 'view' | 'edit' | 'manage' | 'owner') => { error: Response } | { error?: undefined; tree: Tree; role: Role; user: User }
 }
 
 const MAX_VCF = 5 * 1024 * 1024
@@ -36,7 +36,7 @@ export function mountNetwork(app: Hono<any>, api: Hono<any>, d: NetworkDeps) {
   const back = (path: string, message: string) => `${path}?ok=${encodeURIComponent(message)}`
 
   /** Trees this user owns: where they may invite people. */
-  const ownedTrees = (u: User) => store.treesFor(u.id).filter((t) => t.role === 'owner')
+  const ownedTrees = (u: User) => store.treesFor(u.id).filter((t) => canManage(t.role))
 
   async function askToConnect(from: User, contact: Contact, note: string | null): Promise<string> {
     const email = contact.emails[0]?.value
@@ -209,8 +209,8 @@ export function mountNetwork(app: Hono<any>, api: Hono<any>, d: NetworkDeps) {
     const body = await d.form(c)
     const tree = store.tree(String(body.tree_id ?? ''))
     const email = contact?.emails[0]?.value
-    if (!contact || !email || !tree || store.role(tree.id, u.id) !== 'owner') return c.redirect(back(`/network/c/${c.req.param('id')}`, 'Pick one of your trees.'))
-    const r = await d.inviteToTree(u, tree.id, email, body.role === 'editor' ? 'editor' : 'viewer', { personId: contact.tree_id === tree.id ? contact.person_id : null })
+    if (!contact || !email || !tree || !canManage(store.role(tree.id, u.id))) return c.redirect(back(`/network/c/${c.req.param('id')}`, 'Pick one of your trees.'))
+    const r = await d.inviteToTree(u, tree.id, email, inviteRole(store.role(tree.id, u.id), body.role), { personId: contact.tree_id === tree.id ? contact.person_id : null })
     return c.redirect(back(`/network/c/${contact.id}`, r.mailed ? `Invited ${email} to ${tree.name}.` : 'That is a lot of invitations for one day. Try again tomorrow.'))
   })
   app.post('/network/c/:id/recommend', async (c) => {

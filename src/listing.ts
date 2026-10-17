@@ -13,7 +13,7 @@
  * whether an address is already in the tree, or was declined.
  */
 import type { Context, Hono } from 'hono'
-import { canEdit, clean, newId, type Role, type Store, type Tree, type User } from './db.js'
+import { canEdit, canManage, clean, grantable, inviteRole, newId, type InviteRole, type Role, type Store, type Tree, type User } from './db.js'
 import * as html from './html.js'
 import { csrfField, esc, layout, type Ctx } from './html.js'
 import { validEmail, type Mail } from './auth.js'
@@ -138,13 +138,13 @@ ${opts.error ? `<p class="error">${esc(opts.error)}</p>` : ''}
 
 /** On the Members page: the owner's listing switch, and requests waiting for an answer. */
 export function listingPanel(ctx: Ctx, tree: Tree, role: Role, settings: { listed: boolean; listing: string | null }, waiting: JoinRequest[], site: string): string {
-  const owner = role === 'owner'
+  const owner = canManage(role)
   const requests = canEdit(role) && waiting.length
     ? `<section class="panel"><h2>Asking to join</h2><ul>${waiting
         .map(
           (r) =>
             `<li><b>${esc(r.name)}</b> <span class="muted small">${esc(r.email)} · ${esc(CIRCLE_WORDS[r.circle])} · ${new Date(r.created_at).toISOString().slice(0, 10)}</span>${r.note ? `<br><span class="small">${esc(r.note)}</span>` : ''}
-<form method="post" action="/t/${tree.id}/requests/${r.id}/invite" class="inline">${csrfField(ctx)}<button class="btn">Invite as viewer</button></form><form method="post" action="/t/${tree.id}/requests/${r.id}/decline" class="inline">${csrfField(ctx)}<button class="btn">Decline</button></form></li>`,
+<form method="post" action="/t/${tree.id}/requests/${r.id}/invite" class="inline">${csrfField(ctx)}${grantable(role).length > 1 ? `<select name="role" aria-label="Role">${grantable(role).map((x) => `<option${x === 'viewer' ? ' selected' : ''}>${x}</option>`).join('')}</select> ` : ''}<button class="btn">Invite</button></form><form method="post" action="/t/${tree.id}/requests/${r.id}/decline" class="inline">${csrfField(ctx)}<button class="btn">Decline</button></form></li>`,
         )
         .join('')}</ul><p class="muted small">Declining sends nothing; they are never told.</p></section>`
     : ''
@@ -167,13 +167,13 @@ export type ListingDeps = {
   site: string
   ctx: (c: Context, extra?: Partial<Ctx>) => Ctx
   form: (c: Context) => Promise<Record<string, any>>
-  treeFor: (c: Context, need?: 'view' | 'edit' | 'owner') => { error: Response } | { error?: undefined; tree: Tree; role: Role; user: User }
+  treeFor: (c: Context, need?: 'view' | 'edit' | 'manage' | 'owner') => { error: Response } | { error?: undefined; tree: Tree; role: Role; user: User }
   mail: (m: Mail) => Promise<void>
   /** The caller's address, for the request limits. */
   ip: (c: Context) => string
   /** Requests per key: an address, a tree, an email. */
   limit: (key: string) => boolean
-  inviteToTree: (from: User, treeId: string, email: string, role: 'editor' | 'viewer', opts?: { personId?: string | null; note?: string | null; name?: string | null }) => Promise<{ url: string; mailed: boolean }>
+  inviteToTree: (from: User, treeId: string, email: string, role: InviteRole, opts?: { personId?: string | null; note?: string | null; name?: string | null }) => Promise<{ url: string; mailed: boolean }>
 }
 
 export function mountListings(app: Hono<any>, api: Hono<any>, d: ListingDeps) {
@@ -199,10 +199,10 @@ export function mountListings(app: Hono<any>, api: Hono<any>, d: ListingDeps) {
   }
 
   /** The ordinary invite, as a viewer, and they land in the inviter's network in the circle they gave. */
-  async function invite(u: User, tree: Tree, id: string): Promise<string> {
+  async function invite(u: User, tree: Tree, id: string, role: InviteRole = 'viewer'): Promise<string> {
     const req = listings.get(tree.id, id)
     if (!req) return 'That request was already answered.'
-    const r = await d.inviteToTree(u, tree.id, req.email, 'viewer', { name: req.name })
+    const r = await d.inviteToTree(u, tree.id, req.email, role, { name: req.name })
     listings.decide(tree.id, id, 'invited', u.id)
     const contact = net.contactByEmail(u.id, req.email)
     if (contact && contact.circle !== req.circle) net.updateContact(u.id, contact.id, { circle: req.circle })
@@ -226,7 +226,7 @@ export function mountListings(app: Hono<any>, api: Hono<any>, d: ListingDeps) {
     return c.redirect(`/families/${t.id}?sent=1`)
   })
   app.post('/t/:tree/listing', async (c) => {
-    const t = d.treeFor(c, 'owner')
+    const t = d.treeFor(c, 'manage')
     if (t.error) return t.error
     const body = await d.form(c)
     listings.setListing(t.tree.id, body.listed === '1', body.listing ? String(body.listing) : null)
@@ -235,7 +235,8 @@ export function mountListings(app: Hono<any>, api: Hono<any>, d: ListingDeps) {
   app.post('/t/:tree/requests/:id/invite', async (c) => {
     const t = d.treeFor(c, 'edit')
     if (t.error) return t.error
-    return c.redirect(`/t/${t.tree.id}/members?ok=${encodeURIComponent(await invite(t.user, t.tree, c.req.param('id')!))}`)
+    const body = await d.form(c)
+    return c.redirect(`/t/${t.tree.id}/members?ok=${encodeURIComponent(await invite(t.user, t.tree, c.req.param('id')!, inviteRole(t.role, body.role)))}`)
   })
   app.post('/t/:tree/requests/:id/decline', (c) => {
     const t = d.treeFor(c, 'edit')
@@ -263,7 +264,7 @@ export function mountListings(app: Hono<any>, api: Hono<any>, d: ListingDeps) {
     return c.json({ ...listings.settings(t.tree.id), url: `${site}/families/${t.tree.id}` })
   })
   api.post('/trees/:tree/listing', async (c) => {
-    const t = d.treeFor(c, 'owner')
+    const t = d.treeFor(c, 'manage')
     if (t.error) return t.error
     const body = await json(c)
     const now = listings.settings(t.tree.id)
@@ -279,7 +280,8 @@ export function mountListings(app: Hono<any>, api: Hono<any>, d: ListingDeps) {
     const t = d.treeFor(c, 'edit')
     if (t.error) return t.error
     if (!listings.get(t.tree.id, c.req.param('id')!)) return c.json({ error: 'no such request waiting' }, 404)
-    return c.json({ result: await invite(t.user, t.tree, c.req.param('id')!) })
+    const body = (await c.req.json().catch(() => ({}))) as { role?: string }
+    return c.json({ result: await invite(t.user, t.tree, c.req.param('id')!, inviteRole(t.role, body.role)) })
   })
   api.post('/trees/:tree/requests/:id/decline', (c) => {
     const t = d.treeFor(c, 'edit')
