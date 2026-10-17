@@ -99,6 +99,10 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT, created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS user_identities (
+  provider TEXT NOT NULL, subject TEXT NOT NULL, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL, PRIMARY KEY (provider, subject)
+);
 CREATE TABLE IF NOT EXISTS sessions (
   id_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
@@ -280,6 +284,37 @@ export class Store {
     if (existing) return existing
     const id = newId()
     this.db.query('INSERT INTO users (id,email,name,created_at) VALUES (?,?,?,?)').run(id, email.trim().toLowerCase(), null, this.now())
+    return this.user(id)!
+  }
+
+  // ---- sign in with pit.world (one account for every *.pit.world site) ----
+
+  /** The account a pit.world sign-in (its CoinPay DID) is linked to. Email never links: pit.world cannot vouch for it. */
+  userByIdentity(provider: string, subject: string): User | null {
+    const row = this.db.query<{ user_id: string }, [string, string]>('SELECT user_id FROM user_identities WHERE provider = ? AND subject = ?').get(provider, subject)
+    return row ? this.user(row.user_id) : null
+  }
+
+  identities(userId: string): { provider: string; subject: string; created_at: number }[] {
+    return this.db.query<any, [string]>('SELECT provider, subject, created_at FROM user_identities WHERE user_id = ? ORDER BY created_at').all(userId)
+  }
+
+  linkIdentity(userId: string, provider: string, subject: string) {
+    this.db.query('INSERT OR REPLACE INTO user_identities (provider, subject, user_id, created_at) VALUES (?, ?, ?, ?)').run(provider, subject, userId, this.now())
+  }
+
+  unlinkIdentity(userId: string, provider: string) {
+    this.db.query('DELETE FROM user_identities WHERE user_id = ? AND provider = ?').run(userId, provider)
+  }
+
+  /** A new account for someone who arrived by pit.world: no email of theirs (an address nothing is sent to), their name. */
+  createBridgedUser(provider: string, subject: string, name: string | null): User {
+    const id = newId()
+    const placeholder = `${sha256(`${provider}\u0000${subject}`).slice(0, 24)}@pit.invalid`
+    this.tx(() => {
+      this.db.query('INSERT INTO users (id,email,name,created_at) VALUES (?,?,?,?)').run(id, placeholder, clean(name, 120), this.now())
+      this.linkIdentity(id, provider, subject)
+    })
     return this.user(id)!
   }
 

@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { BONDS, fullName, lifespan, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.4.0'
+export const VERSION = '0.5.0'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -115,7 +115,8 @@ export function signInForm(ctx: Ctx, next: string | null = null): string {
   <label for="email">Email</label>
   <div class="row"><input id="email" name="email" type="email" autocomplete="email webauthn" required placeholder="you@example.com"><button>Email me a link</button></div>
   <p class="muted small">No password. New here? The same link makes your account. <button type="button" class="link" data-passkey-signin hidden>Sign in with a passkey</button></p>
-</form>`
+</form>
+<p class="pitworld"><a class="btn" href="/auth/pitworld${next ? `?next=${encodeURIComponent(next)}` : ''}">Sign in with pit.world</a> <span class="muted small">One account for every pit.world site, signed in with CoinPay.</span></p>`
 }
 
 export function signInPage(ctx: Ctx, next: string | null): string {
@@ -580,16 +581,25 @@ ${ctx.user ? `<form method="post" action="/invite/${esc(token)}">${csrfField(ctx
   )
 }
 
-export function settingsPage(ctx: Ctx, data: { passkeys: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; tokens: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; newToken?: string | null; addons?: string }): string {
+export function settingsPage(ctx: Ctx, data: { passkeys: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; tokens: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; newToken?: string | null; addons?: string; pitWorld?: { linked: boolean } | null }): string {
   const when = (t: number | null) => (t ? new Date(t).toISOString().slice(0, 10) : 'never')
   return layout(
     ctx,
     'Settings',
     `<h1>Settings</h1>
-<form method="post" action="/settings/name" class="panel pform">${csrfField(ctx)}<h2>Your name</h2><label>Shown to other members of your trees<input name="name" value="${esc(ctx.user?.name ?? '')}" maxlength="120"></label><p class="muted small">Signed in as ${esc(ctx.user?.email)}</p><button>Save</button></form>
+<form method="post" action="/settings/name" class="panel pform">${csrfField(ctx)}<h2>Your name</h2><label>Shown to other members of your trees<input name="name" value="${esc(ctx.user?.name ?? '')}" maxlength="120"></label><p class="muted small">Signed in as ${esc(ctx.user?.email.endsWith('@pit.invalid') ? 'your pit.world account' : ctx.user?.email)}</p><button>Save</button></form>
 <section class="panel"><h2>Passkeys</h2><p class="muted small">Sign in with your fingerprint, face or device PIN instead of waiting for an email.</p>
 ${data.passkeys.length ? `<ul>${data.passkeys.map((k) => `<li>${esc(k.label ?? 'Passkey')} <span class="muted small">added ${when(k.created_at)}, last used ${when(k.last_used_at)}</span> <form method="post" action="/settings/passkeys/${encodeURIComponent(k.id)}/delete" class="inline">${csrfField(ctx)}<button class="x">×</button></form></li>`).join('')}</ul>` : ''}
 <button type="button" data-passkey-register>Add a passkey</button> <span class="muted small" data-passkey-status></span></section>
+${
+  data.pitWorld
+    ? `<section class="panel"><h2>pit.world account</h2><p class="muted small">One account for every pit.world site: this tree, every <code>bbs.&lt;name&gt;.pit.world</code> board and <code>social.&lt;name&gt;.pit.world</code> feed. Manage it at <a href="https://pit.world/account">pit.world/account</a>.</p>${
+        data.pitWorld.linked
+          ? `<p>Linked: you can sign in here with pit.world.</p>${ctx.user?.email.endsWith('@pit.invalid') ? '' : `<form method="post" action="/settings/pitworld/unlink" class="inline">${csrfField(ctx)}<button class="x">Unlink</button></form>`}`
+          : '<p><a class="btn" href="/auth/pitworld?next=/settings">Link my pit.world account</a></p>'
+      }</section>`
+    : ''
+}
 <section class="panel"><h2>Apps and tokens</h2><p class="muted small">The <code>ancestry</code> CLI, the terminal app, the desktop app and MCP clients sign in with a token. <code>ancestry login</code> makes one for you.</p>
 ${data.newToken ? `<p class="flash">New token (shown once): <code>${esc(data.newToken)}</code></p>` : ''}
 ${data.tokens.length ? `<ul>${data.tokens.map((t) => `<li>${esc(t.label ?? 'token')} <span class="muted small">made ${when(t.created_at)}, last used ${when(t.last_used_at)}</span> <form method="post" action="/settings/tokens/${t.id}/delete" class="inline">${csrfField(ctx)}<button class="x">×</button></form></li>`).join('')}</ul>` : ''}

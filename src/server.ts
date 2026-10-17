@@ -10,6 +10,7 @@
 import { Hono, type Context } from 'hono'
 import { RING_PLACEHOLDER, ringBar, startRingRefresh, visitorOnMoshpit } from './ring.js'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
+import { createBridgeClient } from '@profullstack/bridges'
 import { join } from 'node:path'
 import { BONDS, CHILD_RELATIONS, Store, bondKind, canEdit, fullName, newId, type Person, type Role, type Tree, type User } from './db.js'
 import { Auth, SESSION_COOKIE, consoleMailer, resendMailer, safeNext, validEmail, type Mailer } from './auth.js'
@@ -34,7 +35,10 @@ const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp
  * the Moshpit name for people who are not on Moshpit DNS. Links we email to someone
  * else (invites) use it, because we cannot know which internet they are on.
  */
-export type AppOptions = { store: Store; auth: Auth; site: string; publicSite?: string; publicDir?: string; net?: Network; plan?: PlanConfig; fetcher?: typeof fetch }
+export type AppOptions = { store: Store; auth: Auth; site: string; publicSite?: string; publicDir?: string; net?: Network; plan?: PlanConfig; fetcher?: typeof fetch; pitWorld?: PitWorldSignIn | null }
+
+/** Sign in with pit.world: the one account for every *.pit.world site. The secret is HMAC-SHA256(PIT_BRIDGE_KEY, our relay host), which pit.world derives too. */
+export type PitWorldSignIn = { secret: string; base?: string; fetch?: typeof fetch }
 
 /** Up to `max` addresses from "a@b.com, c@d.com" or one per line. */
 export const parseEmails = (value: unknown, max = 20): string[] => parseInvitees(value, max).map((i) => i.email)
@@ -80,7 +84,7 @@ function limiter(limit: number, windowMs: number) {
 /** "Jane Doe (1901–1980) #abc123" from the datalist -> abc123. */
 export const pickId = (value: unknown): string | null => String(value ?? '').match(/#([A-Za-z0-9_-]{6,})\s*$/)?.[1] ?? (/^[A-Za-z0-9_-]{6,}$/.test(String(value ?? '').trim()) ? String(value).trim() : null)
 
-export function createApp({ store, auth, site, publicSite = site, publicDir = join(import.meta.dir, '..', 'public'), net = new Network(store), plan = planFromEnv({}), fetcher = fetch }: AppOptions) {
+export function createApp({ store, auth, site, publicSite = site, publicDir = join(import.meta.dir, '..', 'public'), net = new Network(store), plan = planFromEnv({}), fetcher = fetch, pitWorld = null }: AppOptions) {
   // A request relayed by pit.world says so in X-Forwarded-Host; a sign-in link for it must open there too.
   // Only the one configured address is believed, so a forged header can at worst pick that address.
   const publicHost = new URL(publicSite).host
@@ -149,7 +153,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   }
 
   const form = async (c: Context): Promise<Record<string, any>> => (c as any).formBody ?? (await c.req.parseBody().catch(() => ({})))
-  const ctx = (c: Context, extra: Partial<html.Ctx> = {}): html.Ctx => ({ user: c.get('user'), csrf: c.get('csrf'), flash: c.req.query('ok') ?? null, unread: c.get('user') ? net.unreadCount(c.get('user')!.id) : 0, ...extra })
+  const ctx = (c: Context, extra: Partial<html.Ctx> = {}): html.Ctx => ({ user: c.get('user'), csrf: c.get('csrf'), flash: c.req.query('ok') ?? null, error: c.req.query('error') ?? null, unread: c.get('user') ? net.unreadCount(c.get('user')!.id) : 0, ...extra })
   const signIn = (c: Context, user: User) => {
     setCookie(c, SESSION_COOKIE, auth.createSession(user.id), { path: '/', httpOnly: true, sameSite: 'Lax', secure: secure(c), maxAge: 60 * 60 * 24 * 90 })
   }
@@ -217,6 +221,50 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     if (!result) return c.html(html.messagePage(ctx(c), 'That link has expired', 'Sign-in links work once, for 20 minutes. Ask for a new one.', '<p><a class="btn" href="/signin">Sign in</a></p>'), 400)
     signIn(c, result.user)
     return c.redirect(result.next ?? '/trees')
+  })
+
+  // ---- sign in with pit.world ------------------------------------------
+  // The bridge runs on our relay host (family.ancestry.pit.world): pit.world sends codes only to
+  // exact callbacks on its own subdomains. Signed in already, it links pit.world to this account;
+  // signed out, a linked pit.world account signs in, and a new one gets an account of its own.
+  // Email never links accounts: pit.world (CoinPay) cannot vouch for it.
+  const pitBase = (pitWorld?.base ?? 'https://pit.world').replace(/\/+$/, '')
+  const pitClient = pitWorld
+    ? createBridgeClient({ authorizeUrl: `${pitBase}/bridge/authorize`, tokenUrl: `${pitBase}/bridge/token`, clientId: publicHost, clientSecret: pitWorld.secret, redirectUri: `${publicSite}/auth/bridge/callback`, ...(pitWorld.fetch ? { fetch: pitWorld.fetch } : {}) })
+    : null
+  app.get('/auth/pitworld', async (c) => {
+    if (!pitClient) return c.redirect('/signin')
+    const next = safeNext(c.req.query('next')) ?? (c.get('user') ? '/settings' : '/trees')
+    // Only the relay host has a callback pit.world accepts; send Moshpit visitors there first.
+    if (publicSite !== site && c.req.header('x-forwarded-host') !== publicHost) return c.redirect(`${publicSite}/auth/pitworld?next=${encodeURIComponent(next)}`)
+    const started = await pitClient.begin({ returnTo: next })
+    setCookie(c, 'fa_pw_state', started.cookie, { path: '/auth/bridge', httpOnly: true, sameSite: 'Lax', secure: secure(c), maxAge: started.maxAge })
+    return c.redirect(started.url)
+  })
+  app.get('/auth/bridge/callback', async (c) => {
+    if (!pitClient) return c.redirect('/signin')
+    const result = await pitClient.complete(new URL(c.req.url).searchParams, getCookie(c, 'fa_pw_state'))
+    deleteCookie(c, 'fa_pw_state', { path: '/auth/bridge' })
+    if (!result.ok) return c.html(html.messagePage(ctx(c), 'Sign-in did not finish', `pit.world said: ${result.error}. Try again.`, '<p><a class="btn" href="/signin">Sign in</a></p>'), 400)
+    const sub = result.user.sub
+    const me = c.get('user') as User | null
+    const linked = store.userByIdentity('pitworld', sub)
+    if (me) {
+      if (linked && linked.id !== me.id) return c.redirect(`/settings?error=${encodeURIComponent('That pit.world account is already linked to another family.ancestry account.')}`)
+      store.linkIdentity(me.id, 'pitworld', sub)
+      return c.redirect('/settings?ok=pit.world%20linked')
+    }
+    const user = linked ?? store.createBridgedUser('pitworld', sub, result.user.name ?? null)
+    signIn(c, user)
+    return c.redirect(safeNext(result.returnTo) ?? '/trees')
+  })
+  app.post('/settings/pitworld/unlink', (c) => {
+    if (needUser(c)) return needUser(c)!
+    const me = c.get('user')!
+    // An account made by pit.world has no email to sign in with, so it keeps its link.
+    if (me.email.endsWith('@pit.invalid')) return c.redirect(`/settings?error=${encodeURIComponent('This account signs in only with pit.world, so it stays linked.')}`)
+    store.unlinkIdentity(me.id, 'pitworld')
+    return c.redirect('/settings?ok=Unlinked')
   })
 
   app.post('/auth/signout', (c) => {
@@ -743,7 +791,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   })
 
   // settings
-  const settings = (c: Context, newToken: string | null = null) => c.html(html.settingsPage(ctx(c), { passkeys: auth.passkeys(c.get('user')!.id), tokens: auth.tokens(c.get('user')!.id), newToken, addons: addonsPanel() }))
+  const settings = (c: Context, newToken: string | null = null) => c.html(html.settingsPage(ctx(c), { passkeys: auth.passkeys(c.get('user')!.id), tokens: auth.tokens(c.get('user')!.id), newToken, addons: addonsPanel(), pitWorld: pitClient ? { linked: store.identities(c.get('user')!.id).some((i) => i.provider === 'pitworld') } : null }))
   app.get('/settings', (c) => needUser(c) ?? settings(c))
   app.post('/settings/name', async (c) => {
     if (needUser(c)) return needUser(c)!
@@ -1205,7 +1253,8 @@ export function serve() {
   const auth = new Auth(store, mailer, site)
   // Ours lives at family.ancestry, relayed by pit.world; a self-hosted copy on an ordinary domain needs no relay.
   const publicSite = (process.env.ANCESTRY_PUBLIC_SITE ?? (new URL(site).hostname === 'family.ancestry' ? 'https://family.ancestry.pit.world' : site)).replace(/\/+$/, '')
-  const app = createApp({ store, auth, site, publicSite, plan: planFromEnv() })
+  const pitWorld = process.env.PIT_BRIDGE_SECRET ? { secret: process.env.PIT_BRIDGE_SECRET, ...(process.env.PIT_WORLD_URL ? { base: process.env.PIT_WORLD_URL } : {}) } : null
+  const app = createApp({ store, auth, site, publicSite, plan: planFromEnv(), pitWorld })
   const port = Number(process.env.PORT ?? 8792)
   startRingRefresh()
   Bun.serve({ port, hostname: process.env.HOST ?? '127.0.0.1', fetch: app.fetch, maxRequestBodySize: 30 * 1024 * 1024 })
