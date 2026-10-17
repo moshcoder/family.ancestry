@@ -37,7 +37,8 @@
     return out
   }
 
-  const hasPasskeys = !!(window.PublicKeyCredential && navigator.credentials && window.isSecureContext)
+  // Passkeys belong to family.ancestry itself; on pit.world's relay (family.ancestry.pit.world) the browser refuses them.
+  const hasPasskeys = !!(window.PublicKeyCredential && navigator.credentials && window.isSecureContext) && !location.hostname.endsWith('.pit.world')
 
   // Sign in with a passkey.
   for (const button of document.querySelectorAll('[data-passkey-signin]')) {

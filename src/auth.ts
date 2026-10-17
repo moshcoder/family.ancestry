@@ -81,14 +81,15 @@ export class Auth {
   // ---- magic links -------------------------------------------------------
 
   /** Always resolves; the caller answers the same thing whatever happens, so nobody learns who has an account. */
-  async sendLink(emailInput: string, next: string | null = null): Promise<boolean> {
+  /** `base` is where the link should open: the proxy address when the visitor asked from there (see server.ts). */
+  async sendLink(emailInput: string, next: string | null = null, base: string = this.site): Promise<boolean> {
     const email = validEmail(emailInput)
     if (!email) return false
     const recent = this.store.db.query<{ n: number }, [string, number]>('SELECT COUNT(*) AS n FROM magic_links WHERE email = ? AND created_at > ?').get(email, this.now() - 15 * 60_000)?.n ?? 0
     if (recent >= 5) return true
     const token = newId(24)
     this.store.db.query('INSERT INTO magic_links (token_hash,email,next,created_at,expires_at) VALUES (?,?,?,?,?)').run(sha256(token), email, safeNext(next), this.now(), this.now() + LINK_MINUTES * 60_000)
-    const url = `${this.site}/auth/verify?token=${token}`
+    const url = `${base}/auth/verify?token=${token}`
     const text = `Sign in to family.ancestry:\n\n${url}\n\nThe link works once, for ${LINK_MINUTES} minutes. If you did not ask for it, ignore this email.`
     const html = `<p>Sign in to <strong>family.ancestry</strong>:</p><p><a href="${url}" style="display:inline-block;padding:10px 18px;background:#3d6b4f;color:#fff;border-radius:6px;text-decoration:none">Sign in</a></p><p style="color:#666;font-size:13px">Or open ${url}<br>The link works once, for ${LINK_MINUTES} minutes. If you did not ask for it, ignore this email.</p>`
     try {
