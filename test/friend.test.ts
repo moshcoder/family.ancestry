@@ -14,7 +14,7 @@ test('a friend in the tree: "How are we related?" says friend, both ways', async
   expect(store.bondsFor(tree.id, alex.id)[0]!.label).toBe('Friend')
   const app = createApp({ store, auth, site: 'https://family.test' })
   const cookie = `fa_session=${auth.createSession(me.id)}`
-  const page = (a: string, b: string) => app.request(`https://family.test/t/${tree.id}/relate?a=${a}&b=${b}`, { headers: { cookie } }).then((r: Response) => r.text())
+  const page = async (a: string, b: string) => (await app.request(`https://family.test/t/${tree.id}/relate?a=${a}&b=${b}`, { headers: { cookie } })).text()
   expect(await page(anthony.id, alex.id)).toContain("Anthony Ettinger's <b>friend</b>")
   expect(await page(alex.id, anthony.id)).toContain("Alex Drexel's <b>friend</b>")
   // No bond, no family line: still says so.
