@@ -161,7 +161,7 @@ ${formatBusiness(b)}`)
   server.tool(
     'invite_to_tree',
     'Email invites to a family tree. emails may be addresses or pasted lines like "Aunt Rose <rose@x.com>": a name that matches someone in the tree invites them to BE that person (or give person_id). Up to 20 at once on the free plan, 500 on the Family plan.',
-    { tree_id: z.string(), emails: z.array(z.string().max(100_000)).min(1).max(500), role: z.enum(['viewer', 'editor']).optional(), person_id: z.string().optional(), note: z.string().max(1000).optional() },
+    { tree_id: z.string(), emails: z.array(z.string().max(100_000)).min(1).max(500), role: z.enum(['viewer', 'editor', 'admin']).optional(), person_id: z.string().optional(), note: z.string().max(1000).optional() },
     async ({ tree_id, emails, ...opts }: any) => json(await client.invite(tree_id, emails, opts)),
   )
 

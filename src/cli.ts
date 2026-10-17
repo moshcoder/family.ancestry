@@ -623,7 +623,7 @@ export async function runCli(argv: string[]): Promise<number> {
         // A pasted list: a file, or stdin with --file -. The server pulls the addresses (and names) out of it.
         const pasted = typeof f.file === 'string' ? (f.file === '-' ? await Bun.stdin.text() : readFileSync(f.file, 'utf8')) : ''
         const emails = [...rest, ...(pasted ? [pasted] : [])]
-        const invites = await client.invite(tree.id, emails, { role: f.role === 'editor' ? 'editor' : 'viewer', person_id: person, note: str(f.note) })
+        const invites = await client.invite(tree.id, emails, { role: f.role === 'admin' || f.role === 'editor' ? f.role : 'viewer', person_id: person, note: str(f.note) })
         print(invites, () => invites.map((i) => `${i.email ?? 'link'}${i.name ? ` (${i.name})` : ''}: ${i.mailed ? 'emailed' : 'not emailed'}${i.person_id ? `, as ${i.person_id}` : ''}  ${i.url}`).join('\n'))
         return 0
       }

@@ -12,7 +12,7 @@ import { RING_PLACEHOLDER, ringBar, startRingRefresh, visitorOnMoshpit } from '.
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { createBridgeClient } from '@profullstack/bridges'
 import { join } from 'node:path'
-import { BONDS, CHILD_RELATIONS, Store, UNION_KINDS, bondKind, canEdit, fullName, newId, type Person, type Role, type Tree, type User } from './db.js'
+import { BONDS, CHILD_RELATIONS, Store, UNION_KINDS, bondKind, canEdit, canManage, grantable, inviteRole, fullName, type InviteRole, newId, type Person, type Role, type Tree, type User } from './db.js'
 import { Auth, SESSION_COOKIE, consoleMailer, resendMailer, safeNext, validEmail, type Mailer } from './auth.js'
 import { exportGedcom, importGedcom, describeImport } from './gedcom.js'
 import { describeRelation } from './relate.js'
@@ -194,7 +194,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
 
   /** The tree and the caller's role in it, or a response that ends the request. */
   type TreeAccess = { error: Response; tree?: never; role?: never; user?: never } | { error?: undefined; tree: Tree; role: Role; user: User }
-  const treeFor = (c: Context, need: 'view' | 'edit' | 'owner' = 'view'): TreeAccess => {
+  const treeFor = (c: Context, need: 'view' | 'edit' | 'manage' | 'owner' = 'view'): TreeAccess => {
     const user = c.get('user')
     const tree = store.tree(c.req.param('tree')!)
     const role = tree ? store.role(tree.id, user?.id) : null
@@ -204,6 +204,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     // A tree you are not a member of is indistinguishable from one that does not exist.
     if (!tree || !role) return { error: fail(404, 'No such tree, or it has not been shared with you.') as Response }
     if (need === 'edit' && !canEdit(role)) return { error: fail(403, 'You can view this tree but not change it. Ask its owner to make you an editor.') as Response }
+    if (need === 'manage' && !canManage(role)) return { error: fail(403, 'Only the owner or an admin can do that.') as Response }
     if (need === 'owner' && role !== 'owner') return { error: fail(403, 'Only the owner can do that.') as Response }
     return { tree, role: role as Role, user }
   }
@@ -425,7 +426,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     )
   })
   app.post('/t/:tree/settings', async (c) => {
-    const t = treeFor(c, 'owner')
+    const t = treeFor(c, 'manage')
     if (t.error) return t.error
     const body = await form(c)
     store.updateTree(t.tree.id, { name: String(body.name ?? t.tree.name), description: body.description ? String(body.description) : null })
@@ -503,7 +504,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
         // A member with no profile yet, looking at a living person nobody has claimed: "this is me".
         claimable: !profile && person.kind === 'person' && !person.death_date && !person.death_place && !store.profilePerson(t.tree.id, t.user.id),
         welcome: c.req.query('welcome') === '1',
-        invite: invitable ? profileInvite(ctx(c), t.tree, person, { justAdded: c.req.query('added') === '1', owner: t.role === 'owner' }) : '',
+        invite: invitable ? profileInvite(ctx(c), t.tree, person, { justAdded: c.req.query('added') === '1', roles: grantable(t.role) }) : '',
         // Anyone in the tree may keep a living relative in their own network; not themselves, not a pet.
         // On your own page: invite a friend. On any other living person's: add them to your network.
         network: person.kind !== 'person' || person.death_date || person.death_place ? '' : profile?.id === t.user.id ? inviteFriendBox(ctx(c)) : personNetworkBox(ctx(c), t.tree, person, net.contactForPerson(t.user.id, t.tree.id, person.id)),
@@ -797,13 +798,13 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     const t = treeFor(c, 'edit')
     if (t.error) return t.error
     const body = await form(c)
-    const role = t.role === 'owner' && body.role === 'editor' ? 'editor' : 'viewer'
+    const role = inviteRole(t.role, body.role)
     const personId = body.person_id && store.person(t.tree.id, String(body.person_id)) && !store.profileUser(t.tree.id, String(body.person_id)) ? String(body.person_id) : null
     const invitees = parseInvitees(body.emails ?? body.email, personId ? 1 : pasteMax(t.tree))
     const note = body.note ? String(body.note) : null
     if (!invitees.length) {
       if (body.back === 'person' && personId) return c.redirect(`/t/${t.tree.id}/p/${personId}?ok=${encodeURIComponent('That does not look like an email address.')}`)
-      if (t.role !== 'owner') return membersView(c, t, [], 'Only the owner can make invite links. Invite by email instead.')
+      if (!canManage(t.role)) return membersView(c, t, [], 'Only the owner or an admin can make invite links. Invite by email instead.')
       return membersView(c, t, [{ email: null, url: `${publicSite}/invite/${store.createInvite(t.tree.id, t.user.id, role, null, { note })}`, mailed: false }])
     }
     const links: html.InviteLink[] = []
@@ -820,20 +821,22 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     return c.redirect(`/t/${t.tree.id}/members?ok=Invite%20cancelled`)
   })
   app.post('/t/:tree/p/:person/release', (c) => {
-    const t = treeFor(c, 'owner')
+    const t = treeFor(c, 'manage')
     if (t.error) return t.error
     store.releaseProfile(t.tree.id, c.req.param('person'))
     return c.redirect(`/t/${t.tree.id}/members?ok=Profile%20unlinked`)
   })
   app.post('/t/:tree/members/:user', async (c) => {
-    const t = treeFor(c, 'owner')
+    const t = treeFor(c, 'manage')
     if (t.error) return t.error
-    const role = (await form(c)).role === 'editor' ? 'editor' : 'viewer'
-    if (store.role(t.tree.id, c.req.param('user')) && store.role(t.tree.id, c.req.param('user')) !== 'owner') store.setMember(t.tree.id, c.req.param('user'), role)
+    const role = inviteRole(t.role, (await form(c)).role)
+    // Nobody changes the owner's role: one owner per family, the super user.
+    const current = store.role(t.tree.id, c.req.param('user'))
+    if (current && current !== 'owner') store.setMember(t.tree.id, c.req.param('user'), role)
     return c.redirect(`/t/${t.tree.id}/members`)
   })
   app.post('/t/:tree/members/:user/remove', (c) => {
-    const t = treeFor(c, 'owner')
+    const t = treeFor(c, 'manage')
     if (t.error) return t.error
     store.removeMember(t.tree.id, c.req.param('user'))
     return c.redirect(`/t/${t.tree.id}/members`)
@@ -1100,13 +1103,13 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     const t = treeFor(c, 'edit')
     if (t.error) return t.error
     const body = await json(c)
-    const role = t.role === 'owner' && body.role === 'editor' ? 'editor' : 'viewer'
+    const role = inviteRole(t.role, body.role)
     const personId = body.person_id && store.person(t.tree.id, String(body.person_id)) ? String(body.person_id) : null
     if (personId && store.profileUser(t.tree.id, personId)) return bad(c, 'that person already manages their own profile')
     const invitees = parseInvitees(Array.isArray(body.emails) ? body.emails.join('\n') : (body.emails ?? body.email), personId ? 1 : pasteMax(t.tree))
     const note = body.note ? String(body.note) : null
     if (!invitees.length) {
-      if (t.role !== 'owner') return bad(c, 'only the owner can make invite links; give an email')
+      if (!canManage(t.role)) return bad(c, 'only the owner or an admin can make invite links; give an email')
       return c.json({ invites: [{ email: null, mailed: false, url: `${publicSite}/invite/${store.createInvite(t.tree.id, t.user.id, role, null, { personId, note })}` }] }, 201)
     }
     const invites = []
@@ -1191,7 +1194,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
    * allowance. The invitee goes into the sender's network as family, so the
    * people you bring into a tree are the first people in your network.
    */
-  async function inviteToTree(from: User, treeId: string, email: string, role: 'editor' | 'viewer', opts: { personId?: string | null; note?: string | null; name?: string | null } = {}): Promise<{ url: string; mailed: boolean }> {
+  async function inviteToTree(from: User, treeId: string, email: string, role: InviteRole, opts: { personId?: string | null; note?: string | null; name?: string | null } = {}): Promise<{ url: string; mailed: boolean }> {
     const tree = store.tree(treeId)!
     const person = opts.personId ? store.person(treeId, opts.personId) : null
     const url = `${publicSite}/invite/${store.createInvite(treeId, from.id, role, email, { personId: person?.id ?? null, note: opts.note })}`
@@ -1203,7 +1206,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
 
   async function sendInvite(email: string, treeName: string, from: User, url: string, role: string, opts: { person?: Person | null; note?: string | null } = {}) {
     const name = from.name ?? from.email
-    const as = role === 'editor' ? 'an editor' : 'a viewer'
+    const as = role === 'admin' ? 'an admin' : role === 'editor' ? 'an editor' : 'a viewer'
     const subject = opts.person ? `${name} added you to the ${treeName} family tree` : `${name} invited you to the ${treeName} family tree`
     const lead = opts.person
       ? `${name} added you to ${treeName} on family.ancestry as ${fullName(opts.person)}, and invited you to join the family: claim your profile and keep it up to date.`

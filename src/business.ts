@@ -24,7 +24,7 @@ export type BusinessDeps = {
   ctx: (c: Context, extra?: Partial<Ctx>) => Ctx
   form: (c: Context) => Promise<Record<string, any>>
   /** The tree and the caller's role in it, or a response that ends the request. */
-  treeFor: (c: Context, need?: 'view' | 'edit' | 'owner') => { error: Response } | { error?: undefined; tree: Tree; role: Role; user: User }
+  treeFor: (c: Context, need?: 'view' | 'edit' | 'manage' | 'owner') => { error: Response } | { error?: undefined; tree: Tree; role: Role; user: User }
   pickId: (value: unknown) => string | null
   image: { types: Set<string>; max: number }
 }

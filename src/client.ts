@@ -334,7 +334,7 @@ export class AncestryClient {
   // ---- invites -----------------------------------------------------------
 
   /** Email invites (or, with no emails, make a link). With person_id, they join as that person. */
-  invite(tree: string, emails: string[], opts: { role?: 'editor' | 'viewer'; person_id?: string; note?: string } = {}) {
+  invite(tree: string, emails: string[], opts: { role?: 'admin' | 'editor' | 'viewer'; person_id?: string; note?: string } = {}) {
     return this.request<{ invites: { email: string | null; name?: string | null; person_id?: string | null; url: string; mailed: boolean }[] }>(`/api/v1/trees/${enc(tree)}/invites`, { method: 'POST', json: { emails, ...opts } }).then((r) => r.invites)
   }
   invites(tree: string) {

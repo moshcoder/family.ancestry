@@ -95,7 +95,7 @@ ${
 }
 ${
   owned.length && email
-    ? `<form method="post" action="/network/c/${c.id}/invite" class="panel pform">${csrfField(ctx)}<h2>Invite to a family tree</h2><div class="grid3"><label>Tree<select name="tree_id">${owned.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></label><label>Role<select name="role"><option>viewer</option><option>editor</option></select></label></div><button>Email an invite</button></form>`
+    ? `<form method="post" action="/network/c/${c.id}/invite" class="panel pform">${csrfField(ctx)}<h2>Invite to a family tree</h2><div class="grid3"><label>Tree<select name="tree_id">${owned.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></label><label>Role${roleSelect(['viewer', 'editor', 'admin'], '')}</label></div><button>Email an invite</button></form>`
     : ''
 }
 ${recommendForm(ctx, c, data.reachable.filter((u) => u.id !== c.linked_user_id))}
@@ -196,12 +196,18 @@ export function inviteFriendBox(ctx: Ctx): string {
 }
 
 /** The quiet offer under a person's name: invite them to be themselves in the tree. */
-export function profileInvite(ctx: Ctx, tree: Tree, person: Person, opts: { justAdded: boolean; owner: boolean }): string {
+export function profileInvite(ctx: Ctx, tree: Tree, person: Person, opts: { justAdded: boolean; roles: string[] }): string {
   const name = person.given || fullName(person)
   const form = `<form method="post" action="/t/${tree.id}/invites" class="pform">${csrfField(ctx)}<input type="hidden" name="person_id" value="${person.id}"><input type="hidden" name="back" value="person">
-<div class="row"><input name="email" type="email" required placeholder="${esc(name.toLowerCase().replace(/\W+/g, '') || 'them')}@example.com" aria-label="Their email">${opts.owner ? `<select name="role" aria-label="Role"><option value="viewer">viewer</option><option value="editor">editor</option></select>` : ''}<button>Send invite</button></div>
-<p class="muted small">They get one email from you. If they join, this is their profile: they can keep it up to date, and they're part of the family here.</p></form>`
+<div class="row"><input name="email" type="email" required placeholder="${esc(name.toLowerCase().replace(/\W+/g, '') || 'them')}@example.com" aria-label="Their email">${opts.roles.length > 1 ? roleSelect(opts.roles) : ''}<button>Send invite</button></div>
+<p class="muted small">They get one email from you. If they join, this is their profile: they keep it up to date and are part of the family here. A viewer keeps their own profile; an editor can fill in their whole branch; an admin can also invite and manage the family.</p></form>`
   return opts.justAdded
     ? `<div class="panel invite-nudge"><p><b>Added ${esc(fullName(person))}${lifespan(person) ? ` (${esc(lifespan(person))})` : ''}.</b> Is ${esc(name)} around? Invite them to manage their own profile and join the family.</p>${form}</div>`
-    : `<details class="mini invite-nudge"><summary>Invite ${esc(name)} to manage this profile</summary>${form}</details>`
+    : `<section class="panel invite-nudge"><h2>Invite ${esc(name)}</h2><p>Send ${esc(name)} an email to join the family and manage this profile${opts.roles.includes('editor') ? ', or make them an editor to fill in their branch' : ''}.</p>${form}</section>`
+}
+
+/** Role picker for an invite: viewer first (the safe default), each saying what it can do. */
+export function roleSelect(roles: string[], attrs = ' aria-label="Role"'): string {
+  const words: Record<string, string> = { viewer: 'viewer: sees the tree, keeps their own profile', editor: 'editor: adds and changes people (their branch)', admin: 'admin: also invites and manages the family' }
+  return `<select name="role"${attrs}>${['viewer', 'editor', 'admin'].filter((r) => roles.includes(r)).map((r) => `<option value="${r}">${words[r]}</option>`).join('')}</select>`
 }

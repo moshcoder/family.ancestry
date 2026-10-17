@@ -21,7 +21,7 @@ export type AlbumDeps = {
   site: string
   ctx: (c: Context, extra?: Partial<Ctx>) => Ctx
   form: (c: Context) => Promise<Record<string, any>>
-  treeFor: (c: Context, need?: 'view' | 'edit' | 'owner') => { error: Response } | { error?: undefined; tree: Tree; role: Role; user: User }
+  treeFor: (c: Context, need?: 'view' | 'edit' | 'manage' | 'owner') => { error: Response } | { error?: undefined; tree: Tree; role: Role; user: User }
   image: { types: Set<string>; max: number }
   /** Photos one person may upload a day, across every tree. */
   dailyUploads?: number
