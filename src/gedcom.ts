@@ -11,9 +11,23 @@
  * (BURI, CHR, BAPM, RESI, OCCU, IMMI, ...), notes (with CONT/CONC), families
  * with their marriage and divorce, children with their pedigree (birth, adopted,
  * foster), sources and the citations that point at them.
+ *
+ * Businesses ("Ettinger Plumbing") are not people, and GEDCOM has no record for
+ * them, so they travel as a custom `_BUS` record that other programs skip:
+ *
+ *   0 @B1@ _BUS
+ *   1 NAME Ettinger Plumbing        1 TYPE Plumbing
+ *   1 _FOUNDED / 1 _CLOSED          each with 2 DATE
+ *   1 PLAC, 1 WWW, 1 NOTE
+ *   1 _ROLE @I3@                    2 TYPE founder, 2 TITL, 2 _FROM, 2 _TO, 2 NOTE
+ *
+ * So the people in it still show somewhere in other programs, each role is also
+ * an OCCU on the person ("Founder, Ettinger Plumbing", DATE FROM .. TO ..),
+ * marked `2 _BUS @B1@`. Coming back in, a marked OCCU is skipped: the _BUS
+ * record is the truth, and the round trip never doubles a role into an event.
  */
 import type { Store, Person } from './db.js'
-import { BONDS, bondKind, fullName } from './db.js'
+import { BONDS, BUSINESS_ROLES, bondKind, businessRole, fullName } from './db.js'
 
 export type GedLine = { level: number; xref: string | null; tag: string; value: string; children: GedLine[] }
 
@@ -65,7 +79,10 @@ const EVENT_LABELS: Record<string, string> = {
 }
 const LABEL_TAGS = Object.fromEntries(Object.entries(EVENT_LABELS).map(([tag, label]) => [label.toLowerCase(), tag]))
 
-export type ImportResult = { people: number; families: number; sources: number; events: number; skipped: number; warnings: string[] }
+export type ImportResult = { people: number; families: number; sources: number; events: number; skipped: number; warnings: string[]; businesses?: number }
+
+/** GEDCOM doubles every @ in a value; undo it. */
+const unat = (value: string | null) => (value === null ? null : value.replace(/@@/g, '@'))
 
 /** Import a GEDCOM file into a tree. Runs in one transaction: a file either lands whole or not at all. */
 export function importGedcom(store: Store, treeId: string, text: string): ImportResult {
@@ -120,7 +137,8 @@ export function importGedcom(store: Store, treeId: string, text: string): Import
 
       for (const c of rec.children) {
         const label = EVENT_LABELS[c.tag]
-        if (label) {
+        // A role we exported ourselves: the _BUS record brings it back as a role, not an event.
+        if (label && !child(c, '_BUS')) {
           const type = c.tag === 'EVEN' || c.tag === 'FACT' ? (childValue(c, 'TYPE') ?? label) : label
           store.addEvent(treeId, p.id, { type, date: childValue(c, 'DATE'), place: childValue(c, 'PLAC'), description: c.value.trim() || (child(c, 'NOTE') ? fullText(child(c, 'NOTE')!) : null) })
           result.events++
@@ -195,6 +213,43 @@ export function importGedcom(store: Store, treeId: string, text: string): Import
         }
       }
     }
+
+    // _BUS: businesses, and the people who founded, owned or worked in them.
+    for (const rec of records) {
+      if (rec.tag !== '_BUS') continue
+      const dateOf = (tag: string) => {
+        const node = child(rec, tag)
+        return node ? unat(childValue(node, 'DATE') ?? (node.value.trim() || null)) : null
+      }
+      const biz = store.addBusiness(treeId, {
+        name: unat(childValue(rec, 'NAME')) ?? 'Unnamed business',
+        category: unat(childValue(rec, 'TYPE')),
+        founded: dateOf('_FOUNDED'),
+        closed: dateOf('_CLOSED'),
+        place: unat(childValue(rec, 'PLAC')),
+        website: unat(childValue(rec, 'WWW')),
+        notes: child(rec, 'NOTE') ? unat(fullText(child(rec, 'NOTE')!)) : null,
+      })
+      result.businesses = (result.businesses ?? 0) + 1
+      for (const r of rec.children.filter((c) => c.tag === '_ROLE')) {
+        const pid = people.get(r.value.trim())
+        if (!pid) {
+          result.warnings.push(`business ${rec.xref ?? biz.name} lists unknown person ${r.value.trim()}`)
+          continue
+        }
+        try {
+          store.addBusinessRole(treeId, biz.id, pid, {
+            role: businessRole(childValue(r, 'TYPE')) ?? 'other',
+            title: unat(childValue(r, 'TITL')),
+            start_date: unat(childValue(r, '_FROM')),
+            end_date: unat(childValue(r, '_TO')),
+            note: child(r, 'NOTE') ? unat(fullText(child(r, 'NOTE')!)) : null,
+          })
+        } catch (error) {
+          result.warnings.push(`${rec.xref ?? biz.name}: ${(error as Error).message}`)
+        }
+      }
+    }
   })
   return result
 }
@@ -237,6 +292,9 @@ export function exportGedcom(store: Store, treeId: string, options: ExportOption
   const links = store.childLinks(treeId)
   const events = store.allEvents(treeId)
   const citations = store.citationsAll(treeId)
+  const businesses = store.businesses(treeId)
+  const roles = store.allBusinessRoles(treeId)
+  const bid = new Map(businesses.map((b, i) => [b.id, `@B${i + 1}@`]))
   const pid = new Map(people.map((p, i) => [p.id, `@I${i + 1}@`]))
   const fid = new Map(families.map((f, i) => [f.id, `@F${i + 1}@`]))
   const sid = new Map(sources.map((s, i) => [s.id, `@S${i + 1}@`]))
@@ -281,6 +339,15 @@ export function exportGedcom(store: Store, treeId: string, options: ExportOption
       out.push(`1 SOUR ${sid.get(c.source_id)}`)
       if (c.page) out.push(`2 PAGE ${gedSafe(c.page)}`)
     }
+    for (const r of roles.filter((r) => r.person_id === p.id)) {
+      const b = businesses.find((b) => b.id === r.business_id)
+      if (!b) continue
+      out.push(`1 OCCU ${gedSafe(`${r.title ?? BUSINESS_ROLES[r.role] ?? r.role}, ${b.name}`)}`)
+      const when = [r.start_date ? `FROM ${r.start_date}` : '', r.end_date ? `TO ${r.end_date}` : ''].filter(Boolean).join(' ')
+      if (when) out.push(`2 DATE ${gedSafe(when)}`)
+      if (b.place) out.push(`2 PLAC ${gedSafe(b.place)}`)
+      out.push(`2 _BUS ${bid.get(b.id)}`)
+    }
     for (const l of links.filter((l) => l.person_id === p.id)) {
       out.push(`1 FAMC ${fid.get(l.family_id)}`)
       if (l.relation !== 'birth') out.push(`2 PEDI ${l.relation}`)
@@ -321,12 +388,34 @@ export function exportGedcom(store: Store, treeId: string, options: ExportOption
     if (s.citation) emitText(1, 'TEXT', s.citation, out)
   }
 
+  // Businesses: a custom record, so other programs skip it and ours brings it back whole.
+  const byPerson = new Map(people.map((p) => [p.id, p]))
+  for (const b of businesses) {
+    out.push(`0 ${bid.get(b.id)} _BUS`, `1 NAME ${gedSafe(b.name)}`)
+    if (b.category) out.push(`1 TYPE ${gedSafe(b.category)}`)
+    if (b.founded) out.push('1 _FOUNDED', `2 DATE ${gedSafe(b.founded)}`)
+    if (b.closed) out.push('1 _CLOSED', `2 DATE ${gedSafe(b.closed)}`)
+    if (b.place) out.push(`1 PLAC ${gedSafe(b.place)}`)
+    if (b.website) out.push(`1 WWW ${gedSafe(b.website)}`)
+    if (b.notes) emitText(1, 'NOTE', b.notes.replace(/@/g, '@@'), out)
+    for (const r of roles.filter((r) => r.business_id === b.id)) {
+      const p = byPerson.get(r.person_id)
+      // A living person hidden by privacy keeps only their name; what they do stays out too.
+      if (!p || hidden(p)) continue
+      out.push(`1 _ROLE ${pid.get(p.id)}`, `2 TYPE ${r.role}`)
+      if (r.title) out.push(`2 TITL ${gedSafe(r.title)}`)
+      if (r.start_date) out.push(`2 _FROM ${gedSafe(r.start_date)}`)
+      if (r.end_date) out.push(`2 _TO ${gedSafe(r.end_date)}`)
+      if (r.note) emitText(2, 'NOTE', r.note.replace(/@/g, '@@'), out)
+    }
+  }
+
   out.push('0 TRLR')
   return `${out.join('\r\n')}\r\n`
 }
 
 /** A one-line description, used by the CLI and MCP after an import. */
 export const describeImport = (r: ImportResult) =>
-  `${r.people} people, ${r.families} families, ${r.events} events, ${r.sources} sources${r.skipped ? `, ${r.skipped} empty families skipped` : ''}${r.warnings.length ? ` (${r.warnings.length} warnings)` : ''}`
+  `${r.people} people, ${r.families} families, ${r.events} events, ${r.sources} sources${r.businesses ? `, ${r.businesses} businesses` : ''}${r.skipped ? `, ${r.skipped} empty families skipped` : ''}${r.warnings.length ? ` (${r.warnings.length} warnings)` : ''}`
 
 export { fullName }

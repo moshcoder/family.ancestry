@@ -4,9 +4,9 @@
  */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { BONDS, fullName, lifespan, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
+import { BONDS, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.4.0'
+export const VERSION = '0.5.0'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -157,23 +157,26 @@ export function treesPage(ctx: Ctx, trees: (Tree & { role: Role; people: number 
 const personLink = (treeId: string, p: Person | null | undefined, cls = '') =>
   p ? `<a class="pl ${cls} sex-${p.sex}" href="/t/${treeId}/p/${p.id}">${esc(fullName(p))}${lifespan(p) ? ` <span class="yrs">${esc(lifespan(p))}</span>` : ''}</a>` : '<span class="muted">unknown</span>'
 
-export function treePage(ctx: Ctx, tree: Tree, role: Role, data: { stats: Record<string, number>; home: Person | null; people: Person[]; surnames: { surname: string; n: number }[]; query: string; plan?: boolean }): string {
+export function treePage(ctx: Ctx, tree: Tree, role: Role, data: { stats: Record<string, number>; home: Person | null; people: Person[]; businesses?: Business[]; surnames: { surname: string; n: number }[]; query: string; plan?: boolean }): string {
   const edit = canEdit(role)
   const list = data.people.length
     ? `<table class="people"><thead><tr><th>Name</th><th>Born</th><th>Died</th></tr></thead><tbody>${data.people
         .map((p) => `<tr><td>${personLink(tree.id, p)}${p.kind === 'pet' ? ` <span class="tag">${esc(p.species ?? 'pet')}</span>` : ''}</td><td>${esc([p.birth_date, p.birth_place].filter(Boolean).join(', '))}</td><td>${esc([p.death_date, p.death_place].filter(Boolean).join(', '))}</td></tr>`)
         .join('')}</tbody></table>`
     : `<p class="empty">${data.query ? 'Nobody matches that.' : 'This tree is empty.'}</p>`
+  const businesses = data.businesses?.length
+    ? `<h2>Businesses</h2><ul class="plain">${data.businesses.map((b) => `<li><a class="pl biz" href="/t/${tree.id}/b/${b.id}">${esc(b.name)}</a>${b.category ? ` <span class="tag">${esc(b.category)}</span>` : ''}${b.place ? ` <span class="muted small">${esc(b.place)}</span>` : ''}</li>`).join('')}</ul>${data.people.length ? '<h2>People</h2>' : ''}`
+    : ''
   return layout(
     ctx,
     tree.name,
     `<div class="titlebar"><div><h1>${esc(tree.name)}</h1>${tree.description ? `<p class="muted">${esc(tree.description)}</p>` : ''}</div>
-<div class="actions">${data.home ? `<a class="btn" href="/t/${tree.id}/pedigree/${data.home.id}">Pedigree</a><a class="btn" href="/t/${tree.id}/descendants/${data.home.id}">Descendants</a>` : ''}<a class="btn" href="/t/${tree.id}/relate">How are we related?</a><a class="btn" href="/t/${tree.id}/sources">Sources</a><a class="btn" href="/t/${tree.id}/export.ged">Export GEDCOM</a><a class="btn" href="/t/${tree.id}/plan">${data.plan ? 'Family plan ✓' : 'Family plan'}</a>${edit ? `<a class="btn" href="/t/${tree.id}/members#invite">Invite family</a>` : `<a class="btn" href="/t/${tree.id}/members">Members</a>`}</div></div>
+<div class="actions">${data.home ? `<a class="btn" href="/t/${tree.id}/pedigree/${data.home.id}">Pedigree</a><a class="btn" href="/t/${tree.id}/descendants/${data.home.id}">Descendants</a>` : ''}<a class="btn" href="/t/${tree.id}/relate">How are we related?</a><a class="btn" href="/t/${tree.id}/businesses">Businesses</a><a class="btn" href="/t/${tree.id}/sources">Sources</a><a class="btn" href="/t/${tree.id}/export.ged">Export GEDCOM</a><a class="btn" href="/t/${tree.id}/plan">${data.plan ? 'Family plan ✓' : 'Family plan'}</a>${edit ? `<a class="btn" href="/t/${tree.id}/members#invite">Invite family</a>` : `<a class="btn" href="/t/${tree.id}/members">Members</a>`}</div></div>
 <p class="stats">${Object.entries(data.stats).map(([k, v]) => `<span><b>${v}</b> ${k}</span>`).join('')}</p>
 ${data.home ? `<p>Home person: ${personLink(tree.id, data.home)}</p>` : ''}
-<form class="search" method="get" action="/t/${tree.id}"><input name="q" value="${esc(data.query)}" placeholder="Search names, places, years" aria-label="Search people"><button>Search</button></form>
+<form class="search" method="get" action="/t/${tree.id}"><input name="q" value="${esc(data.query)}" placeholder="Search people and businesses: names, places, years" aria-label="Search people and businesses"><button>Search</button></form>
 ${data.surnames.length && !data.query ? `<p class="surnames">${data.surnames.slice(0, 40).map((s) => `<a href="/t/${tree.id}?q=${encodeURIComponent(s.surname)}">${esc(s.surname)} <span>${s.n}</span></a>`).join('')}</p>` : ''}
-${list}
+${businesses}${data.businesses?.length && !data.people.length ? '' : list}
 ${edit ? `<details class="panel"${data.people.length ? '' : ' open'}><summary>Add a person</summary>${personForm(ctx, `/t/${tree.id}/people`, null, 'Add person')}</details>
 <details class="panel"><summary>Import a GEDCOM into this tree</summary><form method="post" action="/t/${tree.id}/import" enctype="multipart/form-data">${csrfField(ctx)}<input type="file" name="file" accept=".ged,.gedcom,text/plain" required> <button>Import</button></form></details>` : ''}
 ${role === 'owner' ? `<details class="panel"><summary>Tree settings</summary><form method="post" action="/t/${tree.id}/settings">${csrfField(ctx)}<label>Name<input name="name" value="${esc(tree.name)}" maxlength="200"></label><label>Description<textarea name="description" rows="2">${esc(tree.description ?? '')}</textarea></label><button>Save</button></form>
@@ -295,6 +298,8 @@ export type PersonView = {
   self?: boolean
   /** The quiet "invite them to manage this profile" offer, already rendered. */
   invite?: string
+  /** Their businesses, already rendered (src/business.ts). */
+  businesses?: string
 }
 
 export function personPage(ctx: Ctx, tree: Tree, role: Role, v: PersonView): string {
@@ -345,6 +350,7 @@ ${
     ? `<section><h2>${pet ? 'Family' : 'Raised by, godparents and pets'}</h2><ul>${v.bonds.map((b) => `<li><span class="tag">${esc(b.label)}</span> ${personLink(tree.id, b.other)}${b.other.kind === 'pet' && b.other.species ? ` <span class="muted small">${esc(b.other.species)}</span>` : ''}${b.note ? ` <span class="muted small">${esc(b.note)}</span>` : ''}${edit ? ` <form method="post" action="/t/${tree.id}/bonds/${b.id}/delete" class="inline">${csrfField(ctx)}<input type="hidden" name="back" value="${p.id}"><button class="x" title="Remove">×</button></form>` : ''}</li>`).join('')}</ul></section>`
     : ''
 }
+${v.businesses ?? ''}
 ${edit && !pet ? `${datalist}<div class="cols3">${relativeForm(ctx, tree, p, 'parent')}${relativeForm(ctx, tree, p, 'partner')}${relativeForm(ctx, tree, p, 'child', { families: v.unions })}${relativeForm(ctx, tree, p, 'sibling', { parents: v.parents.flatMap((f) => f.parents), stepParents: v.stepParents })}${relativeForm(ctx, tree, p, 'grandparent', { parents: v.parents.flatMap((f) => f.parents) })}${bondForm(ctx, tree, p)}${petForm(ctx, tree, p, Boolean(v.plan))}</div>` : ''}
 
 <section><h2>Timeline</h2>${

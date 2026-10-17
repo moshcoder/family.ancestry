@@ -4,7 +4,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
-import { AncestryClient, ApiError, readConfig, writeConfig, configPath, type PersonDetail, type TreeSummary } from './client.js'
+import { AncestryClient, ApiError, readConfig, writeConfig, configPath, type BusinessDetail, type BusinessSummary, type PersonDetail, type TreeSummary } from './client.js'
 import { VERSION } from './html.js'
 
 const HELP = `ancestry ${VERSION}: private family trees, from the terminal
@@ -26,6 +26,15 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
   ancestry pet <owner> <name> [--species Dog] [--born DATE]   (Family plan)
   ancestry plan [buy --chain USDC_POL]     the one-time Family plan for this tree
   ancestry claim [person]           say which person you are (or add yourself)
+  ancestry businesses [search]      family businesses (search matches names, trades, towns, people)
+  ancestry business <name|id>       one business and its people
+  ancestry business add <name> [--category Plumbing] [--founded D] [--closed D] [--place P]
+               [--website W] [--note TEXT] [--founder P | --owner P | --partner P | --investor P | --employee P]
+  ancestry business role <business> <person> <founder|owner|partner|investor|officer|manager|employee|apprentice|other>
+               [--title T] [--from D] [--to D]         (role rm <role-id> removes one)
+  ancestry business edit <business> --field value ...   (same flags as add)
+  ancestry business rm <business>
+  ancestry business link <business> <contact>     link it to one of your Network contacts (--create adds it)
   ancestry local [search] [--category Plumber]   businesses people you know recommend
   ancestry local add <name> --category C [--town T] [--phone P] [--website W] [--note TEXT]
                                     recommend a business to everyone who knows you
@@ -78,7 +87,7 @@ export function parseArgs(argv: string[]): Args {
     if (m) {
       const key = short[m[1]!] ?? m[1]!
       if (m[2] !== undefined) out.flags[key] = m[2]
-      else if (argv[i + 1] !== undefined && !argv[i + 1]!.startsWith('-') && !['living', 'json', 'privacy', 'help', 'version', 'full', 'raised'].includes(key)) out.flags[key] = argv[++i]!
+      else if (argv[i + 1] !== undefined && !argv[i + 1]!.startsWith('-') && !['living', 'json', 'privacy', 'help', 'version', 'full', 'raised', 'create'].includes(key)) out.flags[key] = argv[++i]!
       else out.flags[key] = true
     } else out._.push(a)
   }
@@ -183,6 +192,48 @@ async function pickPerson(client: AncestryClient, tree: string, ref: string | un
   throw new Error(`"${ref}" matches ${found.length} people:\n${found.map((p) => `  ${p.id}  ${p.name} ${years(p)}`).join('\n')}`)
 }
 
+/** A business id, or a name to search for (must match exactly one). */
+async function pickBusiness(client: AncestryClient, tree: string, ref: string | undefined): Promise<string> {
+  if (!ref) throw new Error('which business? give an id or a name')
+  if (/^[A-Za-z0-9_-]{12}$/.test(ref)) {
+    const hit = await client.business(tree, ref).catch((error) => (error instanceof ApiError && error.status === 404 ? null : Promise.reject(error)))
+    if (hit) return hit.id
+  }
+  const found = await client.businesses(tree, ref, 10)
+  const exact = found.filter((b) => b.name.toLowerCase() === ref.toLowerCase())
+  if (found.length === 1 || exact.length === 1) return (exact[0] ?? found[0])!.id
+  if (!found.length) throw new Error(`no business matches "${ref}"`)
+  throw new Error(`"${ref}" matches ${found.length} businesses:\n${found.map((b) => `  ${b.id}  ${b.name}`).join('\n')}`)
+}
+
+/** Flags to business fields. */
+export function businessFields(flags: Record<string, string | true>): Record<string, unknown> {
+  const map: Record<string, string> = { name: 'name', category: 'category', kind: 'category', founded: 'founded', closed: 'closed', place: 'place', town: 'place', website: 'website', note: 'notes', notes: 'notes' }
+  const out: Record<string, unknown> = {}
+  for (const [flag, field] of Object.entries(map)) if (typeof flags[flag] === 'string') out[field] = flags[flag]
+  return out
+}
+
+const bizYears = (b: { founded: string | null; closed: string | null }) => {
+  const y = (d: string | null) => d?.match(/\b(\d{4})\b/)?.[1]
+  return b.founded || b.closed ? `(${y(b.founded) ?? '?'}–${y(b.closed) ?? ''})` : ''
+}
+
+export const formatBusinessLine = (b: BusinessSummary) => `${b.id}  ${b.name} ${bizYears(b)}${b.category ? `  ${b.category}` : ''}${b.place ? `, ${b.place}` : ''}`
+
+export function formatBusiness(b: BusinessSummary | BusinessDetail): string {
+  const lines = [`${b.name} ${bizYears(b)}`, `  id ${b.id}  ${b.url}`]
+  if (b.category) lines.push(`  what    ${b.category}`)
+  if (b.founded) lines.push(`  founded ${b.founded}`)
+  if (b.closed) lines.push(`  closed  ${b.closed}`)
+  if (b.place) lines.push(`  where   ${b.place}`)
+  if (b.website) lines.push(`  web     ${b.website}`)
+  if ('contact' in b && b.contact) lines.push(`  in your network: ${b.contact.name} [${b.contact.id}]`)
+  for (const r of b.people) lines.push(`  ${r.label.toLowerCase()} ${r.name} [${r.id}]${r.start_date || r.end_date ? ` ${r.start_date ?? '?'}–${r.end_date ?? ''}` : ''}  (role ${r.role_id})`)
+  if (b.notes) lines.push('', ...b.notes.split('\n').map((l) => `  ${l}`))
+  return lines.join('\n')
+}
+
 const years = (p: { birth_date: string | null; death_date: string | null }) => {
   const y = (d: string | null) => d?.match(/\b(\d{4})\b/)?.[1]
   const b = y(p.birth_date)
@@ -199,6 +250,7 @@ export function formatPerson(p: PersonDetail): string {
   if (p.siblings?.length) lines.push(`  siblings ${p.siblings.map((x) => `${x.name}${x.kind !== 'full' ? ` (${x.kind})` : ''}`).join(', ')}`)
   for (const b of p.bonds ?? []) lines.push(`  ${b.label.toLowerCase()} ${b.other.name} [${b.other.id}]${b.note ? `, ${b.note}` : ''}`)
   if (p.pets?.length) lines.push(`  pets ${p.pets.map((x) => `${x.name}${x.species ? ` (${x.species})` : ''}`).join(', ')}`)
+  for (const b of p.businesses ?? []) lines.push(`  ${b.label.toLowerCase()} ${b.business.name} [${b.business.id}]${b.start_date || b.end_date ? ` ${b.start_date ?? '?'}–${b.end_date ?? ''}` : ''}`)
   for (const u of p.unions) {
     lines.push(`  ${u.kind} ${u.partner ? `${u.partner.name} [${u.partner.id}]` : 'unknown partner'}${u.start_date ? ` ${u.start_date}` : ''}${u.end_date ? `, ended ${u.end_date}` : ''}`)
     for (const c of u.children) lines.push(`    child ${c.name} [${c.id}]`)
@@ -344,8 +396,65 @@ export async function runCli(argv: string[]): Promise<number> {
         console.log(`Default tree: ${tree.name} (${tree.id})`)
         return 0
       }
-      case 'people':
       case 'search': {
+        const tree = await pickTree(client, f.tree)
+        const r = await client.search(tree.id, rest.join(' '), Number(f.limit) || 100)
+        print(r, () => [...r.people.map((p) => `${p.id}  ${p.name} ${years(p)}`), ...r.businesses.map((b) => `${formatBusinessLine(b)}  [business]`)].join('\n') || 'Nothing found.')
+        return 0
+      }
+      case 'businesses': {
+        const tree = await pickTree(client, f.tree)
+        const list = await client.businesses(tree.id, rest.join(' '), Number(f.limit) || 200)
+        print(list, () => (list.length ? list.map(formatBusinessLine).join('\n') : 'No businesses found.'))
+        return 0
+      }
+      case 'business': {
+        const tree = await pickTree(client, f.tree)
+        const [sub, ...more] = rest
+        if (sub === 'add') {
+          const name = more.join(' ') || str(f.name)
+          if (!name) throw new Error('ancestry business add <name> [--category C] [--founded D] [--founder PERSON]')
+          const people = []
+          for (const role of ['founder', 'owner', 'partner', 'investor', 'officer', 'manager', 'employee']) if (typeof f[role] === 'string') people.push({ person_id: await pickPerson(client, tree.id, f[role] as string), role, title: str(f.title), start_date: str(f.from), end_date: str(f.to) })
+          const b = await client.addBusiness(tree.id, { ...businessFields(f), name, people })
+          print(b, () => `Added ${b.name} (${b.id}).\n\n${formatBusiness(b)}`)
+          return 0
+        }
+        if (sub === 'role') {
+          if (more[0] === 'rm') {
+            if (!more[1]) throw new Error('ancestry business role rm <role-id>')
+            await client.removeBusinessRole(tree.id, more[1])
+            return console.log('Removed.'), 0
+          }
+          const [biz, who, role] = more
+          if (!biz || !who || !role) throw new Error('ancestry business role <business> <person> <founder|owner|partner|investor|officer|manager|employee|apprentice|other>')
+          const b = await client.addBusinessRole(tree.id, await pickBusiness(client, tree.id, biz), { person_id: await pickPerson(client, tree.id, who), role, title: str(f.title), start_date: str(f.from), end_date: str(f.to), note: str(f.note) })
+          print(b, () => formatBusiness(b))
+          return 0
+        }
+        if (sub === 'edit') {
+          const b = await client.updateBusiness(tree.id, await pickBusiness(client, tree.id, more.join(' ')), businessFields(f))
+          print(b, () => formatBusiness(b))
+          return 0
+        }
+        if (sub === 'rm') {
+          const id = await pickBusiness(client, tree.id, more.join(' '))
+          await client.deleteBusiness(tree.id, id)
+          return console.log(`Deleted ${id}. The people in it stay in the tree.`), 0
+        }
+        if (sub === 'link') {
+          const [biz, ...contact] = more
+          if (!biz || (!contact.length && f.create !== true)) throw new Error('ancestry business link <business> <contact>  (or --create)')
+          const id = await pickBusiness(client, tree.id, biz)
+          const b = await client.linkBusinessContact(tree.id, id, f.create === true ? { create: true } : { contact_id: (await pickContact(client, contact.join(' '))).id })
+          print(b, () => (b.contact ? `${b.name} is linked to ${b.contact.name} in your network.` : 'Unlinked.'))
+          return 0
+        }
+        const b = await client.business(tree.id, await pickBusiness(client, tree.id, rest.join(' ')))
+        print(b, () => formatBusiness(b))
+        return 0
+      }
+      case 'people': {
         const tree = await pickTree(client, f.tree)
         const people = await client.people(tree.id, rest.join(' '), Number(f.limit) || 200)
         print(people, () => (people.length ? people.map((p) => `${p.id}  ${p.name} ${years(p)}${p.birth_place ? `  ${p.birth_place}` : ''}`).join('\n') : 'Nobody found.'))
