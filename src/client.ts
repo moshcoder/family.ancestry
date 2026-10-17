@@ -340,6 +340,26 @@ export class AncestryClient {
   invites(tree: string) {
     return this.request<{ invites: { id: string; email: string | null; role: string; person_id: string | null; expires_at: number }[] }>(`/api/v1/trees/${enc(tree)}/invites`).then((r) => r.invites)
   }
+  // ---- a business's team: invited to the business, never to the tree ----
+  team(tree: string, biz: string) {
+    return this.request<{ members: { user_id: string; name: string | null; email?: string; role: string; title: string | null }[]; invites?: { email: string; role: string; title: string | null }[]; requests?: { id: string; name: string; email: string; role: string; note: string | null }[]; listed?: boolean; listing?: string | null }>(`/api/v1/trees/${enc(tree)}/businesses/${enc(biz)}/team`)
+  }
+  inviteToTeam(tree: string, biz: string, body: { email: string; role?: string; title?: string; note?: string }) {
+    return this.request<{ result: string }>(`/api/v1/trees/${enc(tree)}/businesses/${enc(biz)}/team`, { method: 'POST', json: body }).then((r) => r.result)
+  }
+  removeFromTeam(tree: string, biz: string, user: string) {
+    return this.request<{ ok: boolean }>(`/api/v1/trees/${enc(tree)}/businesses/${enc(biz)}/team/${enc(user)}`, { method: 'DELETE' })
+  }
+  answerTeamRequest(tree: string, biz: string, id: string, answer: 'invite' | 'decline') {
+    return this.request<{ result: string }>(`/api/v1/trees/${enc(tree)}/businesses/${enc(biz)}/requests/${enc(id)}/${answer}`, { method: 'POST', json: {} }).then((r) => r.result)
+  }
+  setBusinessListing(tree: string, biz: string, body: { listed?: boolean; listing?: string | null }) {
+    return this.request<{ listed: boolean; listing: string | null; url: string }>(`/api/v1/trees/${enc(tree)}/businesses/${enc(biz)}/listing`, { method: 'POST', json: body })
+  }
+  work() {
+    return this.request<{ businesses: { id: string; name: string; category: string | null; role: string; title: string | null; url: string }[] }>('/api/v1/work').then((r) => r.businesses)
+  }
+
   // ---- listed families: found, never seen ----
   families(q = '') {
     return this.request<{ families: { id: string; name: string; listing: string | null }[] }>(`/api/v1/families?q=${encodeURIComponent(q)}`).then((r) => r.families)

@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.9.0'
+export const VERSION = '0.10.0'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -146,14 +146,14 @@ export function messagePage(ctx: Ctx, title: string, message: string, status = '
 
 // ---- trees -----------------------------------------------------------------
 
-export function treesPage(ctx: Ctx, trees: (Tree & { role: Role; people: number })[]): string {
+export function treesPage(ctx: Ctx, trees: (Tree & { role: Role; people: number })[], work: { id: string; name: string }[] = []): string {
   const list = trees.length
     ? `<ul class="cards">${trees.map((t) => `<li><a href="/t/${t.id}"><h3>${esc(t.name)}</h3><p class="muted">${t.people} ${t.people === 1 ? 'person' : 'people'} · ${t.role}</p>${t.description ? `<p>${esc(t.description)}</p>` : ''}</a></li>`).join('')}</ul>`
     : '<p class="empty">No trees yet. Start one below, or import a GEDCOM file from another site.</p>'
   return layout(
     ctx,
     'Your trees',
-    `<h1>Your trees</h1>${list}
+    `<h1>Your trees</h1>${list}${work.length ? `<section class="panel"><h2>Where you work</h2><ul>${work.map((b) => `<li><a href="/w/${b.id}">${esc(b.name)}</a></li>`).join('')}</ul></section>` : ''}
 <div class="split">
 <form method="post" action="/trees" class="panel">${csrfField(ctx)}<h2>Start a tree</h2>
   <label>Name<input name="name" required maxlength="200" placeholder="The Ettinger family"></label>

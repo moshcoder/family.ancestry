@@ -102,14 +102,14 @@ export class Listings {
 
 const SAME_ANSWER = 'Thanks. Your request is with the family. If they know you, an invite will arrive by email.'
 
-export function directoryPage(ctx: Ctx, trees: Listed[], q: string): string {
+export function directoryPage(ctx: Ctx, trees: Listed[], q: string, more = ''): string {
   return layout(
     ctx,
     'Find your family',
     `<h1>Find your family</h1>
 <p class="muted">Families who chose to be found. Every tree here is private: you see its name and a note from the family, never the people in it. Ask, and the family decides whether to invite you.</p>
 <form class="search" method="get" action="/families"><input name="q" value="${esc(q)}" placeholder="A surname, a town, a family name" aria-label="Search families"><button>Search</button></form>
-${trees.length ? `<ul class="families">${trees.map((t) => `<li><a href="/families/${t.id}"><b>${esc(t.name)}</b></a>${t.listing ? `<br><span class="muted small">${esc(t.listing)}</span>` : ''}</li>`).join('')}</ul>` : `<p class="empty">${q ? 'No listed family matches that.' : 'No families listed yet.'}</p>`}`,
+${trees.length ? `<ul class="families">${trees.map((t) => `<li><a href="/families/${t.id}"><b>${esc(t.name)}</b></a>${t.listing ? `<br><span class="muted small">${esc(t.listing)}</span>` : ''}</li>`).join('')}</ul>` : `<p class="empty">${q ? 'No listed family matches that.' : 'No families listed yet.'}</p>`}${more}`,
     { crumbs: [['', 'Families']] },
   )
 }
@@ -169,6 +169,8 @@ export type ListingDeps = {
   form: (c: Context) => Promise<Record<string, any>>
   treeFor: (c: Context, need?: 'view' | 'edit' | 'manage' | 'owner') => { error: Response } | { error?: undefined; tree: Tree; role: Role; user: User }
   mail: (m: Mail) => Promise<void>
+  /** More of the directory under the families (listed businesses, src/team.ts). */
+  more?: (q: string) => string
   /** The caller's address, for the request limits. */
   ip: (c: Context) => string
   /** Requests per key: an address, a tree, an email. */
@@ -211,7 +213,7 @@ export function mountListings(app: Hono<any>, api: Hono<any>, d: ListingDeps) {
 
   app.get('/families', (c) => {
     const q = (c.req.query('q') ?? '').slice(0, 200)
-    return c.html(directoryPage(d.ctx(c), listings.directory(q), q))
+    return c.html(directoryPage(d.ctx(c), listings.directory(q), q, d.more?.(q) ?? ''))
   })
   app.get('/families/:tree', (c) => {
     const t = listings.listed(c.req.param('tree'))

@@ -12,7 +12,7 @@ import { RING_PLACEHOLDER, ringBar, startRingRefresh, visitorOnMoshpit } from '.
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { createBridgeClient } from '@profullstack/bridges'
 import { join } from 'node:path'
-import { BONDS, CHILD_RELATIONS, Store, UNION_KINDS, bondKind, canEdit, canManage, grantable, inviteRole, fullName, type InviteRole, newId, type Person, type Role, type Tree, type User } from './db.js'
+import { BONDS, CHILD_RELATIONS, Store, UNION_KINDS, bondKind, canEdit, canManage, grantable, inviteRole, fullName, type Business, type InviteRole, newId, type Person, type Role, type Tree, type User } from './db.js'
 import { Auth, SESSION_COOKIE, consoleMailer, resendMailer, safeNext, validEmail, type Mailer } from './auth.js'
 import { exportGedcom, importGedcom, describeImport } from './gedcom.js'
 import { describeRelation } from './relate.js'
@@ -24,6 +24,7 @@ import { Local, mountLocal } from './local.js'
 import { mountBusinesses, personBusinesses, personBusinessesOut } from './business.js'
 import { mountAlbums } from './album.js'
 import { listingPanel, Listings, mountListings } from './listing.js'
+import { businessDirectory, mountTeams, teamPanel, Teams } from './team.js'
 import { changesTree, lifeEventForm, lifeKey, recordLifeEvent, timeline as lifeTimeline } from './life.js'
 import { addonsPanel, inviteFriendBox, personNetworkBox, profileInvite } from './network-html.js'
 
@@ -110,6 +111,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   const askTreeLimit = limiter(50, 24 * 60 * 60_000)
   const askLimit = (key: string) => (key.startsWith('ip:') ? askIpLimit(key) : key.startsWith('email:') ? askEmailLimit(key) : askTreeLimit(key))
   const listings = new Listings(store)
+  const teams = new Teams(store)
   const secure = (c: Context) => (c.req.header('x-forwarded-proto') ?? new URL(c.req.url).protocol.replace(':', '')) === 'https'
   const ip = (c: Context) => c.req.header('x-real-ip') ?? c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? 'local'
 
@@ -387,7 +389,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
 
   const needUser = (c: Context) => (c.get('user') ? null : c.redirect(`/signin?next=${encodeURIComponent(c.req.path)}`))
 
-  app.get('/trees', (c) => needUser(c) ?? c.html(html.treesPage(ctx(c), store.treesFor(c.get('user')!.id))))
+  app.get('/trees', (c) => needUser(c) ?? c.html(html.treesPage(ctx(c), store.treesFor(c.get('user')!.id), teams.workplaces(c.get('user')!.id))))
   app.post('/trees', async (c) => {
     if (needUser(c)) return needUser(c)!
     const body = await form(c)
@@ -1139,8 +1141,11 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   })
   mountLocal(app, api, { local: new Local(store, net), ctx, form })
   // Free on every tree; never behind the Family plan.
-  mountBusinesses(app, api, { store, net, site, ctx, form, treeFor, pickId, image: { types: IMAGE_TYPES, max: MAX_PHOTO } })
-  mountListings(app, api, { store, listings, net, site: publicSite, ctx, form, treeFor, mail: (m) => auth.mail(m), ip, limit: askLimit, inviteToTree })
+  // A business's team: invited to the business, never to the tree.
+  const team = (cx: html.Ctx, tree: Tree, role: Role, b: Business) => teamPanel(cx, tree, role, b, { members: teams.members(b.id), pending: canEdit(role) ? teams.pendingInvites(b.id) : [], waiting: canEdit(role) ? teams.waiting(b.id) : [], settings: teams.settings(b.id) })
+  mountBusinesses(app, api, { store, net, site, ctx, form, treeFor, pickId, image: { types: IMAGE_TYPES, max: MAX_PHOTO }, team })
+  mountTeams(app, api, { store, teams, net, site: publicSite, ctx, form, treeFor, mail: (m) => auth.mail(m), ip, inviteLimit: senderLimit, askLimit })
+  mountListings(app, api, { store, listings, net, site: publicSite, ctx, form, treeFor, mail: (m) => auth.mail(m), ip, limit: askLimit, inviteToTree, more: (q) => businessDirectory(teams.directory(q)) })
   mountAlbums(app, api, { store, site, ctx, form, treeFor, image: { types: IMAGE_TYPES, max: MAX_PHOTO } })
   app.route('/api/v1', api)
 
