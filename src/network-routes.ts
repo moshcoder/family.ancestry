@@ -48,6 +48,8 @@ export function mountNetwork(app: Hono<any>, api: Hono<any>, d: NetworkDeps) {
       return `You're already connected with ${contactName(contact)}.`
     }
     if (existing && net.blocked(existing.id, from.id)) return `Request sent to ${email}.` // never reveal a block
+    const pending = net.pendingRequest(from.id, email)
+    if (pending) return `You already asked ${email} on ${new Date(pending.created_at).toISOString().slice(0, 10)}; waiting for them to say yes.`
     if (!d.limits.invite(`invite:${from.id}`) || !d.limits.invite(`to:${email}`)) return 'That is a lot of invitations for one day. Try again tomorrow.'
     const token = net.createConnectRequest(from.id, email, contact.circle, contact.id, note)
     const url = `${site}/network/accept/${token}`
@@ -153,9 +155,10 @@ export function mountNetwork(app: Hono<any>, api: Hono<any>, d: NetworkDeps) {
   app.post('/network/contacts', async (c) => {
     if (needUser(c)) return needUser(c)!
     const body = await d.form(c)
-    const contact = net.addContact(user(c)!.id, body)
-    if (!truthy(body.connect) || !contact.emails.length) return c.redirect(`/network/c/${contact.id}`)
-    return c.redirect(back(`/network/c/${contact.id}`, await askToConnect(user(c)!, contact, body.note_to_them ? String(body.note_to_them) : null)))
+    const { contact, merged } = net.addOrMerge(user(c)!.id, body)
+    const already = merged ? `${contactName(contact)} was already in your network; updated.` : ''
+    if (!truthy(body.connect) || !contact.emails.length) return c.redirect(already ? back(`/network/c/${contact.id}`, already) : `/network/c/${contact.id}`)
+    return c.redirect(back(`/network/c/${contact.id}`, `${already ? `${already} ` : ''}` + await askToConnect(user(c)!, contact, body.note_to_them ? String(body.note_to_them) : null)))
   })
   app.post('/t/:tree/p/:person/network', async (c) => {
     const t = d.treeFor(c)
@@ -308,8 +311,8 @@ export function mountNetwork(app: Hono<any>, api: Hono<any>, d: NetworkDeps) {
     const body = await json(c)
     if (!String(body.name ?? '').trim() && !body.emails && !body.email) return c.json({ error: 'give a name or an email' }, 400)
     if (body.email && !body.emails) body.emails = [String(body.email)]
-    const contact = net.addContact(user(c)!.id, body)
-    if (!body.connect || !contact.emails.length) return c.json({ contact }, 201)
+    const { contact, merged } = net.addOrMerge(user(c)!.id, body)
+    if (!body.connect || !contact.emails.length) return c.json({ contact, merged }, merged ? 200 : 201)
     return c.json({ contact, result: await askToConnect(user(c)!, contact, body.note_to_them ? String(body.note_to_them) : null) }, 201)
   })
   /** {circle, email, relationship, connect, note}: someone in the tree, into your network. */

@@ -310,5 +310,17 @@ describe('join the family', () => {
     expect(decodeURIComponent(form.headers.get('location')!)).toContain('Request sent to lee@example.com.')
     expect(w.mail.at(-1)!.text).toContain('Hi Lee')
     expect(w.net.contactByEmail(me.id, 'lee@example.com')!.notes).toBe('met at camp')
+
+    // The same friend twice: one contact, filled in, and no second email while the first waits.
+    const sent = w.mail.length
+    const again = await mine.post('/network/contacts', { name: 'Lee Park', emails: 'LEE@example.com', phones: '555 0100', relationship: 'camp friend', circle: 'friends', connect: '1' })
+    const msg = decodeURIComponent(again.headers.get('location')!)
+    expect(msg).toContain('Lee was already in your network; updated.')
+    expect(msg).toContain('You already asked lee@example.com on')
+    expect(w.mail.length).toBe(sent)
+    expect(w.net.contacts(me.id).filter((x) => x.emails.some((e) => e.value === 'lee@example.com'))).toHaveLength(1)
+    expect(w.net.contactByEmail(me.id, 'lee@example.com')).toMatchObject({ name: 'Lee', relationship: 'camp friend', notes: 'met at camp', phones: [{ label: null, value: '555 0100' }] })
+    const kurtAgain = await mine.post(`/t/${tree.id}/p/${kurt.id}/network`, { email: 'kurt2@example.com', connect: '1' })
+    expect(decodeURIComponent(kurtAgain.headers.get('location')!)).toContain('Request sent to kurt2@example.com.')
   })
 })
