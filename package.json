@@ -1,0 +1,43 @@
+{
+  "name": "familyancestry",
+  "version": "0.1.0",
+  "description": "family.ancestry: private family trees for your family. GEDCOM import/export, pedigree and descendant charts, photos, sources, invites. Web app (PWA), API, CLI, TUI, MCP server and desktop app.",
+  "license": "MIT",
+  "type": "module",
+  "homepage": "https://family.ancestry",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/moshcoder/family.ancestry.git"
+  },
+  "bin": {
+    "ancestry": "bin/ancestry"
+  },
+  "files": [
+    "bin/ancestry",
+    "src",
+    "public",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "bun": ">=1.1"
+  },
+  "scripts": {
+    "start": "bun src/server.ts",
+    "dev": "bun --watch src/server.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": ["genealogy", "family tree", "ancestry", "gedcom", "moshpit", "mcp", "cli", "tui", "pwa"],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@profullstack/hqtui": "^0.10.3",
+    "@simplewebauthn/server": "^14.0.3",
+    "hono": "^4.13.13",
+    "zod": "3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "typescript": "^7.0.2"
+  }
+}
