@@ -3,7 +3,7 @@
  * /api/v1/contacts and /api/v1/inbox. Mounted by createApp next to the trees.
  */
 import type { Context, Hono } from 'hono'
-import type { Store, User } from './db.js'
+import { fullName, type Role, type Store, type Tree, type User } from './db.js'
 import type { Ctx } from './html.js'
 import * as html from './html.js'
 import * as page from './network-html.js'
@@ -21,10 +21,13 @@ export type NetworkDeps = {
   limits: { invite: (key: string) => boolean; message: (key: string) => boolean }
   /** Email a tree invite (the same mail the Members page sends). */
   inviteToTree: (from: User, treeId: string, email: string, role: 'editor' | 'viewer', opts?: { personId?: string | null; note?: string | null }) => Promise<{ url: string; mailed: boolean }>
+  /** The tree and the caller's role in it, or a response that ends the request. */
+  treeFor: (c: Context, need?: 'view' | 'edit' | 'owner') => { error: Response } | { error?: undefined; tree: Tree; role: Role; user: User }
 }
 
 const MAX_VCF = 5 * 1024 * 1024
 const who = (u: Pick<User, 'name' | 'email'>) => u.name ?? u.email
+const truthy = (v: unknown) => v === true || ['1', 'on', 'true', 'yes'].includes(String(v ?? '').toLowerCase())
 
 export function mountNetwork(app: Hono<any>, api: Hono<any>, d: NetworkDeps) {
   const { store, net, site } = d
@@ -80,6 +83,30 @@ export function mountNetwork(app: Hono<any>, api: Hono<any>, d: NetworkDeps) {
     return { rec, to }
   }
 
+  /**
+   * Someone in a tree into your own network ("add a friend"), linked back to their
+   * page. One contact per person: asking again files them under the new circle and
+   * adds the email if it is new. With connect, the same one email "Ask to connect" sends.
+   */
+  async function addFromPerson(u: User, tree: Tree, personId: string, body: Record<string, any>): Promise<{ contact: Contact; result: string } | null> {
+    const person = store.person(tree.id, personId)
+    if (!person || person.kind === 'pet') return null
+    const email = validEmail(body.email)
+    const fields: Record<string, unknown> = { circle: asCircle(body.circle ?? 'friends') }
+    if (body.relationship) fields.relationship = String(body.relationship)
+    let contact = net.contactForPerson(u.id, tree.id, person.id) ?? (email ? net.contactByEmail(u.id, email) : null)
+    if (contact) {
+      if (email && !contact.emails.some((e) => e.value === email)) fields.emails = [...contact.emails, { label: null, value: email }]
+      contact = net.updateContact(u.id, contact.id, fields)!
+      if (!contact.person_id) net.linkContact(u.id, contact.id, { tree_id: tree.id, person_id: person.id })
+    } else {
+      contact = net.addContact(u.id, { ...fields, name: fullName(person), birthday: person.birth_date ?? null, emails: email ? [email] : [] }, { tree_id: tree.id, person_id: person.id })
+    }
+    const added = `${contactName(contact)} is in your ${contact.circle}.`
+    if (!truthy(body.connect)) return { contact, result: added }
+    return { contact, result: contact.emails.length ? `${added} ${await askToConnect(u, contact, body.note ? String(body.note) : null)}` : `${added} Add an email to ask them to connect.` }
+  }
+
   const recsFor = (u: User) => net.recommendationsFor(u.id).map((rec) => ({ rec, from: store.user(rec.from_user)! })).filter((r) => r.from)
 
   async function sendMessage(from: User, to: User, body: string) {
@@ -125,8 +152,17 @@ export function mountNetwork(app: Hono<any>, api: Hono<any>, d: NetworkDeps) {
   })
   app.post('/network/contacts', async (c) => {
     if (needUser(c)) return needUser(c)!
-    const contact = net.addContact(user(c)!.id, await d.form(c))
-    return c.redirect(`/network/c/${contact.id}`)
+    const body = await d.form(c)
+    const contact = net.addContact(user(c)!.id, body)
+    if (!truthy(body.connect) || !contact.emails.length) return c.redirect(`/network/c/${contact.id}`)
+    return c.redirect(back(`/network/c/${contact.id}`, await askToConnect(user(c)!, contact, body.note_to_them ? String(body.note_to_them) : null)))
+  })
+  app.post('/t/:tree/p/:person/network', async (c) => {
+    const t = d.treeFor(c)
+    if (t.error) return t.error
+    const r = await addFromPerson(t.user, t.tree, c.req.param('person')!, await d.form(c))
+    if (!r) return c.html(html.messagePage(d.ctx(c), 'Not found', 'Nobody by that id in this tree.'), 404)
+    return c.redirect(back(`/t/${t.tree.id}/p/${c.req.param('person')}`, r.result))
   })
   app.get('/network/export.vcf', (c) => {
     if (needUser(c)) return needUser(c)!
@@ -272,7 +308,16 @@ export function mountNetwork(app: Hono<any>, api: Hono<any>, d: NetworkDeps) {
     const body = await json(c)
     if (!String(body.name ?? '').trim() && !body.emails && !body.email) return c.json({ error: 'give a name or an email' }, 400)
     if (body.email && !body.emails) body.emails = [String(body.email)]
-    return c.json({ contact: net.addContact(user(c)!.id, body) }, 201)
+    const contact = net.addContact(user(c)!.id, body)
+    if (!body.connect || !contact.emails.length) return c.json({ contact }, 201)
+    return c.json({ contact, result: await askToConnect(user(c)!, contact, body.note_to_them ? String(body.note_to_them) : null) }, 201)
+  })
+  /** {circle, email, relationship, connect, note}: someone in the tree, into your network. */
+  api.post('/trees/:tree/people/:person/contact', async (c) => {
+    const t = d.treeFor(c)
+    if (t.error) return t.error
+    const r = await addFromPerson(t.user, t.tree, c.req.param('person')!, await json(c))
+    return r ? c.json(r, 201) : c.json({ error: 'no such person' }, 404)
   })
   api.get('/contacts/:id', (c) => {
     const contact = net.contact(user(c)!.id, c.req.param('id'))

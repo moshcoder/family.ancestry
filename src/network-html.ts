@@ -46,14 +46,14 @@ export function networkPage(ctx: Ctx, data: { contacts: Contact[]; circle: Circl
 <form class="search" method="get" action="/network">${data.circle ? `<input type="hidden" name="circle" value="${data.circle}">` : ''}<input name="q" value="${esc(data.q)}" placeholder="Search names, emails, companies, places" aria-label="Search contacts"><button>Search</button></form>
 ${list}
 ${adBanner()}
-<details class="panel"${total ? '' : ' open'}><summary>Add someone</summary>${contactForm(ctx, '/network/contacts', null, 'Add to my network', data.circle ?? 'family')}</details>
+<details class="panel"${total ? '' : ' open'}><summary>Add a friend</summary>${contactForm(ctx, '/network/contacts', null, 'Add to my network', data.circle ?? 'friends', { connect: true })}</details>
 <details class="panel"><summary>Import contacts</summary><form method="post" action="/network/import" enctype="multipart/form-data" class="pform">${csrfField(ctx)}<p class="muted small">A .vcf file from your phone, Google Contacts, Outlook or Apple Contacts. People already here (same email) are skipped.</p><div class="grid2"><label>File<input type="file" name="file" accept=".vcf,text/vcard,text/x-vcard" required></label><label>Put them in<select name="circle">${CIRCLES.map((c) => `<option value="${c}">${CIRCLE_LABEL[c]}</option>`).join('')}</select></label></div><button>Import</button></form></details>
 ${principles}`,
     { crumbs: [['', 'Network']] },
   )
 }
 
-export function contactForm(ctx: Ctx, action: string, c: Contact | null, label: string, circle: Circle = 'family'): string {
+export function contactForm(ctx: Ctx, action: string, c: Contact | null, label: string, circle: Circle = 'family', opts: { connect?: boolean } = {}): string {
   const v = (k: keyof Contact) => esc((c?.[k] as string | null) ?? '')
   const current = c?.circle ?? circle
   return `<form method="post" action="${esc(action)}" class="pform">${csrfField(ctx)}
@@ -63,6 +63,7 @@ export function contactForm(ctx: Ctx, action: string, c: Contact | null, label: 
   <label>Addresses <span class="muted small">a blank line between addresses; "home:" before the first line labels it</span><textarea name="addresses" rows="3">${esc(formatAddresses(c?.addresses ?? []))}</textarea></label>
   <div class="grid3"><label>Birthday<input name="birthday" value="${v('birthday')}" maxlength="200" placeholder="14 MAY 1958"></label><label>Anniversary<input name="anniversary" value="${v('anniversary')}" maxlength="200"></label><label>Links <span class="muted small">one per line</span><textarea name="links" rows="1">${esc(formatLabeled(c?.links ?? []))}</textarea></label></div>
   <label>Notes<textarea name="notes" rows="3" maxlength="20000">${v('notes')}</textarea></label>
+  ${opts.connect ? connectFields('note_to_them') : ''}
   <button>${esc(label)}</button></form>`
 }
 
@@ -166,6 +167,24 @@ ${
 }`,
     { crumbs: [['/inbox', 'Inbox'], ['', who(other)]] },
   )
+}
+
+/** "Also email them to connect", for any form that adds someone with an email. */
+const connectFields = (noteName: string) =>
+  `<label class="check"><input type="checkbox" name="connect" value="1" checked> Email them to connect <span class="muted small">one email from you; if they say yes you can message each other here</span></label>
+  <label>A line from you (optional)<input name="${noteName}" maxlength="1000" placeholder="It's Tony, finally got us all on here"></label>`
+
+/**
+ * On a person's page: add them to your own network, the way you add a friend. Once
+ * they are in it, a button to their card instead. Private to you, like every contact.
+ */
+export function personNetworkBox(ctx: Ctx, tree: Tree, person: Person, contact: Contact | null): string {
+  if (contact) return `<a class="btn" href="/network/c/${contact.id}">In my network · ${CIRCLE_LABEL[contact.circle]}</a>`
+  const name = person.given || fullName(person)
+  return `<details class="mini"><summary>Add ${esc(name)} to my network</summary><form method="post" action="/t/${tree.id}/p/${person.id}/network" class="pform">${csrfField(ctx)}
+<div class="grid3"><label>Circle<select name="circle">${CIRCLES.map((x) => `<option value="${x}"${x === 'friends' ? ' selected' : ''}>${CIRCLE_LABEL[x]}</option>`).join('')}</select></label><label>Their email<input name="email" type="email" placeholder="${esc(name.toLowerCase().replace(/\W+/g, '') || 'them')}@example.com"></label><label>How you know them<input name="relationship" maxlength="200" placeholder="cousin, college roommate"></label></div>
+${connectFields('note')}
+<p class="muted small">Your network is private to you: ${esc(name)} sees nothing unless you ask to connect.</p><button>Add to my network</button></form></details>`
 }
 
 /** The quiet offer under a person's name: invite them to be themselves in the tree. */

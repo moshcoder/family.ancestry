@@ -60,6 +60,9 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
   ancestry contacts [search] [--circle family|friends|neighbors|business]
   ancestry contact add --name N [--email E] [--phone P] [--circle C] [--relationship R]
                [--company C] [--title T] [--birthday D] [--address TEXT] [--link URL] [--note TEXT]
+               [--connect [--say TEXT]]   also email them to connect
+  ancestry contact add --person <person> [--circle friends] [--email E] [--connect [--say TEXT]]
+                                    someone in your tree, into your network (add a friend)
   ancestry contact <name|id>        everything about one contact   (contact rm <id> removes)
   ancestry contacts import <file.vcf> [--circle C] | export [-o file.vcf]
   ancestry connect <contact> [--note TEXT]   ask them to connect (one email)
@@ -675,9 +678,15 @@ export async function runCli(argv: string[]): Promise<number> {
         return 0
       }
       case 'contact': {
+        if (rest[0] === 'add' && typeof f.person === 'string') {
+          const tree = await pickTree(client, f.tree)
+          const r = await client.addPersonToNetwork(tree.id, await pickPerson(client, tree.id, f.person), { circle: str(f.circle), email: str(f.email), relationship: str(f.relationship), connect: f.connect === true, note: str(f.say) })
+          print(r, () => `${r.result} (${r.contact.id})`)
+          return 0
+        }
         if (rest[0] === 'add') {
-          const c = await client.addContact(contactFields(f))
-          print(c, () => `Added ${c.name || c.emails[0]?.value} (${c.id}).`)
+          const c = await client.addContact({ ...contactFields(f), connect: f.connect === true, note_to_them: str(f.say) })
+          print(c, () => `Added ${c.name || c.emails[0]?.value} (${c.id}).${c.result ? ` ${c.result}` : ''}`)
           return 0
         }
         if (rest[0] === 'rm' || rest[0] === 'remove') {

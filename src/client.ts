@@ -352,7 +352,12 @@ export class AncestryClient {
     return this.request<{ contact: ContactSummary }>(`/api/v1/contacts/${enc(id)}`).then((r) => r.contact)
   }
   addContact(fields: Record<string, unknown>) {
-    return this.request<{ contact: ContactSummary }>('/api/v1/contacts', { method: 'POST', json: fields }).then((r) => r.contact)
+    // With connect: true, result says whether the email to connect went out.
+    return this.request<{ contact: ContactSummary; result?: string }>('/api/v1/contacts', { method: 'POST', json: fields }).then((r): ContactSummary & { result?: string } => (r.result ? { ...r.contact, result: r.result } : r.contact))
+  }
+  /** Someone in a tree into your network: {circle, email, relationship, connect, note}. */
+  addPersonToNetwork(tree: string, person: string, body: { circle?: string; email?: string; relationship?: string; connect?: boolean; note?: string }) {
+    return this.request<{ contact: ContactSummary; result: string }>(`/api/v1/trees/${enc(tree)}/people/${enc(person)}/contact`, { method: 'POST', json: body })
   }
   updateContact(id: string, fields: Record<string, unknown>) {
     return this.request<{ contact: ContactSummary }>(`/api/v1/contacts/${enc(id)}`, { method: 'PATCH', json: fields }).then((r) => r.contact)

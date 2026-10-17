@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { BONDS, UNION_KINDS, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.6.0'
+export const VERSION = '0.7.0'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -306,6 +306,8 @@ export type PersonView = {
   invite?: string
   /** Their businesses, already rendered (src/business.ts). */
   businesses?: string
+  /** "Add to my network" or "In my network", already rendered (src/network-html.ts). */
+  network?: string
 }
 
 export function personPage(ctx: Ctx, tree: Tree, role: Role, v: PersonView): string {
@@ -333,6 +335,7 @@ ${facts.map(([k, val]) => `<p><b>${k}</b> ${esc(val)}</p>`).join('')}
 ${v.profile ? `<p class="small muted">${v.self ? 'This is you. Keep it up to date.' : `Managed by ${esc(v.profile.name ?? v.profile.email)}, in the family since ${new Date(v.profile.created_at).getFullYear()}.`}</p>` : (v.invite ?? '')}
 ${v.claimable ? `<form method="post" action="/t/${tree.id}/claim" class="inline" data-confirm="Claim ${esc(fullName(p))} as you? The owner can see who claimed it.">${csrfField(ctx)}<input type="hidden" name="person_id" value="${p.id}"><button class="btn">This is me</button></form>` : ''}
 ${v.welcome && v.self && !p.photo_id ? `<form method="post" action="/t/${tree.id}/p/${p.id}/media" enctype="multipart/form-data" class="panel pform">${csrfField(ctx)}<h2>Add your photo</h2><p class="muted small">So the family knows it's you. JPEG, PNG, WebP or AVIF, under 8 MB.</p><input type="file" name="file" accept="image/*" capture="user" required><button>Upload</button></form>` : ''}
+${v.network ?? ''}
 <div class="actions">${pet ? '' : `<a class="btn" href="/t/${tree.id}/pedigree/${p.id}">Pedigree</a>`}${pet ? '' : `<a class="btn" href="/t/${tree.id}/descendants/${p.id}">Descendants</a><a class="btn" href="/t/${tree.id}/relate?a=${tree.home_person_id ?? ''}&b=${p.id}">Related how?</a>`}${edit && !pet && tree.home_person_id !== p.id ? `<form method="post" action="/t/${tree.id}/home" class="inline">${csrfField(ctx)}<input type="hidden" name="person_id" value="${p.id}"><button class="btn">Make home person</button></form>` : ''}</div></div></div>
 
 ${pet ? '' : `<div class="cols">

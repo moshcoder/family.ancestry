@@ -197,6 +197,12 @@ export class Network {
     return this.contacts(ownerId).find((c) => c.emails.some((e) => e.value === want)) ?? null
   }
 
+  /** The contact you made from someone in a tree: one per person, so the button on their page says "in your network". */
+  contactForPerson(ownerId: string, treeId: string, personId: string): Contact | null {
+    const r = this.db.query<any, [string, string, string]>('SELECT * FROM contacts WHERE owner_id = ? AND tree_id = ? AND person_id = ? ORDER BY created_at LIMIT 1').get(ownerId, treeId, personId)
+    return r ? this.row(r) : null
+  }
+
   circleCounts(ownerId: string): Record<Circle, number> {
     const out: Record<Circle, number> = { family: 0, friends: 0, neighbors: 0, business: 0 }
     for (const r of this.db.query<{ circle: Circle; n: number }, [string]>('SELECT circle, COUNT(*) AS n FROM contacts WHERE owner_id = ? GROUP BY circle').all(ownerId)) if (r.circle in out) out[r.circle] = r.n

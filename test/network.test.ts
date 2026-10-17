@@ -251,4 +251,56 @@ describe('join the family', () => {
     expect((await api(`/contacts/${nb}/recommend`, { method: 'POST', body: JSON.stringify({ to: w.user('x@example.com').id }) })).status).toBe(400)
     expect(await (await b.get('/settings')).text()).toContain('included free')
   })
+
+  test('add a friend from their page in the tree, and ask them to connect in the same step', async () => {
+    const w = world()
+    const me = w.user('me@example.com', 'Me')
+    const viewer = w.user('viewer@example.com', 'Viewer')
+    const tree = w.store.createTree(me.id, 'Fam')
+    w.store.setMember(tree.id, viewer.id, 'viewer')
+    const kurt = w.store.addPerson(tree.id, { given: 'Kurt', surname: 'Rademacher', birth_date: '1960', living: '1' })
+    const dog = w.store.addPet(tree.id, { given: 'Rex', species: 'Dog' }, [kurt.id])
+    const b = w.as(viewer)
+
+    const before = await (await b.get(`/t/${tree.id}/p/${kurt.id}`)).text()
+    expect(before).toContain('Add Kurt to my network')
+    expect(before).toContain(`/t/${tree.id}/p/${kurt.id}/network`)
+
+    // A viewer may add, too: the contact is theirs, not the tree's.
+    const added = await b.post(`/t/${tree.id}/p/${kurt.id}/network`, { circle: 'friends', email: 'Kurt@Example.com', connect: '1', note: 'Hey Kurt' })
+    expect(decodeURIComponent(added.headers.get('location')!)).toContain('Kurt Rademacher is in your friends. Request sent to kurt@example.com.')
+    expect(w.mail.at(-1)!.to).toBe('kurt@example.com')
+    expect(w.mail.at(-1)!.text).toContain('Hey Kurt')
+    const contact = w.net.contactForPerson(viewer.id, tree.id, kurt.id)!
+    expect(contact).toMatchObject({ name: 'Kurt Rademacher', circle: 'friends', birthday: '1960', emails: [{ label: null, value: 'kurt@example.com' }] })
+    expect(w.net.contacts(me.id)).toHaveLength(0)
+    expect(await (await b.get(`/t/${tree.id}/p/${kurt.id}`)).text()).toContain('In my network · Friends')
+    expect(await (await b.get(`/network/c/${contact.id}`)).text()).toContain('In Fam')
+
+    // Again: same contact, new circle, no second row and no email without connect.
+    const mails = w.mail.length
+    await b.post(`/t/${tree.id}/p/${kurt.id}/network`, { circle: 'family' })
+    expect(w.net.contacts(viewer.id)).toHaveLength(1)
+    expect(w.net.contactForPerson(viewer.id, tree.id, kurt.id)!.circle).toBe('family')
+    expect(w.mail.length).toBe(mails)
+
+    // Pets, strangers to the tree and unknown people get nothing.
+    expect((await b.post(`/t/${tree.id}/p/${dog.id}/network`, {})).status).toBe(404)
+    expect((await w.as(w.user('nosy@example.com')).post(`/t/${tree.id}/p/${kurt.id}/network`, {})).status).toBe(404)
+
+    // API, and the one-step "add a friend" form on /network.
+    const token = w.auth.createToken(me.id, 'test')
+    const api = (path: string, body: unknown) => w.app.request(`${SITE}/api/v1${path}`, { method: 'POST', body: JSON.stringify(body), headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' } })
+    const viaApi = (await (await api(`/trees/${tree.id}/people/${kurt.id}/contact`, { relationship: 'brother-in-law' })).json()) as any
+    expect(viaApi.contact).toMatchObject({ name: 'Kurt Rademacher', circle: 'friends', relationship: 'brother-in-law', person_id: kurt.id })
+    expect(viaApi.result).toBe('Kurt Rademacher is in your friends.')
+    const friend = (await (await api('/contacts', { name: 'Pat', email: 'pat@example.com', connect: true })).json()) as any
+    expect(friend.result).toBe('Request sent to pat@example.com.')
+    const mine = w.as(me)
+    expect(await (await mine.get('/network')).text()).toContain('Email them to connect')
+    const form = await mine.post('/network/contacts', { name: 'Lee', emails: 'lee@example.com', circle: 'friends', connect: '1', note_to_them: 'Hi Lee', notes: 'met at camp' })
+    expect(decodeURIComponent(form.headers.get('location')!)).toContain('Request sent to lee@example.com.')
+    expect(w.mail.at(-1)!.text).toContain('Hi Lee')
+    expect(w.net.contactByEmail(me.id, 'lee@example.com')!.notes).toBe('met at camp')
+  })
 })
