@@ -57,10 +57,25 @@ export type Family = {
 }
 export type Event = { id: string; tree_id: string; person_id: string; type: string; date: string | null; place: string | null; description: string | null; created_at: number }
 export type Source = { id: string; tree_id: string; title: string; author: string | null; url: string | null; citation: string | null; created_at: number }
-export type Media = { id: string; tree_id: string; person_id: string | null; filename: string; mime: string; size: number; caption: string | null; created_at: number }
+export type Media = { id: string; tree_id: string; person_id: string | null; business_id?: string | null; filename: string; mime: string; size: number; caption: string | null; created_at: number }
 export type Invite = { id: string; tree_id: string; role: 'editor' | 'viewer'; email: string | null; person_id: string | null; note: string | null; created_by: string; created_at: number; expires_at: number; used_by: string | null }
 export type Association = { id: string; tree_id: string; person_id: string; other_id: string; kind: string; note: string | null; created_at: number }
 export type Payment = { ref: string; tree_id: string; user_id: string; amount_cents: number; currency: string; chain: string | null; status: string; created_at: number; updated_at: number }
+export type Business = {
+  id: string
+  tree_id: string
+  name: string
+  category: string | null
+  founded: string | null
+  closed: string | null
+  place: string | null
+  website: string | null
+  notes: string | null
+  photo_id: string | null
+  created_at: number
+  updated_at: number
+}
+export type BusinessRole = { id: string; tree_id: string; business_id: string; person_id: string; role: string; title: string | null; start_date: string | null; end_date: string | null; note: string | null; created_at: number }
 export type SiblingKind = 'full' | 'half' | 'step' | 'adoptive' | 'foster'
 export type Sibling = { person: Person; kind: SiblingKind; via: Person | null }
 export type PathStep = { person: Person; step: 'self' | 'parent' | 'child' | 'partner'; relation?: string }
@@ -93,6 +108,47 @@ export const bondKind = (value: unknown): string | null => {
   const byLabel = Object.entries(BONDS).find(([, b]) => b.as.toLowerCase() === String(value ?? '').trim().toLowerCase())
   return byLabel?.[0] ?? null
 }
+/**
+ * What a person was to a business. Businesses are their own entries, never
+ * people: they have no parents or partners, so no bloodline walk can reach one.
+ */
+export const BUSINESS_ROLES: Record<string, string> = {
+  founder: 'Founder',
+  owner: 'Owner',
+  partner: 'Partner',
+  investor: 'Investor',
+  officer: 'Officer',
+  manager: 'Manager',
+  employee: 'Employee',
+  apprentice: 'Apprentice',
+  other: 'Other',
+}
+export const businessRole = (value: unknown): string | null => {
+  const v = String(value ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+  if (BUSINESS_ROLES[v]) return v
+  const byLabel = Object.entries(BUSINESS_ROLES).find(([, label]) => label.toLowerCase() === v.replace(/_/g, ' '))
+  return byLabel?.[0] ?? null
+}
+export const BUSINESS_FIELDS = ['name', 'category', 'founded', 'closed', 'place', 'website', 'notes'] as const
+export type BusinessInput = Partial<Pick<Business, (typeof BUSINESS_FIELDS)[number]>>
+
+/** A web address, or nothing: "ettingerplumbing.com" becomes https://ettingerplumbing.com. */
+export const cleanUrl = (value: unknown): string | null => {
+  const url = clean(value, 500)
+  if (!url || !/^(https?:\/\/)?[\w-]+(\.[\w-]+)+(\/\S*)?$/i.test(url)) return null
+  return /^https?:\/\//i.test(url) ? url : `https://${url}`
+}
+
+export function normalizeBusiness(input: Record<string, unknown>): BusinessInput {
+  const out: BusinessInput = {}
+  if ('name' in input) out.name = clean(input.name, 200) ?? ''
+  if ('category' in input) out.category = clean(input.category, 80)
+  for (const key of ['founded', 'closed', 'place'] as const) if (key in input) out[key] = clean(input[key], 200)
+  if ('website' in input) out.website = cleanUrl(input.website)
+  if ('notes' in input) out.notes = clean(input.notes, 20_000)
+  return out
+}
+
 export type PersonInput = Partial<Pick<Person, (typeof PERSON_FIELDS)[number]>>
 
 const SCHEMA = `
@@ -199,6 +255,26 @@ CREATE TABLE IF NOT EXISTS associations (
   UNIQUE (person_id, other_id, kind)
 );
 CREATE INDEX IF NOT EXISTS associations_other ON associations(other_id);
+CREATE TABLE IF NOT EXISTS businesses (
+  id TEXT PRIMARY KEY, tree_id TEXT NOT NULL REFERENCES trees(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, category TEXT, founded TEXT, closed TEXT, place TEXT, website TEXT, notes TEXT, photo_id TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS businesses_tree ON businesses(tree_id, name);
+CREATE TABLE IF NOT EXISTS business_roles (
+  id TEXT PRIMARY KEY, tree_id TEXT NOT NULL REFERENCES trees(id) ON DELETE CASCADE,
+  business_id TEXT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+  role TEXT NOT NULL, title TEXT, start_date TEXT, end_date TEXT, note TEXT, created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS business_roles_business ON business_roles(business_id);
+CREATE INDEX IF NOT EXISTS business_roles_person ON business_roles(person_id);
+CREATE TABLE IF NOT EXISTS business_contacts (
+  business_id TEXT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  contact_id TEXT NOT NULL, created_at INTEGER NOT NULL,
+  PRIMARY KEY (business_id, user_id)
+);
 CREATE TABLE IF NOT EXISTS payments (
   ref TEXT PRIMARY KEY, tree_id TEXT NOT NULL REFERENCES trees(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL, amount_cents INTEGER NOT NULL, currency TEXT NOT NULL, chain TEXT,
@@ -263,6 +339,9 @@ export class Store {
     if (!peopleCols.includes('species')) this.db.run('ALTER TABLE people ADD COLUMN species TEXT')
     const treeCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('trees')").all().map((c) => c.name)
     if (!treeCols.includes('plan_paid_at')) this.db.run('ALTER TABLE trees ADD COLUMN plan_paid_at INTEGER')
+    // 0.5.0: photos of a business.
+    const mediaCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('media')").all().map((c) => c.name)
+    if (!mediaCols.includes('business_id')) this.db.run('ALTER TABLE media ADD COLUMN business_id TEXT REFERENCES businesses(id) ON DELETE SET NULL')
   }
 
   tx<T>(fn: () => T): T {
@@ -825,6 +904,135 @@ export class Store {
       .all(treeId, treeId)
   }
 
+  // ---- businesses: their own entries, linked to the people in them -------
+
+  addBusiness(treeId: string, input: Record<string, unknown>): Business {
+    const b = normalizeBusiness(input)
+    if (!b.name) throw new Error('give the business a name')
+    const id = newId()
+    const now = this.now()
+    this.db
+      .query('INSERT INTO businesses (id,tree_id,name,category,founded,closed,place,website,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .run(id, treeId, b.name, b.category ?? null, b.founded ?? null, b.closed ?? null, b.place ?? null, b.website ?? null, b.notes ?? null, now, now)
+    return this.business(treeId, id)!
+  }
+
+  business(treeId: string, id: string): Business | null {
+    return this.db.query<Business, [string, string]>('SELECT * FROM businesses WHERE tree_id = ? AND id = ?').get(treeId, id) ?? null
+  }
+
+  updateBusiness(treeId: string, id: string, input: Record<string, unknown>): Business | null {
+    const current = this.business(treeId, id)
+    if (!current) return null
+    const b = { ...current, ...normalizeBusiness(input) }
+    if (!b.name) b.name = current.name
+    this.db
+      .query('UPDATE businesses SET name = ?, category = ?, founded = ?, closed = ?, place = ?, website = ?, notes = ?, updated_at = ? WHERE tree_id = ? AND id = ?')
+      .run(b.name, b.category, b.founded, b.closed, b.place, b.website, b.notes, this.now(), treeId, id)
+    return this.business(treeId, id)
+  }
+
+  deleteBusiness(treeId: string, id: string) {
+    this.tx(() => {
+      this.db.query('DELETE FROM media WHERE tree_id = ? AND business_id = ?').run(treeId, id)
+      this.db.query('DELETE FROM businesses WHERE tree_id = ? AND id = ?').run(treeId, id)
+    })
+  }
+
+  businesses(treeId: string, limit = 5000): Business[] {
+    return this.db.query<Business, [string, number]>('SELECT * FROM businesses WHERE tree_id = ? ORDER BY name LIMIT ?').all(treeId, limit)
+  }
+
+  /** Every word must appear in the name, what it does, the place, a date, or the name of someone in it. */
+  searchBusinesses(treeId: string, query: string, limit = 50): Business[] {
+    const words = query.toLowerCase().split(/\s+/).filter(Boolean).slice(0, 6)
+    if (!words.length) return this.businesses(treeId, limit)
+    const people = new Map<string, string>()
+    for (const r of this.db.query<{ business_id: string; given: string; surname: string }, [string]>('SELECT r.business_id, p.given, p.surname FROM business_roles r JOIN people p ON p.id = r.person_id WHERE r.tree_id = ?').all(treeId)) {
+      people.set(r.business_id, `${people.get(r.business_id) ?? ''} ${r.given} ${r.surname}`)
+    }
+    const hay = (b: Business) => [b.name, b.category, b.place, b.founded, b.closed, people.get(b.id)].filter(Boolean).join(' ').toLowerCase()
+    return this.businesses(treeId).filter((b) => words.every((w) => hay(b).includes(w))).slice(0, limit)
+  }
+
+  /** `person` was `role` at `business`, optionally with a title and the years. */
+  addBusinessRole(treeId: string, businessId: string, personId: string, input: { role?: unknown; title?: unknown; start_date?: unknown; end_date?: unknown; note?: unknown }): BusinessRole {
+    const role = businessRole(input.role ?? 'owner')
+    if (!role) throw new Error(`role must be one of: ${Object.keys(BUSINESS_ROLES).join(', ')}`)
+    if (!this.business(treeId, businessId)) throw new Error('no such business in this tree')
+    const person = this.person(treeId, personId)
+    if (!person) throw new Error('that person is not in this tree')
+    if (person.kind === 'pet') throw new Error('pets do not run businesses')
+    const id = newId()
+    this.db
+      .query('INSERT INTO business_roles (id,tree_id,business_id,person_id,role,title,start_date,end_date,note,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+      .run(id, treeId, businessId, personId, role, clean(input.title, 120), clean(input.start_date, 200), clean(input.end_date, 200), clean(input.note, 500), this.now())
+    return this.businessRoleRow(treeId, id)!
+  }
+
+  businessRoleRow(treeId: string, id: string): BusinessRole | null {
+    return this.db.query<BusinessRole, [string, string]>('SELECT * FROM business_roles WHERE tree_id = ? AND id = ?').get(treeId, id) ?? null
+  }
+
+  removeBusinessRole(treeId: string, id: string) {
+    this.db.query('DELETE FROM business_roles WHERE tree_id = ? AND id = ?').run(treeId, id)
+  }
+
+  /** The people in a business: founders first, then owners, partners, investors and staff, earliest first. */
+  businessPeople(treeId: string, businessId: string): (BusinessRole & { person: Person })[] {
+    const order = Object.keys(BUSINESS_ROLES)
+    const rows = this.db.query<BusinessRole, [string, string]>('SELECT * FROM business_roles WHERE tree_id = ? AND business_id = ? ORDER BY start_date IS NULL, start_date, created_at, rowid').all(treeId, businessId)
+    return rows
+      .flatMap((r) => {
+        const person = this.person(treeId, r.person_id)
+        return person ? [{ ...r, person }] : []
+      })
+      .sort((a, b) => order.indexOf(a.role) - order.indexOf(b.role))
+  }
+
+  /** The businesses a person was part of, and as what. */
+  businessesOf(treeId: string, personId: string): (BusinessRole & { business: Business })[] {
+    const rows = this.db.query<BusinessRole, [string, string]>('SELECT * FROM business_roles WHERE tree_id = ? AND person_id = ? ORDER BY start_date IS NULL, start_date, created_at, rowid').all(treeId, personId)
+    return rows.flatMap((r) => {
+      const business = this.business(treeId, r.business_id)
+      return business ? [{ ...r, business }] : []
+    })
+  }
+
+  allBusinessRoles(treeId: string): BusinessRole[] {
+    return this.db.query<BusinessRole, [string]>('SELECT * FROM business_roles WHERE tree_id = ? ORDER BY created_at, rowid').all(treeId)
+  }
+
+  addBusinessMedia(treeId: string, businessId: string, file: { filename: string; mime: string; data: Uint8Array; caption?: string | null }): Media {
+    if (!this.business(treeId, businessId)) throw new Error('no such business in this tree')
+    const id = newId()
+    this.db.query('INSERT INTO media (id,tree_id,person_id,business_id,filename,mime,size,caption,data,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)').run(id, treeId, null, businessId, clean(file.filename, 200) ?? 'photo', file.mime, file.data.byteLength, clean(file.caption, 1000), file.data, this.now())
+    this.db.query('UPDATE businesses SET photo_id = coalesce(photo_id, ?) WHERE id = ?').run(id, businessId)
+    return this.mediaInfo(treeId, id)!
+  }
+
+  businessMedia(treeId: string, businessId: string): Media[] {
+    return this.db.query<Media, [string, string]>('SELECT id,tree_id,person_id,business_id,filename,mime,size,caption,created_at FROM media WHERE tree_id = ? AND business_id = ? ORDER BY created_at').all(treeId, businessId)
+  }
+
+  setBusinessPhoto(treeId: string, businessId: string, mediaId: string | null) {
+    if (mediaId && this.mediaInfo(treeId, mediaId)?.business_id !== businessId) return
+    this.db.query('UPDATE businesses SET photo_id = ? WHERE tree_id = ? AND id = ?').run(mediaId, treeId, businessId)
+  }
+
+  /**
+   * Your own Network contact for this business. Contacts are private, so the
+   * link is per member: each of you sees only your own.
+   */
+  businessContact(businessId: string, userId: string): string | null {
+    return this.db.query<{ contact_id: string }, [string, string]>('SELECT contact_id FROM business_contacts WHERE business_id = ? AND user_id = ?').get(businessId, userId)?.contact_id ?? null
+  }
+
+  setBusinessContact(businessId: string, userId: string, contactId: string | null) {
+    if (!contactId) this.db.query('DELETE FROM business_contacts WHERE business_id = ? AND user_id = ?').run(businessId, userId)
+    else this.db.query('INSERT INTO business_contacts (business_id,user_id,contact_id,created_at) VALUES (?,?,?,?) ON CONFLICT(business_id,user_id) DO UPDATE SET contact_id = excluded.contact_id').run(businessId, userId, contactId, this.now())
+  }
+
   // ---- the Family plan: one payment per tree, for good -------------------
 
   markPaid(treeId: string) {
@@ -926,7 +1134,7 @@ export class Store {
   }
 
   mediaInfo(treeId: string, id: string): Media | null {
-    return this.db.query<Media, [string, string]>('SELECT id,tree_id,person_id,filename,mime,size,caption,created_at FROM media WHERE tree_id = ? AND id = ?').get(treeId, id) ?? null
+    return this.db.query<Media, [string, string]>('SELECT id,tree_id,person_id,business_id,filename,mime,size,caption,created_at FROM media WHERE tree_id = ? AND id = ?').get(treeId, id) ?? null
   }
 
   mediaData(treeId: string, id: string): (Media & { data: Uint8Array }) | null {
@@ -940,6 +1148,7 @@ export class Store {
   deleteMedia(treeId: string, id: string) {
     this.tx(() => {
       this.db.query('UPDATE people SET photo_id = NULL WHERE tree_id = ? AND photo_id = ?').run(treeId, id)
+      this.db.query('UPDATE businesses SET photo_id = NULL WHERE tree_id = ? AND photo_id = ?').run(treeId, id)
       this.db.query('DELETE FROM media WHERE tree_id = ? AND id = ?').run(treeId, id)
     })
   }
@@ -956,6 +1165,7 @@ export class Store {
       pets: one("SELECT COUNT(*) AS n FROM people WHERE tree_id = ? AND kind = 'pet'"),
       families: one('SELECT COUNT(*) AS n FROM families WHERE tree_id = ?'),
       sources: one('SELECT COUNT(*) AS n FROM sources WHERE tree_id = ?'),
+      businesses: one('SELECT COUNT(*) AS n FROM businesses WHERE tree_id = ?'),
       photos: one('SELECT COUNT(*) AS n FROM media WHERE tree_id = ?'),
       surnames: one("SELECT COUNT(DISTINCT surname) AS n FROM people WHERE tree_id = ? AND surname != ''"),
     }

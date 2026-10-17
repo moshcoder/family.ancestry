@@ -121,6 +121,7 @@ export type PersonDetail = PersonSummary & {
   siblings?: { id: string; name: string; kind: string; via: { id: string; name: string } | null }[]
   bonds?: { id: string; kind: string; label: string; other: { id: string; name: string; kind: string }; note: string | null }[]
   pets?: { id: string; name: string; species: string | null }[]
+  businesses?: { role_id: string; business: { id: string; name: string; category: string | null }; role: string; label: string; title: string | null; start_date: string | null; end_date: string | null }[]
   kind?: string
   species?: string | null
 }
@@ -262,6 +263,39 @@ export class AncestryClient {
     return this.request<{ person: PersonDetail }>(`/api/v1/trees/${enc(tree)}/claim`, { method: 'POST', json: body }).then((r) => r.person)
   }
 
+  // ---- businesses: founders, owners, partners, investors, staff ------------
+
+  businesses(tree: string, q = '', limit = 100) {
+    return this.request<{ businesses: BusinessSummary[] }>(`/api/v1/trees/${enc(tree)}/businesses?q=${encodeURIComponent(q)}&limit=${limit}`).then((r) => r.businesses)
+  }
+  business(tree: string, id: string) {
+    return this.request<{ business: BusinessDetail }>(`/api/v1/trees/${enc(tree)}/businesses/${enc(id)}`).then((r) => r.business)
+  }
+  /** {name, category?, founded?, closed?, place?, website?, notes?, people?: [{person_id, role, title?, start_date?, end_date?}]} */
+  addBusiness(tree: string, fields: Record<string, unknown>) {
+    return this.request<{ business: BusinessDetail }>(`/api/v1/trees/${enc(tree)}/businesses`, { method: 'POST', json: fields }).then((r) => r.business)
+  }
+  updateBusiness(tree: string, id: string, fields: Record<string, unknown>) {
+    return this.request<{ business: BusinessDetail }>(`/api/v1/trees/${enc(tree)}/businesses/${enc(id)}`, { method: 'PATCH', json: fields }).then((r) => r.business)
+  }
+  deleteBusiness(tree: string, id: string) {
+    return this.request<{ ok: boolean }>(`/api/v1/trees/${enc(tree)}/businesses/${enc(id)}`, { method: 'DELETE' })
+  }
+  /** {person_id (or given + surname), role, title?, start_date?, end_date?, note?} */
+  addBusinessRole(tree: string, id: string, body: Record<string, unknown>) {
+    return this.request<{ business: BusinessDetail }>(`/api/v1/trees/${enc(tree)}/businesses/${enc(id)}/people`, { method: 'POST', json: body }).then((r) => r.business)
+  }
+  removeBusinessRole(tree: string, roleId: string) {
+    return this.request<{ ok: boolean }>(`/api/v1/trees/${enc(tree)}/business-roles/${enc(roleId)}`, { method: 'DELETE' })
+  }
+  /** Link one of your own Network contacts (null unlinks; create adds the business to your network). */
+  linkBusinessContact(tree: string, id: string, body: { contact_id?: string | null; create?: boolean }) {
+    return this.request<{ business: BusinessDetail }>(`/api/v1/trees/${enc(tree)}/businesses/${enc(id)}/contact`, { method: 'POST', json: body }).then((r) => r.business)
+  }
+  search(tree: string, q: string, limit = 50) {
+    return this.request<{ people: { id: string; name: string; kind: string; birth_date: string | null; death_date: string | null; url: string }[]; businesses: BusinessSummary[] }>(`/api/v1/trees/${enc(tree)}/search?q=${encodeURIComponent(q)}&limit=${limit}`)
+  }
+
   // ---- local recommendations ----------------------------------------------
 
   local(q = '', category?: string) {
@@ -332,6 +366,19 @@ export class AncestryClient {
   }
 }
 
+export type BusinessSummary = {
+  id: string
+  name: string
+  category: string | null
+  founded: string | null
+  closed: string | null
+  place: string | null
+  website: string | null
+  notes: string | null
+  url: string
+  people: { role_id: string; id: string; name: string; role: string; label: string; title: string | null; start_date: string | null; end_date: string | null; note?: string | null }[]
+}
+export type BusinessDetail = BusinessSummary & { photos: { id: string; url: string; caption: string | null }[]; contact: { id: string; name: string } | null }
 export type UserSummary = { id: string; name: string | null; email: string }
 export type MessageSummary = { id: string; sender_id: string; recipient_id: string; body: string; created_at: number }
 export type ContactSummary = {

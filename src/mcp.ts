@@ -12,7 +12,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { AncestryClient } from './client.js'
-import { formatDescendants, formatPedigree, formatPerson } from './cli.js'
+import { formatBusiness, formatDescendants, formatPedigree, formatPerson } from './cli.js'
 import { VERSION } from './html.js'
 
 const text = (value: string) => ({ content: [{ type: 'text', text: value }] })
@@ -38,12 +38,12 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
 
   server.tool(
     'search_people',
-    'Search a family tree by name, place or year. Every word must match. Returns ids to use with the other tools.',
+    'Search the people in a family tree by name, place or year. Every word must match. Returns ids to use with the other tools. Businesses: search_businesses.',
     { tree_id: z.string(), query: z.string().max(200).default(''), limit: z.number().int().min(1).max(500).optional() },
     async ({ tree_id, query, limit }: any) => json((await client.people(tree_id, query, limit ?? 50)).map((p) => ({ id: p.id, name: p.name, birth: [p.birth_date, p.birth_place].filter(Boolean).join(', '), death: [p.death_date, p.death_place].filter(Boolean).join(', '), living: !!p.living }))),
   )
 
-  server.tool('get_person', 'Everything about one person: dates, places, parents, siblings, partners, children, events, sources, notes.', { tree_id: z.string(), person_id: z.string() }, async ({ tree_id, person_id }: any) => text(formatPerson(await client.person(tree_id, person_id))))
+  server.tool('get_person', 'Everything about one person: dates, places, parents, siblings, partners, children, businesses, events, sources, notes.', { tree_id: z.string(), person_id: z.string() }, async ({ tree_id, person_id }: any) => text(formatPerson(await client.person(tree_id, person_id))))
 
   server.tool(
     'add_person',
@@ -80,6 +80,40 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
       return text(`Added ${pet.name} (${pet.id})${pet.species ? `, ${pet.species}` : ''}.`)
     },
   )
+
+  // ---- businesses: their own entries beside the tree, free ----
+  const role = z.enum(['founder', 'owner', 'partner', 'investor', 'officer', 'manager', 'employee', 'apprentice', 'other'])
+  const business = {
+    name: z.string().max(200).optional(),
+    category: z.string().max(80).optional().describe('what it did: "Plumbing", "Farm", "Bakery"'),
+    founded: z.string().max(200).optional(),
+    closed: z.string().max(200).optional(),
+    place: z.string().max(200).optional(),
+    website: z.string().max(500).optional(),
+    notes: z.string().max(20000).optional(),
+  }
+  const roleFields = { role, title: z.string().max(120).optional(), start_date: z.string().max(200).optional(), end_date: z.string().max(200).optional(), note: z.string().max(500).optional() }
+
+  server.tool('search_businesses', 'Search the family businesses in a tree (companies, farms, shops) by name, trade, town, year, or the name of someone in it. Empty query lists them all.', { tree_id: z.string(), query: z.string().max(200).default('') }, async ({ tree_id, query }: any) => json((await client.businesses(tree_id, query, 200)).map((b) => ({ id: b.id, name: b.name, category: b.category, founded: b.founded, closed: b.closed, place: b.place, people: b.people.map((r) => `${r.label}: ${r.name}`) }))))
+  server.tool('get_business', 'One business: what it did, when, where, its website, notes, and its founders, owners, partners, investors and staff (with role ids).', { tree_id: z.string(), business_id: z.string() }, async ({ tree_id, business_id }: any) => text(formatBusiness(await client.business(tree_id, business_id))))
+  server.tool(
+    'add_business',
+    'Add a family business ("Ettinger Plumbing") as its own entry, optionally with the people in it (person ids from search_people). Businesses never appear in pedigree or descendants.',
+    { tree_id: z.string(), ...business, name: z.string().min(1).max(200), people: z.array(z.object({ person_id: z.string(), ...roleFields })).max(50).optional() },
+    async ({ tree_id, ...fields }: any) => {
+      const b = await client.addBusiness(tree_id, fields)
+      return text(`Added ${b.name} (${b.id}).
+
+${formatBusiness(b)}`)
+    },
+  )
+  server.tool('update_business', 'Change facts about a business. Only the fields given are changed.', { tree_id: z.string(), business_id: z.string(), ...business }, async ({ tree_id, business_id, ...fields }: any) => text(formatBusiness(await client.updateBusiness(tree_id, business_id, fields))))
+  server.tool('add_business_role', "Record someone's place in a business: founder, owner, partner, investor, officer, manager, employee, apprentice or other, with an optional title and years.", { tree_id: z.string(), business_id: z.string(), person_id: z.string(), ...roleFields }, async ({ tree_id, business_id, ...body }: any) => text(formatBusiness(await client.addBusinessRole(tree_id, business_id, body))))
+  server.tool('remove_business_role', "Remove one person's role from a business (role_id from get_business). The person stays in the tree.", { tree_id: z.string(), role_id: z.string() }, async ({ tree_id, role_id }: any) => {
+    await client.removeBusinessRole(tree_id, role_id)
+    return text('Removed.')
+  })
+  server.tool('link_business_contact', "Link a business to one of the user's own Network contacts (contact_id from list_contacts), or create: true to add it to their network as a business contact. Private to the user.", { tree_id: z.string(), business_id: z.string(), contact_id: z.string().nullable().optional(), create: z.boolean().optional() }, async ({ tree_id, business_id, ...body }: any) => json(await client.linkBusinessContact(tree_id, business_id, body)))
 
   server.tool(
     'local_recommendations',

@@ -40,6 +40,10 @@ needs [one setting](https://pit.world/connect).
 - **Sources and citations**, so you know where every fact came from.
 - **GEDCOM 5.5.1 import and export.** Bring your tree from Ancestry, FamilySearch,
   MyHeritage, Gramps or RootsMagic, and take it with you. Exports can hide living people.
+- **Family businesses**, free: "Ettinger Plumbing" as its own entry, with its founders,
+  owners, partners, investors and employees (titles and years), founded/closed dates,
+  place, website, notes and photos. On each person's page and in search; never in a
+  pedigree or descendant chart. GEDCOM carries them as a custom `_BUS` record.
 - **Sign in** with an emailed link (which is also sign-up) or a passkey. No passwords.
 
 ## Every surface
@@ -67,6 +71,11 @@ ancestry bond Lily godparent "Aunt Karen"
 ancestry pet Lily Rex --species Dog       # Family plan
 ancestry plan                             # ancestry plan buy --chain USDC_POL
 ancestry claim "Lily Ettinger"            # this is me
+ancestry business add "Ettinger Plumbing" --category Plumbing --founded 1952 --place Sacramento --founder Karl
+ancestry business role "Ettinger Plumbing" Robert owner --title "Master plumber" --from 1971 --to 1990
+ancestry businesses plumbing              # ancestry business "Ettinger Plumbing" shows its people
+ancestry business link "Ettinger Plumbing" "Ettinger office"   # to one of your contacts (or --create)
+ancestry search ettinger                  # people and businesses
 ancestry local plumber                    # who the people you know use
 ancestry local add "Joe's Plumbing" --category Plumber --town Sacramento --note "Came on a Sunday"
 ancestry pedigree Robert -g 4
@@ -90,7 +99,8 @@ server (your own, or `http://127.0.0.1:8792`).
 
 `list_trees`, `search_people`, `get_person`, `add_person`, `update_person`,
 `link_relative` (parent, partner, child, sibling, grandparent), `add_bond`, `add_pet`,
-`family_plan`, `local_recommendations`, `recommend_business`, `add_event`, `pedigree`, `descendants`, `relationship`,
+`family_plan`, `search_businesses`, `get_business`, `add_business`, `update_business`,
+`add_business_role`, `remove_business_role`, `link_business_contact`, `local_recommendations`, `recommend_business`, `add_event`, `pedigree`, `descendants`, `relationship`,
 `export_gedcom`, `import_gedcom`, `invite_to_tree`, `tree_members`, and for the
 network `list_contacts`, `get_contact`, `add_contact`, `update_contact`,
 `connect_contact`, `inbox`, `read_conversation`, `send_message`. The assistant acts
@@ -117,6 +127,11 @@ as you: it sees the trees you see, and changes only the ones you can edit.
 | `GET /api/v1/trees/:tree/export?privacy=1` | GEDCOM |
 | `GET /api/v1/trees/:tree/members` | members, with the person each one is |
 | `GET/POST /api/v1/trees/:tree/invites`, `DELETE .../invites/:id` | pending invites; invite (`{emails, role?, person_id?, note?}`; no emails = a link) |
+| `GET/POST /api/v1/trees/:tree/businesses?q=` | businesses: list or search / add (`{name, category?, founded?, closed?, place?, website?, notes?, people?: [{person_id, role, title?, start_date?, end_date?}]}`) |
+| `GET/PATCH/DELETE /api/v1/trees/:tree/businesses/:id` | one business, with its people, photos and your own linked contact |
+| `POST /api/v1/trees/:tree/businesses/:id/people`, `DELETE .../business-roles/:role` | someone's role (`{person_id or given+surname, role: founder\|owner\|partner\|investor\|officer\|manager\|employee\|apprentice\|other, title?, start_date?, end_date?, note?}`) |
+| `POST /api/v1/trees/:tree/businesses/:id/contact` | link one of your Network contacts (`{contact_id}`, `null` unlinks, `{create: true}` adds it); private to you |
+| `GET /api/v1/trees/:tree/search?q=` | people and businesses at once |
 | `GET /api/v1/local?q=&category=`, `POST /api/v1/local`, `DELETE /api/v1/local/:id` | recommendations from people you know; recommend (`{name, category, town?, phone?, website?, note?}` or `{contact_id}`) |
 | `GET/POST /api/v1/contacts?q=&circle=` | your network: list / add |
 | `GET/PATCH/DELETE /api/v1/contacts/:id` | one contact |
@@ -137,6 +152,23 @@ with the business's webhook pointed at `/webhooks/coinpay`. A payment is written
 before the buyer leaves; the signed webhook settles it, and only a payment we started
 can mark a tree paid. `COINPAY_CHAINS` limits checkout to chains the business holds
 wallets for.
+
+## Businesses
+
+`src/business.ts`. A business is its own table, not a person, so no bloodline walk
+(pedigree, descendants, relationships, siblings) can reach one, and it is free on every
+tree. Roles: founder, owner, partner, investor, officer, manager, employee, apprentice,
+other, each with an optional title, years and note; one person can hold several. A
+member may link a business to one of their own Network contacts; contacts stay
+private, so each member sees only their own link.
+
+In GEDCOM a business is a custom `0 @B1@ _BUS` record (NAME, TYPE, `_FOUNDED`/`_CLOSED`
+with DATE, PLAC, WWW, NOTE, and `_ROLE @I..@` with TYPE, TITL, `_FROM`, `_TO`, NOTE)
+that other programs skip. Each role is also an `OCCU` on the person ("Founder, Ettinger
+Plumbing", `DATE FROM .. TO ..`) marked `2 _BUS @B1@`, so other programs still show
+it; our import skips a marked OCCU and rebuilds the role from `_BUS`, so a round trip
+never doubles anything. A privacy export keeps the business and leaves out what living
+people did.
 
 ## Local
 

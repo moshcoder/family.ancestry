@@ -199,3 +199,6 @@ blockquote.notes { margin: 8px 0; padding: 6px 14px; border-left: 3px solid var(
 .ad-banner_300x250 iframe { width: 300px; height: 250px; }
 @media (max-width: 340px) { .ad-banner_300x250 { margin-inline: calc(50% - 50vw); } }
 ul.plain { list-style: none; padding: 0; }
+/* Businesses: square-ish, so a company never looks like a person. */
+.portrait.biz, .portrait.none.biz { width: 170px; height: 120px; border-radius: 4px; }
+.pl.biz { font-style: italic; }

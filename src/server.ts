@@ -21,6 +21,7 @@ import * as html from './html.js'
 import { Network } from './network.js'
 import { mountNetwork } from './network-routes.js'
 import { Local, mountLocal } from './local.js'
+import { mountBusinesses, personBusinesses, personBusinessesOut } from './business.js'
 import { addonsPanel, profileInvite } from './network-html.js'
 
 type Env = { Variables: { user: User | null; csrf: string; via: 'session' | 'token' | null } }
@@ -368,6 +369,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
         stats: store.stats(t.tree.id),
         home: t.tree.home_person_id ? store.person(t.tree.id, t.tree.home_person_id) : null,
         people: q ? store.search(t.tree.id, q, 200) : store.people(t.tree.id, 500),
+        businesses: q ? store.searchBusinesses(t.tree.id, q, 50) : [],
         surnames: store.surnames(t.tree.id),
         query: q,
         plan: hasPlan(plan, store, t.tree),
@@ -451,6 +453,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
         claimable: !profile && person.kind === 'person' && !person.death_date && !person.death_place && !store.profilePerson(t.tree.id, t.user.id),
         welcome: c.req.query('welcome') === '1',
         invite: invitable ? profileInvite(ctx(c), t.tree, person, { justAdded: c.req.query('added') === '1', owner: t.role === 'owner' }) : '',
+        businesses: personBusinesses(ctx(c), t.tree, t.role, person, store.businessesOf(t.tree.id, person.id), canEdit(t.role) ? store.businesses(t.tree.id) : []),
       }),
     )
   })
@@ -657,6 +660,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     store.addMedia(t.tree.id, c.req.param('person'), { filename: file.name, mime: file.type, data: new Uint8Array(await file.arrayBuffer()), caption: body.caption ?? null })
     return c.redirect(back)
   })
+  const mediaBack = (treeId: string, m: { person_id: string | null; business_id?: string | null } | null) => (m?.person_id ? `/t/${treeId}/p/${m.person_id}` : m?.business_id ? `/t/${treeId}/b/${m.business_id}` : `/t/${treeId}`)
   app.get('/t/:tree/media/:media', (c) => {
     const t = treeFor(c)
     if (t.error) return t.error
@@ -669,14 +673,15 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     if (t.error) return t.error
     const m = store.mediaInfo(t.tree.id, c.req.param('media'))
     if (m?.person_id) store.setPhoto(t.tree.id, m.person_id, m.id)
-    return c.redirect(m?.person_id ? `/t/${t.tree.id}/p/${m.person_id}` : `/t/${t.tree.id}`)
+    if (m?.business_id) store.setBusinessPhoto(t.tree.id, m.business_id, m.id)
+    return c.redirect(mediaBack(t.tree.id, m))
   })
   app.post('/t/:tree/media/:media/delete', (c) => {
     const t = treeFor(c, 'edit')
     if (t.error) return t.error
     const m = store.mediaInfo(t.tree.id, c.req.param('media'))
     store.deleteMedia(t.tree.id, c.req.param('media'))
-    return c.redirect(m?.person_id ? `/t/${t.tree.id}/p/${m.person_id}` : `/t/${t.tree.id}`)
+    return c.redirect(mediaBack(t.tree.id, m))
   })
 
   // charts
@@ -833,6 +838,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
       siblings: store.siblings(treeId, p.id).map((s) => ({ id: s.person.id, name: fullName(s.person), kind: s.kind, via: s.via ? { id: s.via.id, name: fullName(s.via) } : null })),
       bonds: store.bondsFor(treeId, p.id).map((b) => ({ id: b.id, kind: b.kind, label: b.label, other: { id: b.other.id, name: fullName(b.other), kind: b.other.kind }, note: b.note })),
       pets: store.petsOf(treeId, p.id).map((x) => ({ id: x.id, name: fullName(x), species: x.species })),
+      businesses: personBusinessesOut(store, treeId, p.id),
     }
   }
 
@@ -1058,6 +1064,8 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     inviteToTree,
   })
   mountLocal(app, api, { local: new Local(store, net), ctx, form })
+  // Free on every tree; never behind the Family plan.
+  mountBusinesses(app, api, { store, net, site, ctx, form, treeFor, pickId, image: { types: IMAGE_TYPES, max: MAX_PHOTO } })
   app.route('/api/v1', api)
 
   app.notFound((c) => (c.req.path.startsWith('/api/') ? c.json({ error: 'not found' }, 404) : c.html(html.messagePage(ctx(c), 'Not found', 'There is nothing at this address.'), 404)))
