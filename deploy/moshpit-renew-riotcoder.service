@@ -1,0 +1,14 @@
+# Renew the registry-signed certificates for Moshpit names the riotcoder account owns.
+# A second copy of moshpit-renew.service because a renew env holds one owner's API key:
+# riotcoder's names live in /etc/ssl/moshpit-riotcoder so Anthony's key never sees them.
+[Unit]
+Description=Renew riotcoder's Moshpit certificates
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=MOSHPIT_RENEW_ENV=/etc/moshpit/renew-riotcoder.env
+Environment=MOSHPIT_CERTDIR=/etc/ssl/moshpit-riotcoder
+Environment=MOSHPIT_TEMPLATE=/etc/moshpit/riotcoder-origin.conf
+ExecStart=/opt/moshpit/scripts/moshpit-renew.sh
