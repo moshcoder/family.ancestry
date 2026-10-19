@@ -275,11 +275,40 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     return c.html(html.checkEmailPage(ctx(c)))
   })
 
+  const expiredLink = (c: Context) => c.html(html.messagePage(ctx(c), 'That link has expired', 'Sign-in links work once, for 20 minutes. Ask for a new one.', '<p><a class="btn" href="/signin">Sign in</a></p>'), 400)
+  /** A proven address joins the signed-in account; the answer goes back to Settings. */
+  const attached = (c: Context, email: string) => {
+    const outcome = store.attachEmail(c.get('user')!.id, email)
+    if (outcome === 'taken') return c.redirect(`/settings?error=${encodeURIComponent(`${email} already signs in to another family.ancestry account. Sign in with it and delete that account's trees, or ask us to merge the two.`)}`)
+    return c.redirect(`/settings?ok=${encodeURIComponent(outcome === 'added' ? `${email} now signs in to this account.` : `${email} already signs in to this account.`)}`)
+  }
   app.get('/auth/verify', (c) => {
-    const result = auth.consumeLink(c.req.query('token') ?? '')
-    if (!result) return c.html(html.messagePage(ctx(c), 'That link has expired', 'Sign-in links work once, for 20 minutes. Ask for a new one.', '<p><a class="btn" href="/signin">Sign in</a></p>'), 400)
-    signIn(c, result.user)
-    return c.redirect(result.next ?? '/trees')
+    const token = c.req.query('token') ?? ''
+    const link = auth.peekLink(token)
+    if (!link) return expiredLink(c)
+    const me = c.get('user') as User | null
+    // A confirm link from Settings works only where that account is signed in, so nobody can
+    // mail you a link that ties your address to their account.
+    if (link.link_to) {
+      if (me?.id !== link.link_to) return c.html(html.messagePage(ctx(c), 'Open this where you are signed in', 'This link adds an email to a family.ancestry account. Open it in the browser where you are signed in to that account (it still works for 20 minutes).', '<p><a class="btn" href="/signin">Sign in</a></p>'), 403)
+      auth.takeLink(token)
+      return attached(c, link.email)
+    }
+    // Signed in, and the address has no account: never quietly swap you into a new, empty one. Ask.
+    if (me && !store.userByEmail(link.email)) return c.html(html.addOrNewPage(ctx(c), link.email, token))
+    auth.takeLink(token)
+    signIn(c, store.findOrCreateUser(link.email))
+    return c.redirect(link.next ?? '/trees')
+  })
+  app.post('/auth/verify', async (c) => {
+    const body = await form(c)
+    const token = String(body.token ?? '')
+    const link = auth.peekLink(token)
+    if (!link || link.link_to) return expiredLink(c)
+    auth.takeLink(token)
+    if (body.choice === 'add' && c.get('user')) return attached(c, link.email)
+    signIn(c, store.findOrCreateUser(link.email))
+    return c.redirect(link.next ?? '/trees')
   })
 
   // ---- sign in with pit.world ------------------------------------------
@@ -1050,8 +1079,22 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   })
 
   // settings
-  const settings = (c: Context, newToken: string | null = null) => c.html(html.settingsPage(ctx(c), { passkeys: auth.passkeys(c.get('user')!.id), tokens: auth.tokens(c.get('user')!.id), newToken, profile: profilePanel(profiles.mine(c.get('user')!.id), publicSite), addons: addonsPanel(), pitWorld: pitClient ? { linked: store.identities(c.get('user')!.id).some((i) => i.provider === 'pitworld') } : null }))
+  const settings = (c: Context, newToken: string | null = null) => c.html(html.settingsPage(ctx(c), { passkeys: auth.passkeys(c.get('user')!.id), tokens: auth.tokens(c.get('user')!.id), newToken, profile: profilePanel(profiles.mine(c.get('user')!.id), publicSite), addons: addonsPanel(), emails: store.linkedEmails(c.get('user')!.id), pitWorld: pitClient ? { linked: store.identities(c.get('user')!.id).some((i) => i.provider === 'pitworld') } : null }))
   app.get('/settings', (c) => needUser(c) ?? settings(c))
+  app.post('/settings/emails', async (c) => {
+    if (needUser(c)) return needUser(c)!
+    const me = c.get('user')!
+    const email = validEmail((await form(c)).email)
+    if (!email) return c.redirect(`/settings?error=${encodeURIComponent('That does not look like an email address.')}`)
+    if (store.userByEmail(email)?.id === me.id) return c.redirect(`/settings?ok=${encodeURIComponent(`${email} already signs in to this account.`)}`)
+    if (linkLimit(`ip:${ip(c)}`) && linkLimit(`email:${email}`)) await auth.sendLink(email, '/settings', linkBase(c), me)
+    return c.redirect(`/settings?ok=${encodeURIComponent(`We sent a confirm link to ${email}. Open it here, while signed in.`)}`)
+  })
+  app.post('/settings/emails/remove', async (c) => {
+    if (needUser(c)) return needUser(c)!
+    store.unlinkEmail(c.get('user')!.id, String((await form(c)).email ?? ''))
+    return c.redirect('/settings?ok=Removed')
+  })
   app.post('/settings/name', async (c) => {
     if (needUser(c)) return needUser(c)!
     store.setUserName(c.get('user')!.id, String((await form(c)).name ?? ''))

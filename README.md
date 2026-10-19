@@ -69,7 +69,8 @@ needs [one setting](https://pit.world/connect).
   owners, partners, investors and employees (titles and years), founded/closed dates,
   place, website, notes and photos. On each person's page and in search; never in a
   pedigree or descendant chart. GEDCOM carries them as a custom `_BUS` record.
-- **Sign in** with an emailed link (which is also sign-up) or a passkey. No passwords.
+- **Sign in** with an emailed link (which is also sign-up), a passkey or pit.world (CoinPay). No passwords.
+- **One account, many emails:** Settings → Sign-in emails adds every address you use (confirmed by a link), so any of them opens the same trees. Opening a sign-in link for a new address while signed in asks whether to add it or make a separate account, never a silent second account.
 
 ## Every surface
 
