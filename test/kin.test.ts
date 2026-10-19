@@ -3,6 +3,7 @@ import { Store, fullName } from '../src/db.ts'
 import { Auth } from '../src/auth.ts'
 import { addRelative, createApp } from '../src/server.ts'
 import { descendantsSvg } from '../src/html.ts'
+import { exportGedcom, importGedcom } from '../src/gedcom.ts'
 
 const setup = () => {
   const store = new Store(':memory:')
@@ -62,4 +63,29 @@ test('the descendants page draws a chart: partners under the person, children to
   expect(svg).toContain(`href="/t/${tree.id}/descendants/${kid.id}"`)
   expect(svg).toContain('&amp; Mary E')
   expect(svg).toContain('class="edge"')
+})
+
+test('nicknames: stored, searched, shown, and round-tripped as GEDCOM NICK', async () => {
+  const store = new Store(':memory:')
+  const me = store.findOrCreateUser('nick@example.com')
+  const tree = store.createTree(me.id, 'Nick')
+  const tony = store.addPerson(tree.id, { given: 'Anthony', surname: 'Ettinger', nickname: 'Tony', sex: 'M' })
+  expect(tony.nickname).toBe('Tony')
+  expect(store.search(tree.id, 'tony').map((p) => p.id)).toEqual([tony.id])
+  expect(store.updatePerson(tree.id, tony.id, { nickname: 'T' })!.nickname).toBe('T')
+  expect(store.updatePerson(tree.id, tony.id, { notes: 'x' })!.nickname).toBe('T')
+  const les = store.addPerson(tree.id, { given: 'Les', surname: 'Kisherl' })
+  store.addBond(tree.id, tony.id, les.id, 'godparent')
+  expect(store.bondsFor(tree.id, tony.id)[0]!.label).toBe('Godparent')
+  expect(store.bondsFor(tree.id, les.id)[0]!.label).toBe('Godchild')
+  const ged = exportGedcom(store, tree.id)
+  expect(ged).toContain('2 NICK T')
+  const copy = store.createTree(me.id, 'Copy')
+  importGedcom(store, copy.id, ged)
+  expect(store.people(copy.id).find((p) => p.given === 'Anthony')!.nickname).toBe('T')
+  const app = createApp({ store, auth: new Auth(store, async () => {}, 'https://family.test'), site: 'https://family.test' })
+  const auth = new Auth(store, async () => {}, 'https://family.test')
+  const page = await (await app.request(`https://family.test/t/${tree.id}/p/${tony.id}`, { headers: { cookie: `fa_session=${auth.createSession(me.id)}` } })).text()
+  expect(page).toContain('<span class="nick">“T”</span>')
+  expect(page).toContain('name="nickname"')
 })

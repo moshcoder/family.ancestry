@@ -116,12 +116,14 @@ export function importGedcom(store: Store, treeId: string, text: string): Import
         if (!name.given && givn) name.given = givn
         if (!name.surname && surn) name.surname = surn
       }
+      const nickname = nameNode ? childValue(nameNode, 'NICK') : undefined
       const birt = child(rec, 'BIRT')
       const deat = child(rec, 'DEAT')
       const notes = rec.children.filter((c) => c.tag === 'NOTE' && !c.value.startsWith('@')).map(fullText).join('\n\n')
       const sex = childValue(rec, 'SEX')
       const p = store.addPerson(treeId, {
         given: name.given,
+        nickname: nickname ?? null,
         surname: name.surname,
         sex: sex ?? 'U',
         birth_date: birt ? childValue(birt, 'DATE') : null,
@@ -319,6 +321,7 @@ export function exportGedcom(store: Store, treeId: string, options: ExportOption
     out.push(`1 NAME ${gedSafe(p.given)} /${gedSafe(p.surname)}/`)
     if (p.given) out.push(`2 GIVN ${gedSafe(p.given)}`)
     if (p.surname) out.push(`2 SURN ${gedSafe(p.surname)}`)
+    if (p.nickname) out.push(`2 NICK ${gedSafe(p.nickname)}`)
     if (p.sex !== 'U') out.push(`1 SEX ${p.sex === 'X' ? 'U' : p.sex}`)
     if (p.birth_date || p.birth_place) {
       out.push('1 BIRT')

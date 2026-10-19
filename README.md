@@ -29,7 +29,7 @@ needs [one setting](https://pit.world/connect).
 - **Network (add-on, free for everyone):** family, friends, neighbors and business contacts with
   every detail you keep (emails, phones, addresses, birthdays, links, notes), vCard
   import/export, and a private **Inbox**. See [Network](#network).
-- **People** with dates, places, notes and stories, photos, and a life timeline.
+- **People** with dates, places, notes and stories, nicknames ("Tony", GEDCOM NICK), photos, and a life timeline.
 - **Every kind of family.** Partners (married, partners, or boyfriend / girlfriend) plus
   children (birth, adopted, step, foster), the GEDCOM way. Add a **brother or sister** directly: full (even when nobody knows the
   parents), half through a chosen parent, adopted, foster, or step through a step-parent.

@@ -23,7 +23,7 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
   ancestry use <tree>               set the default tree (id or name)
   ancestry people [search]          list or search people
   ancestry show <person>            everything about one person
-  ancestry add --given G --surname S [--sex F|M] [--born DATE] [--birthplace P]
+  ancestry add --given G --surname S [--nickname N] [--sex F|M] [--born DATE] [--birthplace P]
                [--died DATE] [--deathplace P] [--living]
                [--parent-of ID | --child-of ID | --partner-of ID | --sibling-of ID | --grandparent-of ID |
                 --great-grandparent-of ID | --grandchild-of ID | --aunt-uncle-of ID | --niece-nephew-of ID | --cousin-of ID]
@@ -129,7 +129,7 @@ const str = (v: string | true | undefined) => (typeof v === 'string' ? v : undef
 
 /** Flags to person fields. */
 export function personFields(flags: Record<string, string | true>): Record<string, unknown> {
-  const map: Record<string, string> = { given: 'given', first: 'given', surname: 'surname', last: 'surname', sex: 'sex', born: 'birth_date', birthplace: 'birth_place', died: 'death_date', deathplace: 'death_place', notes: 'notes', note: 'notes' }
+  const map: Record<string, string> = { given: 'given', first: 'given', surname: 'surname', last: 'surname', nickname: 'nickname', nick: 'nickname', sex: 'sex', born: 'birth_date', birthplace: 'birth_place', died: 'death_date', deathplace: 'death_place', notes: 'notes', note: 'notes' }
   const out: Record<string, unknown> = {}
   for (const [flag, field] of Object.entries(map)) if (typeof flags[flag] === 'string') out[field] = flags[flag]
   if (flags.living === true) out.living = true
@@ -273,7 +273,7 @@ const years = (p: { birth_date: string | null; death_date: string | null }) => {
 }
 
 export function formatPerson(p: PersonDetail): string {
-  const lines = [`${p.name} ${years(p)}`, `  id ${p.id}  ${p.url}`]
+  const lines = [`${p.name}${p.nickname ? ` "${p.nickname}"` : ''} ${years(p)}`, `  id ${p.id}  ${p.url}`]
   if (p.birth_date || p.birth_place) lines.push(`  born   ${[p.birth_date, p.birth_place].filter(Boolean).join(', ')}`)
   if (p.death_date || p.death_place) lines.push(`  died   ${[p.death_date, p.death_place].filter(Boolean).join(', ')}`)
   else if (p.living) lines.push('  living')
