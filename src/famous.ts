@@ -196,6 +196,13 @@ CREATE TABLE IF NOT EXISTS famous_queue (
 );
 `
 
+const OUT_SQL = 'SELECT f.* FROM famous_links l JOIN famous f ON f.qid = l.to_qid WHERE l.from_qid = ? AND l.rel IN (SELECT value FROM json_each(?))'
+const IN_SQL = 'SELECT f.* FROM famous_links l JOIN famous f ON f.qid = l.from_qid WHERE l.to_qid = ? AND l.rel IN (SELECT value FROM json_each(?))'
+const LIST_WHERE =
+  "WHERE (?1 IS NULL OR kind = ?1) AND NOT EXISTS (SELECT 1 FROM json_each(?2) w WHERE lower(label) || ' ' || lower(coalesce(description, '')) NOT LIKE '%' || w.value || '%' ESCAPE '\\')"
+const LIST_COUNT_SQL = 'SELECT count(*) n FROM famous ' + LIST_WHERE
+const LIST_ROWS_SQL = 'SELECT * FROM famous ' + LIST_WHERE + ' ORDER BY sitelinks DESC, label LIMIT ?3 OFFSET ?4'
+
 export const MAX_DEPTH = Number(process.env.FAMOUS_MAX_DEPTH ?? 3)
 export const MAX_ENTRIES = Number(process.env.FAMOUS_MAX ?? 40000)
 
@@ -307,10 +314,9 @@ export class Famous {
 
   /** The entries linked to `qid`, in both directions, grouped the way a page shows them. */
   relatives(e: Entity): Record<string, Entity[]> {
-    const out = (rels: Rel[]) =>
-      this.db.query<Entity, any[]>(`SELECT f.* FROM famous_links l JOIN famous f ON f.qid = l.to_qid WHERE l.from_qid = ? AND l.rel IN (${rels.map(() => '?').join(',')})`).all(e.qid, ...rels)
-    const inn = (rels: Rel[]) =>
-      this.db.query<Entity, any[]>(`SELECT f.* FROM famous_links l JOIN famous f ON f.qid = l.from_qid WHERE l.to_qid = ? AND l.rel IN (${rels.map(() => '?').join(',')})`).all(e.qid, ...rels)
+    // Fixed SQL; the relation names go in as one JSON array.
+    const out = (rels: Rel[]) => this.db.query<Entity, [string, string]>(OUT_SQL).all(e.qid, JSON.stringify(rels))
+    const inn = (rels: Rel[]) => this.db.query<Entity, [string, string]>(IN_SQL).all(e.qid, JSON.stringify(rels))
     const uniq = (...lists: Entity[][]) => {
       const seen = new Map<string, Entity>()
       for (const list of lists) for (const x of list) if (x.qid !== e.qid) seen.set(x.qid, x)
@@ -331,21 +337,17 @@ export class Famous {
   }
 
   list(kind: Kind | null, q: string, limit: number, offset: number): { rows: Entity[]; total: number } {
-    const words = q.toLowerCase().split(/\s+/).filter(Boolean).slice(0, 6)
-    const where: string[] = []
-    const args: any[] = []
-    if (kind) {
-      where.push('kind = ?')
-      args.push(kind)
-    }
-    for (const w of words) {
-      where.push("(lower(label) LIKE ? ESCAPE '\\' OR lower(coalesce(description, '')) LIKE ? ESCAPE '\\')")
-      const like = `%${w.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
-      args.push(like, like)
-    }
-    const sql = where.length ? `WHERE ${where.join(' AND ')}` : ''
-    const total = this.db.query<{ n: number }, any[]>(`SELECT count(*) n FROM famous ${sql}`).get(...args)!.n
-    const rows = this.db.query<Entity, any[]>(`SELECT * FROM famous ${sql} ORDER BY sitelinks DESC, label LIMIT ? OFFSET ?`).all(...args, limit, offset)
+    // Every word must appear in the name or the description; the words go in as one JSON array.
+    const words = JSON.stringify(
+      q
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 6)
+        .map((w) => w.replace(/[\\%_]/g, (c) => `\\${c}`)),
+    )
+    const total = this.db.query<{ n: number }, [string | null, string]>(LIST_COUNT_SQL).get(kind, words)!.n
+    const rows = this.db.query<Entity, [string | null, string, number, number]>(LIST_ROWS_SQL).all(kind, words, limit, offset)
     return { rows, total }
   }
 
