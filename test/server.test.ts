@@ -46,6 +46,16 @@ describe('server', () => {
     expect(await home.text()).toContain('Email me a link')
   })
 
+  test('crawlproof analytics: the tracker is on every page and CSP allows it', async () => {
+    const h = harness()
+    const home = await h.req('/')
+    expect(await home.text()).toContain('<script data-site="e30916b7-dca3-4115-9db0-c2e1bee8eb27" src="https://crawlproof.com/stats.js" async></script>')
+    const csp = home.headers.get('content-security-policy')!
+    expect(csp).toContain("script-src 'self' https://crawlproof.com;")
+    expect(csp).toContain("connect-src 'self' https://crawlproof.com;")
+    expect(csp).toContain("default-src 'self';")
+  })
+
   test('magic link signs in, makes the account, and works once', async () => {
     const h = harness()
     await h.req('/signin')

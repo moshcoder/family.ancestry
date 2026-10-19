@@ -166,7 +166,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     c.header('referrer-policy', 'same-origin')
     c.header('x-frame-options', 'DENY')
     if ((c.res.headers.get('content-type') ?? '').includes('text/html')) {
-      c.header('content-security-policy', "default-src 'self'; frame-src https://crawlproof.com; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' http://127.0.0.1:* http://localhost:*")
+      c.header('content-security-policy', "default-src 'self'; frame-src https://crawlproof.com; img-src 'self' data: blob:; style-src 'self'; script-src 'self' https://crawlproof.com; connect-src 'self' https://crawlproof.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self' http://127.0.0.1:* http://localhost:*")
       c.header('cache-control', 'no-store')
     }
   })
