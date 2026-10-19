@@ -110,3 +110,32 @@ test('an existing tree brings in people from another tree and from the network',
   expect(store.profilePerson(b.id, shawn.id)).toBe(sh.id)
   expect(net.contact(me.id, contact.id)!.person_id).toBe(sh.id)
 })
+
+test('a person page picks a relative from another tree: Barbara becomes Mary\'s sister', async () => {
+  const { store, as } = world()
+  const me = store.findOrCreateUser('me@example.com')
+  const tosh = store.createTree(me.id, 'The Toshikian Family')
+  const barbara = store.addPerson(tosh.id, { given: 'Barbara', surname: 'Toshikian', nickname: 'Bobbi', sex: 'F', living: 1 })
+  store.addPerson(tosh.id, { given: 'Mary', surname: 'Guizio', sex: 'F' })
+  const guizio = store.createTree(me.id, 'The Guizio Family')
+  const mary = store.addPerson(guizio.id, { given: 'Mary', surname: 'Guizio', sex: 'F' })
+
+  const page = await (await as(me).get(`/t/${guizio.id}/p/${mary.id}`)).text()
+  expect(page).toContain(`· from The Toshikian Family #${tosh.id}/${barbara.id}`)
+  // Mary is already here, so the Toshikian copy of her is not offered.
+  expect((page.match(/Mary Guizio[^"]*· from/g) ?? []).length).toBe(0)
+
+  const res = await as(me).post(`/t/${guizio.id}/p/${mary.id}/relative`, [['as', 'sibling'], ['sibling', 'full'], ['existing', `Barbara Toshikian · from The Toshikian Family #${tosh.id}/${barbara.id}`]])
+  expect(decodeURIComponent(res.headers.get('location')!)).toContain('Added Barbara Toshikian')
+  const copy = store.people(guizio.id).find((p) => p.given === 'Barbara')!
+  expect(copy.nickname).toBe('Bobbi')
+  expect(store.siblings(guizio.id, mary.id).map((s) => s.person.id)).toEqual([copy.id])
+  expect(store.people(tosh.id)).toHaveLength(2)
+
+  // A failed link leaves no stray copy behind.
+  const other = store.createTree(me.id, 'Other')
+  const x = store.addPerson(other.id, { given: 'Pet', surname: 'X' })
+  const bad = await as(me).post(`/t/${guizio.id}/p/${mary.id}/relative`, [['as', 'nonsense'], ['existing', `#${other.id}/${x.id}`]])
+  expect(decodeURIComponent(bad.headers.get('location')!)).toContain('Not added')
+  expect(store.people(guizio.id).some((p) => p.given === 'Pet')).toBe(false)
+})
