@@ -11,6 +11,11 @@ needs [one setting](https://pit.world/connect).
 - **Trees** you build together: editors add and fix, viewers look. Invite by email
   or by link: **paste a whole list** (a To: line, a spreadsheet column,
   `Aunt Rose <rose@example.com>`), 20 at a time, 500 on the Family plan.
+- **Families overlap.** Start a tree (or fill one) by ticking people you already have:
+  anyone in your other trees or your network. They come over with their dates, events and
+  photo; the partners, parents, children and bonds among the people you tick stay linked;
+  anyone who has an account keeps their own profile and can see the new tree.
+  `ancestry pickable`, `ancestry bring`, `ancestry new --from`, MCP `bring_people`.
 - **Join the family as yourself.** Right after you add someone, the page quietly offers
   to invite them; they join *as that person* and keep their own profile up to date,
   even as a viewer. A pasted name that matches someone in the tree invites them as that

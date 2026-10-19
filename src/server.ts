@@ -389,12 +389,62 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
 
   const needUser = (c: Context) => (c.get('user') ? null : c.redirect(`/signin?next=${encodeURIComponent(c.req.path)}`))
 
-  app.get('/trees', (c) => needUser(c) ?? c.html(html.treesPage(ctx(c), store.treesFor(c.get('user')!.id), teams.workplaces(c.get('user')!.id))))
+  /** Who a tree can be started from or filled with: people in your other trees, and network contacts not already one of them. */
+  const pickable = (userId: string, exceptTreeId: string | null = null): html.Pickable => ({
+    sources: store.pickablePeople(userId, exceptTreeId),
+    contacts: net.contacts(userId, { limit: 2000 }).filter((k) => k.name && !k.person_id).map((k) => ({ id: k.id, name: k.name, circle: k.circle, linked: Boolean(k.linked_user_id) })),
+  })
+
+  /**
+   * Copy picked people into a tree: `p:<tree>:<person>` from a tree you belong to, `c:<contact>` from your network.
+   * A contact who has an account becomes that person here (and, with share, a viewer).
+   */
+  const bringPeople = (treeId: string, userId: string, picks: string[], share: boolean): { added: number; shared: number } => {
+    const people = picks.flatMap((v) => (v.startsWith('p:') && v.split(':').length === 3 ? [{ tree: v.split(':')[1]!, person: v.split(':')[2]! }] : []))
+    const done = store.copyPeople(treeId, userId, people, { share })
+    let added = done.added.length
+    let shared = done.shared.length
+    for (const id of new Set(picks.filter((v) => v.startsWith('c:')).map((v) => v.slice(2)))) {
+      const contact = net.contact(userId, id)
+      if (!contact?.name) continue
+      const words = contact.name.trim().split(/\s+/)
+      const person = store.addPerson(treeId, { given: words.length > 1 ? words.slice(0, -1).join(' ') : words[0], surname: words.length > 1 ? words.at(-1) : '', birth_date: contact.birthday, living: 1 })
+      added++
+      if (!net.contactForPerson(userId, treeId, person.id)) net.linkContact(userId, contact.id, { tree_id: treeId, person_id: person.id })
+      const linked = contact.linked_user_id ? store.user(contact.linked_user_id) : null
+      if (!linked || store.profilePerson(treeId, linked.id)) continue
+      if (!store.role(treeId, linked.id)) {
+        if (!share) continue
+        store.setMember(treeId, linked.id, 'viewer')
+        shared++
+      }
+      store.claimProfile(treeId, person.id, linked.id)
+    }
+    return { added, shared }
+  }
+  const picksFrom = async (c: Context): Promise<string[]> => {
+    const all = (await c.req.parseBody({ all: true }).catch(() => ({}))) as Record<string, unknown>
+    const pick = all.pick
+    return (Array.isArray(pick) ? pick : pick ? [pick] : []).map(String).slice(0, 2000)
+  }
+  const broughtNote = (r: { added: number; shared: number }) => `Added ${r.added} ${r.added === 1 ? 'person' : 'people'}${r.shared ? `; ${r.shared} of them can now see this tree` : ''}.`
+
+  app.get('/trees', (c) => needUser(c) ?? c.html(html.treesPage(ctx(c), store.treesFor(c.get('user')!.id), teams.workplaces(c.get('user')!.id), pickable(c.get('user')!.id))))
   app.post('/trees', async (c) => {
     if (needUser(c)) return needUser(c)!
     const body = await form(c)
     const tree = store.createTree(c.get('user')!.id, String(body.name ?? ''), body.description ? String(body.description) : null)
-    return c.redirect(`/t/${tree.id}`)
+    const picks = await picksFrom(c)
+    if (!picks.length) return c.redirect(`/t/${tree.id}`)
+    return c.redirect(`/t/${tree.id}?ok=${encodeURIComponent(broughtNote(bringPeople(tree.id, c.get('user')!.id, picks, Boolean(body.share))))}`)
+  })
+  app.post('/t/:tree/bring', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const body = await form(c)
+    const picks = await picksFrom(c)
+    if (!picks.length) return c.redirect(`/t/${t.tree.id}?error=${encodeURIComponent('Tick at least one person.')}`)
+    return c.redirect(`/t/${t.tree.id}?ok=${encodeURIComponent(broughtNote(bringPeople(t.tree.id, t.user.id, picks, Boolean(body.share))))}`)
   })
   app.post('/trees/import', async (c) => {
     if (needUser(c)) return needUser(c)!
@@ -424,6 +474,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
         surnames: store.surnames(t.tree.id),
         query: q,
         plan: hasPlan(plan, store, t.tree),
+        pick: canEdit(t.role) && !q ? pickable(t.user.id, t.tree.id) : undefined,
       }),
     )
   })
@@ -927,7 +978,22 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   api.get('/trees', (c) => c.json({ trees: store.treesFor(apiUser(c)!.id) }))
   api.post('/trees', async (c) => {
     const body = await json(c)
-    return c.json({ tree: store.createTree(apiUser(c)!.id, String(body.name ?? 'Family tree'), body.description ?? null) }, 201)
+    const tree = store.createTree(apiUser(c)!.id, String(body.name ?? 'Family tree'), body.description ?? null)
+    const picks = Array.isArray(body.people) ? body.people.map(String) : []
+    const brought = picks.length ? bringPeople(tree.id, apiUser(c)!.id, picks, body.share !== false) : { added: 0, shared: 0 }
+    return c.json({ tree: store.tree(tree.id), ...brought }, 201)
+  })
+  // Pick from `GET /api/v1/pickable`: values look like p:<tree>:<person> or c:<contact>.
+  api.get('/pickable', (c) => {
+    const pick = pickable(apiUser(c)!.id, c.req.query('except') ?? null)
+    return c.json({ trees: pick.sources.map((s) => ({ id: s.tree.id, name: s.tree.name, people: s.people.map((p) => ({ pick: `p:${s.tree.id}:${p.id}`, name: fullName(p), birth_date: p.birth_date, death_date: p.death_date, kind: p.kind })) })), contacts: pick.contacts.map((k) => ({ pick: `c:${k.id}`, name: k.name, circle: k.circle, has_account: k.linked })) })
+  })
+  api.post('/trees/:tree/bring', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const body = await json(c)
+    const picks = Array.isArray(body.people) ? body.people.map(String) : []
+    return c.json(bringPeople(t.tree.id, apiUser(c)!.id, picks, body.share !== false))
   })
   api.get('/trees/:tree', (c) => {
     const t = treeFor(c)
