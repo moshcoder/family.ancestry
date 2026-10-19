@@ -29,6 +29,7 @@ import { mountBusinesses, personBusinesses, personBusinessesOut } from './busine
 import { mountAlbums } from './album.js'
 import { listingPanel, Listings, mountListings } from './listing.js'
 import { businessDirectory, mountTeams, teamPanel, Teams } from './team.js'
+import { mountProfiles, Profiles, settingsPanel as profilePanel } from './profile.js'
 import { changesTree, lifeEventForm, lifeKey, recordLifeEvent, timeline as lifeTimeline } from './life.js'
 import { addonsPanel, inviteFriendBox, personNetworkBox, profileInvite } from './network-html.js'
 
@@ -116,6 +117,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   const askLimit = (key: string) => (key.startsWith('ip:') ? askIpLimit(key) : key.startsWith('email:') ? askEmailLimit(key) : askTreeLimit(key))
   const listings = new Listings(store)
   const teams = new Teams(store)
+  const profiles = new Profiles(store)
   const secure = (c: Context) => (c.req.header('x-forwarded-proto') ?? new URL(c.req.url).protocol.replace(':', '')) === 'https'
   const ip = (c: Context) => c.req.header('x-real-ip') ?? c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? 'local'
 
@@ -1030,7 +1032,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   })
 
   // settings
-  const settings = (c: Context, newToken: string | null = null) => c.html(html.settingsPage(ctx(c), { passkeys: auth.passkeys(c.get('user')!.id), tokens: auth.tokens(c.get('user')!.id), newToken, addons: addonsPanel(), pitWorld: pitClient ? { linked: store.identities(c.get('user')!.id).some((i) => i.provider === 'pitworld') } : null }))
+  const settings = (c: Context, newToken: string | null = null) => c.html(html.settingsPage(ctx(c), { passkeys: auth.passkeys(c.get('user')!.id), tokens: auth.tokens(c.get('user')!.id), newToken, profile: profilePanel(profiles.mine(c.get('user')!.id), publicSite), addons: addonsPanel(), pitWorld: pitClient ? { linked: store.identities(c.get('user')!.id).some((i) => i.provider === 'pitworld') } : null }))
   app.get('/settings', (c) => needUser(c) ?? settings(c))
   app.post('/settings/name', async (c) => {
     if (needUser(c)) return needUser(c)!
@@ -1347,6 +1349,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   mountBusinesses(app, api, { store, net, site, ctx, form, treeFor, pickId, image: { types: IMAGE_TYPES, max: MAX_PHOTO }, team })
   mountTeams(app, api, { store, teams, net, site: publicSite, ctx, form, treeFor, mail: async (m) => { await auth.mail(m) }, ip, inviteLimit: senderLimit, askLimit })
   mountListings(app, api, { store, listings, net, site: publicSite, ctx, form, treeFor, mail: async (m) => { await auth.mail(m) }, ip, limit: askLimit, inviteToTree, more: (q) => businessDirectory(teams.directory(q)) })
+  mountProfiles(app, api, { profiles, listings, teams, site: publicSite, ctx, form })
   mountAlbums(app, api, { store, site, ctx, form, treeFor, image: { types: IMAGE_TYPES, max: MAX_PHOTO } })
   app.route('/api/v1', api)
 

@@ -86,6 +86,11 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
   ancestry requests [invite|decline <id>]   people asking a listed tree for an invite
   ancestry families [search]        listed families you could ask to join
   ancestry ask <family-id> --name N --email E [--as family|friends|neighbors|business] [--note TEXT]
+  ancestry profile [on|off] [--slug anthony.ettinger] [--name N] [--nickname N] [--city C] [--region R]
+               [--country C] [--from TOWN] [--bio TEXT] [--email E] [--link URL] [--social "github: me"]
+                                    your public profile at /profile/<slug>: only what you type, never the tree
+  ancestry find [search] [--kind people|businesses|families] [--country C] [--region R] [--city C] [--category C]
+                                    Find people: public profiles, listed businesses and families, with facets
 
   ancestry contacts [search] [--circle family|friends|neighbors|business]
   ancestry contact add --name N [--email E] [--phone P] [--circle C] [--relationship R]
@@ -872,6 +877,20 @@ export async function runCli(argv: string[]): Promise<number> {
         }
         const reqs = await client.joinRequests(tree.id)
         print(reqs, () => (reqs.length ? reqs.map((r) => `${r.id}  ${r.name} <${r.email}>  ${r.circle}${r.note ? `  "${r.note}"` : ''}`).join('\n') : 'Nobody is asking to join.'))
+        return 0
+      }
+      case 'profile': {
+        const body: Record<string, unknown> = {}
+        if (rest[0] === 'on' || rest[0] === 'off') body.published = rest[0] === 'on'
+        for (const [flag, key] of [['slug', 'slug'], ['name', 'name'], ['nickname', 'nickname'], ['city', 'city'], ['region', 'region'], ['country', 'country'], ['from', 'hometown'], ['bio', 'bio'], ['email', 'email'], ['link', 'links'], ['social', 'socials']] as const) if (typeof f[flag] === 'string') body[key] = f[flag]
+        const r = Object.keys(body).length ? { profile: await client.saveProfile(body), draft: null } : await client.profile()
+        const p = r.profile ?? r.draft!
+        print(p, () => `${r.profile ? (p.published ? 'On' : 'Off (only you can see it)') : 'Not made yet'}: ${p.url}\n  ${[p.name, p.nickname && `"${p.nickname}"`].filter(Boolean).join(' ')}${[p.city, p.region, p.country].some(Boolean) ? `\n  Lives in ${[p.city, p.region, p.country].filter(Boolean).join(', ')}` : ''}${p.hometown ? `\n  From ${p.hometown}` : ''}${r.profile ? '' : '\n  ancestry profile on --city "Los Gatos" --region CA --country USA makes it.'}`)
+        return 0
+      }
+      case 'find': {
+        const r = await client.findPeople({ q: rest.join(' '), kind: str(f.kind), country: str(f.country), region: str(f.region), city: str(f.city), category: str(f.category) })
+        print(r, () => (r.hits.length ? r.hits.map((h) => `${h.kind.padEnd(10)} ${h.name}${h.place ? `  ${h.place}` : ''}  ${h.url}`).join('\n') + `\n${r.facets.map((g) => `  ${g.title}: ${g.items.map((i) => `${i.label} (${i.count})`).join(', ')}`).join('\n')}` : 'Nobody public matches that.'))
         return 0
       }
       case 'families': {
