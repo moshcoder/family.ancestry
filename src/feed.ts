@@ -5,7 +5,10 @@
  * to. The rules, in the code (the network's: humans, not influencers):
  *
  *   - you can subscribe only to someone you know: a connection, or someone you
- *     share a tree with. There are no public profiles and no follower counts;
+ *     share a tree with. Everyone you share a tree with is in your feed from the
+ *     start (Unsubscribe mutes them); connections you subscribe to by hand;
+ *   - the feed also shows what happened in your families, read from the trees
+ *     themselves: people added, photos, life events, who joined. Nobody has to post;
  *   - a post goes to everyone who knows you, or to one family (the members of a
  *     tree you are in). Nobody else can read it, subscribed or not;
  *   - blocks hide posts both ways; comments are seen by whoever can see the post;
@@ -28,6 +31,8 @@ export type Post = {
   created_at: number
 }
 export type Comment = { id: string; post_id: string; author_id: string; body: string; created_at: number }
+/** Something that happened in one of your families, read from the tree (not a post). */
+export type Update = { id: string; tree_id: string; family: string; at: number; text: string; href: string; photo: string | null }
 export type FeedItem = Post & { author: User; family: string | null; likes: number; liked: boolean; comments: (Comment & { author: User })[] }
 
 const SCHEMA = `
@@ -38,6 +43,11 @@ CREATE TABLE IF NOT EXISTS feed_posts (
 );
 CREATE INDEX IF NOT EXISTS feed_posts_author ON feed_posts(author_id, created_at);
 CREATE TABLE IF NOT EXISTS feed_subscriptions (
+  subscriber_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL, PRIMARY KEY (subscriber_id, author_id)
+);
+CREATE TABLE IF NOT EXISTS feed_mutes (
   subscriber_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   created_at INTEGER NOT NULL, PRIMARY KEY (subscriber_id, author_id)
@@ -116,14 +126,69 @@ export class Feed {
     if (me === authorId) throw new Error('your own posts are always in your feed')
     if (!this.store.user(authorId) || !this.knows(me, authorId)) throw new Error('you can subscribe to people you are connected with or share a tree with')
     this.store.db.query('INSERT OR IGNORE INTO feed_subscriptions (subscriber_id,author_id,created_at) VALUES (?,?,?)').run(me, authorId, this.now())
+    this.store.db.query('DELETE FROM feed_mutes WHERE subscriber_id = ? AND author_id = ?').run(me, authorId)
   }
 
+  /** Off your home feed: a subscription ends, and family (who are in by default) are muted. */
   unsubscribe(me: string, authorId: string) {
     this.store.db.query('DELETE FROM feed_subscriptions WHERE subscriber_id = ? AND author_id = ?').run(me, authorId)
+    if (this.store.sharesTree(me, authorId)) this.store.db.query('INSERT OR IGNORE INTO feed_mutes (subscriber_id,author_id,created_at) VALUES (?,?,?)').run(me, authorId, this.now())
   }
 
+  /** Whose posts are in your home feed: everyone you share a tree with (unless muted), and whoever you subscribed to. */
   subscribed(me: string): Set<string> {
-    return new Set(this.store.db.query<{ author_id: string }, [string]>('SELECT author_id FROM feed_subscriptions WHERE subscriber_id = ?').all(me).map((r) => r.author_id))
+    const muted = new Set(this.store.db.query<{ author_id: string }, [string]>('SELECT author_id FROM feed_mutes WHERE subscriber_id = ?').all(me).map((r) => r.author_id))
+    const family = this.store.db.query<{ user_id: string }, [string, string]>('SELECT DISTINCT y.user_id FROM members x JOIN members y ON y.tree_id = x.tree_id WHERE x.user_id = ? AND y.user_id <> ?').all(me, me).map((r) => r.user_id)
+    const subs = this.store.db.query<{ author_id: string }, [string]>('SELECT author_id FROM feed_subscriptions WHERE subscriber_id = ?').all(me).map((r) => r.author_id)
+    return new Set([...family.filter((id) => !muted.has(id)), ...subs])
+  }
+
+  /**
+   * What happened in your families, newest first, from the trees themselves: people added
+   * (one line per family per day, so an import is one line), photos (per uploader per day),
+   * life events and new members. Only trees you are a member of.
+   */
+  updates(me: string, opts: { before?: number; limit?: number } = {}): Update[] {
+    const limit = Math.min(100, opts.limit ?? 30)
+    const before = opts.before ?? Number.MAX_SAFE_INTEGER
+    const day = (t: number) => new Date(t).toISOString().slice(0, 10)
+    const names = (list: string[]) => (list.length <= 3 ? list.join(', ') : `${list.slice(0, 3).join(', ')} and ${list.length - 3} more`)
+    const name = (p: { given: string; surname: string }) => `${p.given} ${p.surname}`.trim() || 'Someone'
+    const whoIs = (u: User) => (u.id === me ? 'You' : (u.name ?? u.email.split('@')[0]!))
+    const out: Update[] = []
+    for (const t of this.store.treesFor(me)) {
+      const fam = t.name
+      const added = this.store.db.query<{ id: string; given: string; surname: string; kind: string; created_at: number }, [string, number]>('SELECT id, given, surname, kind, created_at FROM people WHERE tree_id = ? AND created_at < ? ORDER BY created_at DESC LIMIT 500').all(t.id, before)
+      const byDay = new Map<string, typeof added>()
+      for (const p of added) byDay.set(day(p.created_at), [...(byDay.get(day(p.created_at)) ?? []), p])
+      for (const [d, ps] of byDay) {
+        const first = ps[0]!
+        const pets = ps.every((p) => p.kind === 'pet')
+        out.push({ id: `people:${t.id}:${d}`, tree_id: t.id, family: fam, at: first.created_at, text: ps.length === 1 ? `${name(first)} was added to ${fam}` : `${ps.length} ${pets ? 'pets' : 'people'} added to ${fam}: ${names(ps.map(name))}`, href: ps.length === 1 ? `/t/${t.id}/p/${first.id}` : `/t/${t.id}`, photo: null })
+      }
+      const photos = this.store.db.query<{ id: string; person_id: string | null; uploaded_by: string | null; created_at: number }, [string, number]>('SELECT id, person_id, uploaded_by, created_at FROM media WHERE tree_id = ? AND business_id IS NULL AND created_at < ? ORDER BY created_at DESC LIMIT 200').all(t.id, before)
+      const byWho = new Map<string, typeof photos>()
+      for (const m of photos) {
+        if (m.uploaded_by && m.uploaded_by !== me && this.net.blockedEitherWay(me, m.uploaded_by)) continue
+        const key = `${m.uploaded_by ?? ''}:${day(m.created_at)}`
+        byWho.set(key, [...(byWho.get(key) ?? []), m])
+      }
+      for (const [key, ms] of byWho) {
+        const first = ms[0]!
+        const by = first.uploaded_by ? this.store.user(first.uploaded_by) : null
+        const of = ms.length === 1 && first.person_id ? this.store.person(t.id, first.person_id) : null
+        out.push({ id: `photos:${t.id}:${key}`, tree_id: t.id, family: fam, at: first.created_at, text: `${by ? whoIs(by) : 'Someone'} added ${ms.length === 1 ? `a photo${of ? ` of ${name(of)}` : ''}` : `${ms.length} photos`} to ${fam}`, href: of ? `/t/${t.id}/p/${of.id}` : `/t/${t.id}/photos`, photo: `/t/${t.id}/media/${first.id}` })
+      }
+      const events = this.store.db.query<{ id: string; type: string; date: string | null; person_id: string; created_at: number; given: string; surname: string }, [string, number]>('SELECT e.id, e.type, e.date, e.person_id, e.created_at, p.given, p.surname FROM events e JOIN people p ON p.id = e.person_id WHERE e.tree_id = ? AND e.created_at < ? ORDER BY e.created_at DESC LIMIT 100').all(t.id, before)
+      for (const e of events) out.push({ id: `event:${e.id}`, tree_id: t.id, family: fam, at: e.created_at, text: `${e.type.replace(/^./, (c) => c.toUpperCase())}: ${name(e)}${e.date ? `, ${e.date}` : ''}`, href: `/t/${t.id}/p/${e.person_id}`, photo: null })
+      // The owner's row is made with the tree; everyone else joined.
+      const joined = this.store.db.query<{ user_id: string; created_at: number }, [string, number, string]>('SELECT user_id, created_at FROM members WHERE tree_id = ? AND created_at < ? AND user_id <> ? ORDER BY created_at DESC LIMIT 100').all(t.id, before, t.owner_id)
+      for (const m of joined) {
+        const u = this.store.user(m.user_id)
+        if (u) out.push({ id: `joined:${t.id}:${m.user_id}`, tree_id: t.id, family: fam, at: m.created_at, text: `${whoIs(u)} joined ${fam}`, href: `/t/${t.id}/members`, photo: null })
+      }
+    }
+    return out.sort((a, b) => b.at - a.at).slice(0, limit)
   }
 
   /** Everyone you know, and whether you are subscribed to them. */
@@ -242,7 +307,20 @@ ${p.comments.length ? `<ul class="comments">${p.comments.map((c) => `<li><a href
 
 const more = (path: string, items: FeedItem[]) => (items.length >= 30 ? `<p><a class="btn" href="${path}?before=${items.at(-1)!.created_at}">Older posts</a></p>` : '')
 
-export function feedPage(ctx: Ctx, me: User, v: { items: FeedItem[]; families: Tree[]; people: { user: User; subscribed: boolean }[] }): string {
+function updateHtml(u: Update): string {
+  const esc = html.esc
+  return `<article class="update panel">${u.photo ? `<a href="${esc(u.href)}"><img class="update-photo" src="${esc(u.photo)}" alt="" loading="lazy"></a>` : ''}<div><a href="${esc(u.href)}">${esc(u.text)}</a><br><span class="muted small">${esc(when(u.at))}</span></div></article>`
+}
+
+/** Posts and family updates in one stream, newest first: 30 of them. */
+function timeline(ctx: Ctx, me: string, items: FeedItem[], updates: Update[]): { html: string; oldest: number | null; full: boolean } {
+  const all: ({ at: number; post: FeedItem } | { at: number; update: Update })[] = [...items.map((post) => ({ at: post.created_at, post })), ...updates.map((update) => ({ at: update.at, update }))]
+  const page = all.sort((a, b) => b.at - a.at).slice(0, 30)
+  return { html: page.map((x) => ('post' in x ? postHtml(ctx, me, x.post) : updateHtml(x.update))).join(''), oldest: page.at(-1)?.at ?? null, full: page.length >= 30 }
+}
+
+export function feedPage(ctx: Ctx, me: User, v: { items: FeedItem[]; updates?: Update[]; families: Tree[]; people: { user: User; subscribed: boolean }[] }): string {
+  const tl = timeline(ctx, me.id, v.items, v.updates ?? [])
   const esc = html.esc
   const csrf = `<input type="hidden" name="_csrf" value="${esc(ctx.csrf)}">`
   const unsubscribed = v.people.filter((p) => !p.subscribed)
@@ -250,14 +328,14 @@ export function feedPage(ctx: Ctx, me: User, v: { items: FeedItem[]; families: T
     ctx,
     'Feed',
     `<h1>Your family feed</h1>
-<p class="muted">Posts from you and the people you subscribe to. Only people who know you can read what you post: no strangers, no public profiles, no follower counts.</p>
+<p class="muted">What's new in your families, and posts from you, your family (everyone you share a tree with) and anyone else you subscribe to. Only people who know you can read what you post: no strangers, no follower counts.</p>
 <form method="post" action="/feed" enctype="multipart/form-data" class="panel pform">${csrf}
   <label>Share something with your family<textarea name="body" rows="3" maxlength="5000" placeholder="News, a photo, a memory…"></textarea></label>
   <div class="grid2"><label>Who sees it<select name="audience"><option value="everyone">Everyone who knows me</option>${v.families.map((t) => `<option value="${esc(t.id)}">Only ${esc(t.name)}</option>`).join('')}</select></label><label>Photo (optional)<input type="file" name="photo" accept="image/*"></label></div>
   <button>Post</button>
 </form>
-${v.items.length ? v.items.map((p) => postHtml(ctx, me.id, p)).join('') : `<p class="empty">${v.people.length ? 'Nothing here yet. Subscribe to your family below, and post the first thing.' : 'Nothing here yet. Your feed fills up with the people in your trees and your network: invite your family.'}</p>`}
-${more('/feed', v.items)}
+${tl.html || `<p class="empty">${v.people.length ? 'Nothing here yet. Post the first thing.' : 'Nothing here yet. Your feed fills up with the people in your trees and your network: invite your family.'}</p>`}
+${tl.full && tl.oldest ? `<p><a class="btn" href="/feed?before=${tl.oldest}">Older</a></p>` : ''}
 <section class="panel"><h2>People you know</h2>
 ${unsubscribed.length ? `<form method="post" action="/feed/subscribe-all" class="inline">${csrf}<button class="btn">Subscribe to all (${unsubscribed.length})</button></form>` : ''}
 ${v.people.length ? `<ul class="plain">${v.people.map((p) => `<li><a href="/feed/u/${p.user.id}">${esc(who(p.user))}</a> <form method="post" action="/feed/u/${p.user.id}/${p.subscribed ? 'unsubscribe' : 'subscribe'}" class="inline">${csrf}<button class="btn${p.subscribed ? ' on' : ''}">${p.subscribed ? 'Subscribed' : 'Subscribe'}</button></form></li>`).join('')}</ul>` : '<p class="muted">Nobody yet. Everyone in your trees and everyone you connect with in your Network shows up here.</p>'}
@@ -298,7 +376,7 @@ export function mountFeed(app: Hono<any>, api: Hono<any>, d: FeedDeps) {
   app.get('/feed', (c) => {
     const u = user(c)
     if (!u) return signin(c)
-    return c.html(feedPage(d.ctx(c), u, { items: feed.home(u.id, { before: before(c) }), families: families(u.id), people: feed.people(u.id) }))
+    return c.html(feedPage(d.ctx(c), u, { items: feed.home(u.id, { before: before(c) }), updates: feed.updates(u.id, { before: before(c) }), families: families(u.id), people: feed.people(u.id) }))
   })
   app.post('/feed', async (c) => {
     const u = user(c)
@@ -363,7 +441,7 @@ export function mountFeed(app: Hono<any>, api: Hono<any>, d: FeedDeps) {
   })
   const bad = (c: Context, error: unknown, status = 400) => c.json({ error: error instanceof Error ? error.message : String(error) }, status as any)
   const json = async (c: Context) => ((await c.req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>
-  api.get('/feed', (c) => c.json({ posts: feed.home(user(c)!.id, { before: before(c), limit: Number(c.req.query('limit')) || 30 }).map(out) }))
+  api.get('/feed', (c) => c.json({ posts: feed.home(user(c)!.id, { before: before(c), limit: Number(c.req.query('limit')) || 30 }).map(out), updates: feed.updates(user(c)!.id, { before: before(c), limit: Number(c.req.query('limit')) || 30 }) }))
   api.post('/feed', async (c) => {
     try {
       const b = await json(c)

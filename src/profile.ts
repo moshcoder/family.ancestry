@@ -113,14 +113,18 @@ export class Profiles {
   }
 
   /**
-   * What the form starts with before there is a profile: the account's name, or the
-   * person they claimed in a tree (name and nickname only; nothing else is copied).
+   * What the form starts with before there is a profile: the account's own name. A person
+   * claimed in a tree lends only a nickname, and only when they carry that same name: a
+   * claim can be wrong (an account claimed as a relative), and must never put a relative's
+   * name on your page. Without an account name, a claimed person's name is used.
    */
   draft(user: User): Profile {
-    const person = this.store.db
-      .query<Person, [string]>("SELECT p.* FROM profiles pr JOIN people p ON p.id = pr.person_id AND p.tree_id = pr.tree_id WHERE pr.user_id = ? AND p.kind = 'person' ORDER BY pr.created_at LIMIT 1")
-      .get(user.id)
-    const name = (person ? fullName(person) : '') || user.name || ''
+    const claimed = this.store.db
+      .query<Person, [string]>("SELECT p.* FROM profiles pr JOIN people p ON p.id = pr.person_id AND p.tree_id = pr.tree_id WHERE pr.user_id = ? AND p.kind = 'person' ORDER BY pr.created_at")
+      .all(user.id)
+    const own = user.name?.trim() ?? ''
+    const person = own ? claimed.find((p) => fullName(p).toLowerCase() === own.toLowerCase()) : claimed[0]
+    const name = own || (person ? fullName(person) : '')
     return { user_id: user.id, slug: this.suggest(user.id, name), published: 0, indexable: 0, name, nickname: person?.nickname ?? null, city: null, region: null, country: null, hometown: null, bio: null, email: null, links: [], socials: [], photo_mime: null, created_at: 0, updated_at: 0 }
   }
 
