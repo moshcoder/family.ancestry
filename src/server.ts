@@ -32,6 +32,8 @@ import { businessDirectory, mountTeams, teamPanel, Teams } from './team.js'
 import { mountProfiles, Profiles, settingsPanel as profilePanel } from './profile.js'
 import { changesTree, lifeEventForm, lifeKey, recordLifeEvent, timeline as lifeTimeline } from './life.js'
 import { addonsPanel, inviteFriendBox, personNetworkBox, profileInvite } from './network-html.js'
+import { Famous, mountFamous } from './famous.js'
+import { buildDaemon } from './daemon.js'
 
 type Env = { Variables: { user: User | null; csrf: string; via: 'session' | 'token' | null } }
 
@@ -45,7 +47,7 @@ const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp
  * the Moshpit name for people who are not on Moshpit DNS. Links we email to someone
  * else (invites) use it, because we cannot know which internet they are on.
  */
-export type AppOptions = { store: Store; auth: Auth; site: string; publicSite?: string; publicDir?: string; net?: Network; plan?: PlanConfig; fetcher?: typeof fetch; pitWorld?: PitWorldSignIn | null; redirectHosts?: string[]; mailStatus?: ((id: string) => Promise<MailStatus | null>) | null; resendWebhookSecret?: string | null }
+export type AppOptions = { store: Store; auth: Auth; site: string; publicSite?: string; publicDir?: string; net?: Network; plan?: PlanConfig; fetcher?: typeof fetch; pitWorld?: PitWorldSignIn | null; redirectHosts?: string[]; mailStatus?: ((id: string) => Promise<MailStatus | null>) | null; resendWebhookSecret?: string | null; famous?: Famous; daemonStatus?: () => Promise<unknown> }
 
 /** Sign in with pit.world: the one account for every *.pit.world site. The secret is HMAC-SHA256(PIT_BRIDGE_KEY, our relay host), which pit.world derives too. */
 export type PitWorldSignIn = { secret: string; base?: string; fetch?: typeof fetch }
@@ -94,7 +96,7 @@ function limiter(limit: number, windowMs: number) {
 /** "Jane Doe (1901–1980) #abc123" from the datalist -> abc123. */
 export const pickId = (value: unknown): string | null => String(value ?? '').match(/#([A-Za-z0-9_-]{6,})\s*$/)?.[1] ?? (/^[A-Za-z0-9_-]{6,}$/.test(String(value ?? '').trim()) ? String(value).trim() : null)
 
-export function createApp({ store, auth, site, publicSite = site, publicDir = join(import.meta.dir, '..', 'public'), net = new Network(store), plan = planFromEnv({}), fetcher = fetch, pitWorld = null, redirectHosts = [], mailStatus = null, resendWebhookSecret = null }: AppOptions) {
+export function createApp({ store, auth, site, publicSite = site, publicDir = join(import.meta.dir, '..', 'public'), net = new Network(store), plan = planFromEnv({}), fetcher = fetch, pitWorld = null, redirectHosts = [], mailStatus = null, resendWebhookSecret = null, famous = new Famous(store), daemonStatus }: AppOptions) {
   // A request relayed by pit.world says so in X-Forwarded-Host; a sign-in link for it must open there too.
   // Only the one configured address is believed, so a forged header can at worst pick that address.
   const publicHost = new URL(publicSite).host
@@ -1100,6 +1102,8 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
 
   api.use('*', async (c, next) => {
     if (c.req.path === '/api/v1/cli/token') return next()
+    // Public data (famous.ts) and the daemon's status: no account needed, nothing private in either.
+    if (c.req.method === 'GET' && (c.req.path === '/api/v1/daemon' || c.req.path === '/api/v1/famous' || c.req.path.startsWith('/api/v1/famous/'))) return next()
     if (!apiUser(c)) return c.json({ error: 'sign in first: send Authorization: Bearer <token> (ancestry login makes one)' }, 401)
     await next()
   })
@@ -1388,6 +1392,8 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     },
   })
   mountAlbums(app, api, { store, site, ctx, form, treeFor, image: { types: IMAGE_TYPES, max: MAX_PHOTO } })
+  // Public pages with canonical links on the relay host, the one search engines can reach.
+  mountFamous(app, api, { famous, ctx, site: publicSite, ...(daemonStatus ? { status: daemonStatus } : {}) })
   app.route('/api/v1', api)
 
   app.notFound((c) => (c.req.path.startsWith('/api/') ? c.json({ error: 'not found' }, 404) : c.html(html.messagePage(ctx(c), 'Not found', 'There is nothing at this address.'), 404)))
@@ -1694,8 +1700,16 @@ export function serve() {
   const pitWorld = process.env.PIT_BRIDGE_SECRET ? { secret: process.env.PIT_BRIDGE_SECRET, ...(process.env.PIT_WORLD_URL ? { base: process.env.PIT_WORLD_URL } : {}) } : null
   // Names that only redirect here. family.tree is ours too: ANCESTRY_REDIRECT_HOSTS="" turns it off.
   const redirectHosts = (process.env.ANCESTRY_REDIRECT_HOSTS ?? (new URL(site).hostname === 'family.ancestry' ? 'family.tree' : '')).split(/[\s,]+/).filter(Boolean)
-  const app = createApp({ store, auth, site, publicSite, plan: planFromEnv(), pitWorld, redirectHosts, mailStatus, resendWebhookSecret })
+  // Famous families: the updater daemon keeps /famous current from Wikidata (daemon.ts). FAMOUS_DAEMON=off skips it.
+  const famous = new Famous(store)
+  const daemon = process.env.FAMOUS_DAEMON === 'off' ? null : buildDaemon(famous)
+  const app = createApp({ store, auth, site, publicSite, plan: planFromEnv(), pitWorld, redirectHosts, mailStatus, resendWebhookSecret, famous, ...(daemon ? { daemonStatus: () => daemon.status() } : {}) })
   const port = Number(process.env.PORT ?? 8792)
+  if (daemon) {
+    famous.seed()
+    daemon.start()
+    process.on('SIGTERM', () => void daemon.stop().then(() => process.exit(0)))
+  }
   startRingRefresh()
   startRingFooterRefresh()
   startPitFooterRefresh('family.ancestry')

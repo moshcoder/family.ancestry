@@ -278,3 +278,28 @@ label.check.pickrow { margin: 4px 0; }
 /* Family updates in the feed: read from the trees, not posted. */
 .update { display: flex; gap: 12px; align-items: center; padding: 10px 14px; }
 .update-photo { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; flex: none; }
+
+/* /famous (famous.ts): public family trees from Wikidata */
+.famous-tabs { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 14px 0; }
+.famous-tabs a { text-decoration: none; color: var(--muted); }
+.famous-tabs a[aria-current='page'] { color: var(--ink); font-weight: 600; }
+.famous-cards { list-style: none; padding: 0; margin: 0 0 8px; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.famous-card a { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--ink); text-decoration: none; min-height: 72px; }
+.famous-card a:hover { border-color: var(--accent); }
+.famous-card img, .famous-card .avatar { width: 56px; height: 56px; border-radius: 8px; object-fit: cover; flex: none; }
+.famous-head { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 18px; }
+.famous-head img { width: 160px; max-width: 40vw; height: auto; border-radius: 12px; border: 1px solid var(--line); }
+.famous-head h1 { margin: 2px 0 6px; font-family: var(--serif); }
+.famous .kicker { margin: 0; font-size: .8rem; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+.famous .lede { margin: 0 0 4px; font-size: 1.1rem; }
+.famous-group h2 { font-size: 1.05rem; margin: 22px 0 8px; }
+.famous-tree { margin: 10px 0 18px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); overflow-x: auto; }
+.ft-row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.ft-line { width: 2px; height: 16px; margin: 4px auto; background: var(--line); }
+.ft-node { display: inline-flex; flex-direction: column; align-items: center; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); text-decoration: none; font-size: .9rem; text-align: center; max-width: 180px; }
+.ft-node small { color: var(--muted); font-size: .75rem; }
+.ft-node.me { border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+.famous-cta { margin: 28px 0 8px; padding: 18px 20px; border-radius: 12px; background: var(--accent-soft); }
+.famous-cta h2 { margin: 0 0 6px; font-size: 1.15rem; }
+.famous-cta .btn { background: var(--accent); color: var(--accent-ink); }
+.pager { display: flex; gap: 16px; align-items: center; justify-content: center; margin: 18px 0; }
