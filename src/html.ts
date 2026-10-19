@@ -5,9 +5,10 @@
 import { createHash } from 'node:crypto'
 import { formatAddresses, formatLabeled, hasContact, readContact, socialUrl, type PersonContact } from './contact.js'
 import { readFileSync } from 'node:fs'
+import { pitFooter } from './pit-footer.js'
 import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Circle, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.16.1'
+export const VERSION = '0.16.2'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -61,15 +62,15 @@ export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [
 </header>
 <main class="${opts.wide ? 'wide' : ''}">
 ${crumbs}
+${adBanner('text_link')}
 ${ctx.flash ? `<p class="flash">${esc(ctx.flash)}</p>` : ''}${ctx.error ? `<p class="flash error">${esc(ctx.error)}</p>` : ''}
 ${body}
 </main>
-${adBanner('text_link')}
 <footer class="foot">
-  <span>family.ancestry ${VERSION} · open source (MIT) · <a href="https://github.com/moshcoder/family.ancestry">code</a> · <a href="/about">about</a> · <a href="/connect">reach it from anywhere</a></span>
-  <span>A <a href="https://pit.world">Moshpit</a> name. Your tree is private to the people you invite.</span>
-  <span><a href="https://built.indie.pit.world/p/family-ancestry?ref=badge"><img src="https://built.indie.pit.world/badge/family-ancestry.svg" alt="family.ancestry on built.indie" width="200" height="44"></a></span>${footerAd()}
+  <span>© family.ancestry · <a href="/about">About</a> · <a href="https://github.com/moshcoder/family.ancestry">Code</a> · MIT</span>
+  <a href="https://built.indie.pit.world/p/family-ancestry?ref=badge"><img src="https://built.indie.pit.world/badge/family-ancestry.svg" alt="family.ancestry on built.indie" width="200" height="44"></a>
 </footer>${statsScript()}
+${pitFooter()}
 </body>
 </html>`
 }
@@ -83,15 +84,6 @@ ${adBanner('text_link')}
 export const AD_SLOT = process.env.CRAWLPROOF_AD_SLOT ?? 'cb4310c4-7001-46ca-b625-159ee73df46b'
 export const adBanner = (format: 'banner_300x250' | 'text_link' = 'banner_300x250') =>
   AD_SLOT === 'off' ? '' : `<div class="ad-unit ad-${format}"><iframe src="https://crawlproof.com/api/ads/frame?slot=${encodeURIComponent(AD_SLOT)}&amp;format=${format}" title="Advertisement" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation" scrolling="no"></iframe></div>`
-
-/**
- * The footer's crawlproof ad network unit, filled by ad.js. Its creative is a srcdoc
- * frame that inherits our CSP, hence 'unsafe-inline' styles and https: images there.
- * CRAWLPROOF_FOOTER_SLOT overrides the slot; 'off' drops it.
- */
-export const FOOTER_SLOT = process.env.CRAWLPROOF_FOOTER_SLOT ?? 'da845841-3551-4962-8ed6-2e6a65e5b0c7'
-export const footerAd = () =>
-  FOOTER_SLOT === 'off' ? '' : `\n  <aside class="foot-ad" data-ad-network="cMfVN1_KxJlc-bX8" data-cp-ad data-slot="${esc(FOOTER_SLOT)}" data-format="banner_300x250"></aside>\n  <script src="https://crawlproof.com/ad.js" async></script>`
 
 /**
  * crawlproof analytics: one async script, so CSP adds crawlproof.com to script-src
