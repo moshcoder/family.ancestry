@@ -22,11 +22,15 @@ import {
   type RegistrationResponseJSON,
 } from '@simplewebauthn/server'
 import { newId, sha256, type Store, type User } from './db.js'
+import { esc } from './html.js'
 
 export const SESSION_COOKIE = 'fa_session'
 const SESSION_DAYS = 90
 const LINK_MINUTES = 20
 const CLI_CODE_MINUTES = 5
+
+/** A sign-in link, or (with `link_to`) a confirm link that adds its address to that account. */
+export type MagicLink = { email: string; next: string | null; link_to: string | null }
 
 export type Mail = { to: string; subject: string; text: string; html: string }
 /** Sends one message; resolves to the provider's message id when it has one. */
@@ -121,14 +125,26 @@ export class Auth {
 
   /** Always resolves; the caller answers the same thing whatever happens, so nobody learns who has an account. */
   /** `base` is where the link should open: the proxy address when the visitor asked from there (see server.ts). */
-  async sendLink(emailInput: string, next: string | null = null, base: string = this.site): Promise<boolean> {
+  /** `joining` makes it a confirm link that adds the address to that account instead of a sign-in link. */
+  async sendLink(emailInput: string, next: string | null = null, base: string = this.site, joining: User | null = null): Promise<boolean> {
     const email = validEmail(emailInput)
     if (!email) return false
     const recent = this.store.db.query<{ n: number }, [string, number]>('SELECT COUNT(*) AS n FROM magic_links WHERE email = ? AND created_at > ?').get(email, this.now() - 15 * 60_000)?.n ?? 0
     if (recent >= 5) return true
     const token = newId(24)
-    this.store.db.query('INSERT INTO magic_links (token_hash,email,next,created_at,expires_at) VALUES (?,?,?,?,?)').run(sha256(token), email, safeNext(next), this.now(), this.now() + LINK_MINUTES * 60_000)
+    this.store.db.query('INSERT INTO magic_links (token_hash,email,next,created_at,expires_at,link_to) VALUES (?,?,?,?,?,?)').run(sha256(token), email, safeNext(next), this.now(), this.now() + LINK_MINUTES * 60_000, joining?.id ?? null)
     const url = `${base}/auth/verify?token=${token}`
+    if (joining) {
+      const who = joining.email.endsWith('@pit.invalid') ? (joining.name ?? 'a pit.world account') : joining.email
+      const text = `Add ${email} as a sign-in email for the family.ancestry account ${who}:\n\n${url}\n\nOpen it in the browser where you are signed in to that account. It works once, for ${LINK_MINUTES} minutes. If you did not ask for it, ignore this email: nothing changes.`
+      const html = `<p>Add <strong>${esc(email)}</strong> as a sign-in email for the <strong>family.ancestry</strong> account ${esc(who)}:</p><p><a href="${url}" style="display:inline-block;padding:10px 18px;background:#3d6b4f;color:#fff;border-radius:6px;text-decoration:none">Add this email</a></p><p style="color:#666;font-size:13px">Or open ${url}<br>Open it in the browser where you are signed in to that account. It works once, for ${LINK_MINUTES} minutes. If you did not ask for it, ignore this email: nothing changes.</p>`
+      try {
+        await this.mailer({ to: email, subject: 'Add this email to your family.ancestry account', text, html })
+      } catch (error) {
+        console.error(`[auth] mail failed: ${(error as Error).message}`)
+      }
+      return true
+    }
     const text = `Sign in to family.ancestry:\n\n${url}\n\nThe link works once, for ${LINK_MINUTES} minutes. If you did not ask for it, ignore this email.`
     const html = `<p>Sign in to <strong>family.ancestry</strong>:</p><p><a href="${url}" style="display:inline-block;padding:10px 18px;background:#3d6b4f;color:#fff;border-radius:6px;text-decoration:none">Sign in</a></p><p style="color:#666;font-size:13px">Or open ${url}<br>The link works once, for ${LINK_MINUTES} minutes. If you did not ask for it, ignore this email.</p>`
     try {
@@ -141,11 +157,21 @@ export class Auth {
 
   /** Consume a link: one use, then it is gone. Returns the user (created on first sign-in) and where to go. */
   consumeLink(token: string): { user: User; next: string | null } | null {
-    const hash = sha256(String(token))
-    const row = this.store.db.query<{ email: string; next: string | null; expires_at: number }, [string]>('SELECT email, next, expires_at FROM magic_links WHERE token_hash = ?').get(hash)
-    this.store.db.query('DELETE FROM magic_links WHERE token_hash = ? OR expires_at < ?').run(hash, this.now())
-    if (!row || row.expires_at < this.now()) return null
-    return { user: this.store.findOrCreateUser(row.email), next: row.next }
+    const link = this.takeLink(token)
+    return link ? { user: this.store.findOrCreateUser(link.email), next: link.next } : null
+  }
+
+  /** A link that still works, left unused: what it is for decides what opening it does. */
+  peekLink(token: string): MagicLink | null {
+    const row = this.store.db.query<MagicLink & { expires_at: number }, [string]>('SELECT email, next, link_to, expires_at FROM magic_links WHERE token_hash = ?').get(sha256(String(token)))
+    return row && row.expires_at >= this.now() ? { email: row.email, next: row.next, link_to: row.link_to } : null
+  }
+
+  /** Use a link up: one use, then it is gone. */
+  takeLink(token: string): MagicLink | null {
+    const link = this.peekLink(token)
+    this.store.db.query('DELETE FROM magic_links WHERE token_hash = ? OR expires_at < ?').run(sha256(String(token)), this.now())
+    return link
   }
 
   // ---- sessions ----------------------------------------------------------

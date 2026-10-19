@@ -477,6 +477,9 @@ export class Store {
     if (!mediaCols.includes('uploaded_by')) this.db.run('ALTER TABLE media ADD COLUMN uploaded_by TEXT')
     this.db.run('CREATE INDEX IF NOT EXISTS media_album ON media(album_id)')
     this.db.run('CREATE INDEX IF NOT EXISTS media_tree_created ON media(tree_id, created_at)')
+    // Adding a sign-in email (0.23.0): the link says which account the address joins.
+    const linkCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('magic_links')").all().map((c) => c.name)
+    if (!linkCols.includes('link_to')) this.db.run('ALTER TABLE magic_links ADD COLUMN link_to TEXT')
   }
 
   tx<T>(fn: () => T): T {
@@ -494,6 +497,29 @@ export class Store {
   /** Link a second email address to an account: a magic link to it signs in there instead of making a new account. */
   linkEmail(userId: string, email: string) {
     this.linkIdentity(userId, 'email', email.trim().toLowerCase())
+  }
+
+  /** The extra addresses that sign in to this account, besides its own email. */
+  linkedEmails(userId: string): string[] {
+    return this.db.query<{ subject: string }, [string]>("SELECT subject FROM user_identities WHERE user_id = ? AND provider = 'email' ORDER BY created_at").all(userId).map((r) => r.subject)
+  }
+
+  unlinkEmail(userId: string, email: string) {
+    this.db.query("DELETE FROM user_identities WHERE user_id = ? AND provider = 'email' AND subject = ?").run(userId, email.trim().toLowerCase())
+  }
+
+  /**
+   * A proven address joins this account: 'taken' when it already signs in to another one. An account
+   * made by pit.world has no real email yet, so its first one becomes its own.
+   */
+  attachEmail(userId: string, email: string): 'added' | 'already' | 'taken' {
+    const address = email.trim().toLowerCase()
+    const holder = this.userByEmail(address)
+    if (holder) return holder.id === userId ? 'already' : 'taken'
+    const user = this.user(userId)
+    if (user?.email.endsWith('@pit.invalid')) this.db.query('UPDATE users SET email = ? WHERE id = ?').run(address, userId)
+    else this.linkEmail(userId, address)
+    return 'added'
   }
 
   user(id: string): User | null {

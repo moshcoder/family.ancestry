@@ -149,6 +149,20 @@ export function pitWorldChoicePage(ctx: Ctx, name: string | null, next: string |
   )
 }
 
+/** Signed in, opening a sign-in link for an address with no account: add it here, or make that address its own account. */
+export function addOrNewPage(ctx: Ctx, email: string, token: string): string {
+  const who = ctx.user?.email.endsWith('@pit.invalid') ? 'your pit.world account' : (ctx.user?.email ?? '')
+  const choice = (value: string, label: string) => `<form method="post" action="/auth/verify" class="inline">${csrfField(ctx)}<input type="hidden" name="token" value="${esc(token)}"><input type="hidden" name="choice" value="${value}"><button>${label}</button></form>`
+  return layout(
+    ctx,
+    'Add this email?',
+    `<h1>Add ${esc(email)} to your account?</h1>
+<p>You are signed in as <b>${esc(who)}</b>, and ${esc(email)} has no family.ancestry account yet.</p>
+<section class="panel"><h2>It's mine</h2><p class="muted small">Add it as a second sign-in email: either address opens the same trees.</p>${choice('add', `Add it to ${esc(who)}`)}</section>
+<section class="panel"><h2>It's someone else's</h2><p class="muted small">Sharing this device? Make a separate account for ${esc(email)} and sign in as them.</p>${choice('new', 'Make a separate account')}</section>`,
+  )
+}
+
 export function signInPage(ctx: Ctx, next: string | null): string {
   return layout(ctx, 'Sign in', `<h1>Sign in or sign up</h1>${signInForm(ctx, next)}`)
 }
@@ -831,13 +845,16 @@ ${ctx.user ? `<form method="post" action="/invite/${esc(token)}">${csrfField(ctx
   )
 }
 
-export function settingsPage(ctx: Ctx, data: { passkeys: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; tokens: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; newToken?: string | null; profile?: string; addons?: string; pitWorld?: { linked: boolean } | null }): string {
+export function settingsPage(ctx: Ctx, data: { passkeys: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; tokens: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; newToken?: string | null; profile?: string; addons?: string; emails?: string[]; pitWorld?: { linked: boolean } | null }): string {
   const when = (t: number | null) => (t ? new Date(t).toISOString().slice(0, 10) : 'never')
   return layout(
     ctx,
     'Settings',
     `<h1>Settings</h1>
 <form method="post" action="/settings/name" class="panel pform">${csrfField(ctx)}<h2>Your name</h2><label>Shown to other members of your trees<input name="name" value="${esc(ctx.user?.name ?? '')}" maxlength="120"></label><p class="muted small">Signed in as ${esc(ctx.user?.email.endsWith('@pit.invalid') ? 'your pit.world account' : ctx.user?.email)}</p><button>Save</button></form>
+<section class="panel"><h2>Sign-in emails</h2><p class="muted small">Every address here signs in to this one account. Add the others you use so a sign-in link to any of them opens your trees, not a new, empty account.</p>
+<ul>${ctx.user?.email.endsWith('@pit.invalid') ? '' : `<li>${esc(ctx.user?.email)} <span class="muted small">main</span></li>`}${(data.emails ?? []).map((e) => `<li>${esc(e)} <form method="post" action="/settings/emails/remove" class="inline">${csrfField(ctx)}<input type="hidden" name="email" value="${esc(e)}"><button class="x" title="Stop signing in with ${esc(e)}">×</button></form></li>`).join('')}</ul>
+<form method="post" action="/settings/emails" class="row">${csrfField(ctx)}<input name="email" type="email" placeholder="another@example.com" required maxlength="254"><button>Add an email</button></form></section>
 ${data.profile ?? ''}
 <section class="panel"><h2>Passkeys</h2><p class="muted small">Sign in with your fingerprint, face or device PIN instead of waiting for an email.</p>
 ${data.passkeys.length ? `<ul>${data.passkeys.map((k) => `<li>${esc(k.label ?? 'Passkey')} <span class="muted small">added ${when(k.created_at)}, last used ${when(k.last_used_at)}</span> <form method="post" action="/settings/passkeys/${encodeURIComponent(k.id)}/delete" class="inline">${csrfField(ctx)}<button class="x">×</button></form></li>`).join('')}</ul>` : ''}
