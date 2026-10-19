@@ -173,3 +173,28 @@ test('family updates: read from the trees, one line per import, only your own fa
   expect(feed.updates(b.id).length).toBeGreaterThan(0)
   expect(feed.updates(outsider.id)).toEqual([])
 })
+
+test('post from your own person page, and land back on it; others see it there, strangers never', async () => {
+  const { store, user, as } = world()
+  const work = user('anthony@example.com', 'Anthony Ettinger')
+  const home = user('ettinger@example.com', 'Anthony Ettinger')
+  const karen = user('karen@example.com', 'Karen')
+  const tree = store.createTree(work.id, 'The Ettinger Family')
+  store.setMember(tree.id, home.id, 'admin')
+  store.setMember(tree.id, karen.id, 'viewer')
+  const me = store.addPerson(tree.id, { given: 'Anthony', surname: 'Ettinger', living: '1' })
+  store.db.query('INSERT INTO profiles (tree_id, person_id, user_id, created_at) VALUES (?,?,?,?)').run(tree.id, me.id, work.id, Date.now())
+  const page = `/t/${tree.id}/p/${me.id}`
+
+  // Claimed by the other account, but it carries this account's name: it is still his to post on.
+  for (const u of [work, home]) expect(await (await as(u).get(page)).text()).toContain('Post to your feed')
+  expect(await (await as(karen).get(page)).text()).not.toContain('Post to your feed')
+
+  const res = await as(home).post('/feed', { body: 'Hello from my page', audience: tree.id, next: page })
+  expect(res.status).toBe(302)
+  expect(res.headers.get('location')).toStartWith(`${page}?ok=Posted`)
+  expect(await (await as(karen).get(page)).text()).toContain('Hello from my page')
+  expect(await (await as(karen).get('/feed')).text()).toContain('Hello from my page')
+  // Only paths inside a tree are followed back.
+  expect((await as(home).post('/feed', { body: 'x', next: 'https://evil.example/' })).headers.get('location')).toStartWith('/feed?')
+})
