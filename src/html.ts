@@ -9,7 +9,7 @@ import { pitFooter } from './pit-footer.js'
 import { ringFooter, ringFooterOptions, setRingFooterOptions } from './ring-footer.js'
 import { BONDS, UNION_KINDS, UNION_ENDS, canManage, grantable, fullName, lifespan, type Business, type Circle, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.20.0'
+export const VERSION = '0.21.0'
 
 // The footer's own links; the ring nav and copyright come from @profullstack/footer.
 setRingFooterOptions(
@@ -47,7 +47,7 @@ export function pitVerifyMeta(value = process.env.PIT_VERIFY): string {
   return value && /^[0-9a-f]{16,64}$/i.test(value) ? `\n<meta name="pit-verify" content="${value}">` : ''
 }
 
-export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [string, string][]; wide?: boolean; head?: string } = {}): string {
+export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [string, string][]; wide?: boolean; head?: string; description?: string } = {}): string {
   const crumbs = opts.crumbs?.length ? `<nav class="crumbs">${opts.crumbs.map(([href, label]) => (href ? `<a href="${esc(href)}">${esc(label)}</a>` : `<span>${esc(label)}</span>`)).join('<span class="sep">/</span>')}</nav>` : ''
   return `<!doctype html>
 <html lang="en">
@@ -55,7 +55,7 @@ export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}${title === 'family.ancestry' ? '' : ' · family.ancestry'}</title>
-<meta name="description" content="Private family trees for your family: GEDCOM import and export, pedigree charts, photos, sources, invites. Open source.">
+<meta name="description" content="${esc(opts.description ?? 'Private family trees for your family: GEDCOM import and export, pedigree charts, photos, sources, invites. Open source.')}">
 <meta name="theme-color" content="#2f5d43">${opts.head ?? ''}
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -67,7 +67,7 @@ export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [
 <!--ring-bar-->
 <header class="top">
   <a class="brand" href="/">${leaf()}<span>family<b>.ancestry</b></span></a>
-  <nav>${ctx.user ? `<a href="/feed">Feed</a><a href="/trees">Trees</a><a href="/network">Network</a><a href="/people">People</a><a href="/local">Local</a><a href="/inbox">Inbox${ctx.unread ? ` <span class="badge">${ctx.unread}</span>` : ''}</a><a href="/settings">${esc(ctx.user.name ?? ctx.user.email)}</a>` : '<a href="/people">People</a><a href="/families">Families</a><a href="/signin">Sign in</a>'}</nav>
+  <nav>${ctx.user ? `<a href="/feed">Feed</a><a href="/trees">Trees</a><a href="/network">Network</a><a href="/people">People</a><a href="/famous">Famous</a><a href="/local">Local</a><a href="/inbox">Inbox${ctx.unread ? ` <span class="badge">${ctx.unread}</span>` : ''}</a><a href="/settings">${esc(ctx.user.name ?? ctx.user.email)}</a>` : '<a href="/people">People</a><a href="/famous">Famous</a><a href="/families">Families</a><a href="/signin">Sign in</a>'}</nav>
 </header>
 <main class="${opts.wide ? 'wide' : ''}">
 ${crumbs}

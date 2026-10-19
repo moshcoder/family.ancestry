@@ -309,6 +309,23 @@ It is for people who know each other, and the rules are in the code, not just th
   Family plan), 120 messages an hour. A new
   message emails the recipient once per unread run, not once per message.
 
+## Famous families
+
+`/famous` is the public half: family trees of people everyone has heard of, the pedigrees of
+famous animals (racehorses, Laika, Hachikō) and corporate family trees (parent company,
+subsidiaries, founders, owners), from Wikidata (public domain, CC0). Every entry has an
+English Wikipedia article; living people show a birth year only, and no places. Each page
+has a canonical link on family.ancestry.pit.world, schema.org JSON-LD and a sitemap entry
+(`/sitemap.xml`), and ends with "Start your family tree". Nothing here reads the private trees.
+
+The updater daemon (`src/daemon.ts`, `@profullstack/scraper-daemon` on its own Redis,
+`deploy/redis.sh`) starts from the seeds in `src/famous.ts`, follows family, ownership and
+founder links up to `FAMOUS_MAX_DEPTH` (3) steps and `FAMOUS_MAX` (40000) entries, and
+revisits every entry daily with a conditional GET, so an unchanged one is a 304. It reads only
+`/wiki/Special:EntityData/<Q>.json`, which Wikidata's robots.txt allows, one request a second.
+Status: `GET /api/v1/daemon`; data: `GET /api/v1/famous?kind=people&q=`, `/api/v1/famous/<slug>`.
+`FAMOUS_DAEMON=off` turns it off.
+
 ## Running it
 
 ```sh
