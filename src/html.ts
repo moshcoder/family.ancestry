@@ -9,7 +9,7 @@ import { pitFooter } from './pit-footer.js'
 import { ringFooter, ringFooterOptions, setRingFooterOptions } from './ring-footer.js'
 import { BONDS, UNION_KINDS, UNION_ENDS, canManage, grantable, fullName, lifespan, type Business, type Circle, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.16.3'
+export const VERSION = '0.17.0'
 
 // The footer's own links; the ring nav and copyright come from @profullstack/footer.
 setRingFooterOptions(
@@ -67,7 +67,7 @@ export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [
 <!--ring-bar-->
 <header class="top">
   <a class="brand" href="/">${leaf()}<span>family<b>.ancestry</b></span></a>
-  <nav>${ctx.user ? `<a href="/feed">Feed</a><a href="/trees">Trees</a><a href="/network">Network</a><a href="/local">Local</a><a href="/inbox">Inbox${ctx.unread ? ` <span class="badge">${ctx.unread}</span>` : ''}</a><a href="/settings">${esc(ctx.user.name ?? ctx.user.email)}</a>` : '<a href="/families">Families</a><a href="/signin">Sign in</a>'}</nav>
+  <nav>${ctx.user ? `<a href="/feed">Feed</a><a href="/trees">Trees</a><a href="/network">Network</a><a href="/people">People</a><a href="/local">Local</a><a href="/inbox">Inbox${ctx.unread ? ` <span class="badge">${ctx.unread}</span>` : ''}</a><a href="/settings">${esc(ctx.user.name ?? ctx.user.email)}</a>` : '<a href="/people">People</a><a href="/families">Families</a><a href="/signin">Sign in</a>'}</nav>
 </header>
 <main class="${opts.wide ? 'wide' : ''}">
 ${crumbs}
@@ -828,13 +828,14 @@ ${ctx.user ? `<form method="post" action="/invite/${esc(token)}">${csrfField(ctx
   )
 }
 
-export function settingsPage(ctx: Ctx, data: { passkeys: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; tokens: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; newToken?: string | null; addons?: string; pitWorld?: { linked: boolean } | null }): string {
+export function settingsPage(ctx: Ctx, data: { passkeys: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; tokens: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; newToken?: string | null; profile?: string; addons?: string; pitWorld?: { linked: boolean } | null }): string {
   const when = (t: number | null) => (t ? new Date(t).toISOString().slice(0, 10) : 'never')
   return layout(
     ctx,
     'Settings',
     `<h1>Settings</h1>
 <form method="post" action="/settings/name" class="panel pform">${csrfField(ctx)}<h2>Your name</h2><label>Shown to other members of your trees<input name="name" value="${esc(ctx.user?.name ?? '')}" maxlength="120"></label><p class="muted small">Signed in as ${esc(ctx.user?.email.endsWith('@pit.invalid') ? 'your pit.world account' : ctx.user?.email)}</p><button>Save</button></form>
+${data.profile ?? ''}
 <section class="panel"><h2>Passkeys</h2><p class="muted small">Sign in with your fingerprint, face or device PIN instead of waiting for an email.</p>
 ${data.passkeys.length ? `<ul>${data.passkeys.map((k) => `<li>${esc(k.label ?? 'Passkey')} <span class="muted small">added ${when(k.created_at)}, last used ${when(k.last_used_at)}</span> <form method="post" action="/settings/passkeys/${encodeURIComponent(k.id)}/delete" class="inline">${csrfField(ctx)}<button class="x">×</button></form></li>`).join('')}</ul>` : ''}
 <button type="button" data-passkey-register>Add a passkey</button> <span class="muted small" data-passkey-status></span></section>

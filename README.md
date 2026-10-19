@@ -268,6 +268,25 @@ per tree, plus a hidden field for bots. Code: `src/listing.ts`. CLI: `ancestry l
 --note "..."`, `ancestry requests [invite|decline <id>]`, `ancestry families`, `ancestry ask`.
 MCP: `list_families`, `ask_to_join`, `tree_listing`, `join_requests`, `answer_join_request`.
 
+## Public profiles and Find people
+
+Anyone with an account can turn on a public profile at `/profile/<slug>`, e.g.
+`family.tree/profile/anthony.ettinger` (family.tree redirects with the path). The slug defaults
+to your name with dots (`anthony.ettinger`) and must be unique; the form offers
+`anthony.ettinger.los.gatos` and so on when it is taken. A profile holds only what you type into
+it: name, nickname, where you live (city, state, country), where you're from, a few lines, links,
+socials and an optional public email. It never reads the trees, and there is no field for birth
+dates, birthplace, relatives, street address or phone (the answers to security questions). Off by
+default; `noindex` unless you tick "Let search engines list this page". `/profile/<slug>/card.vcf`
+saves it as a contact.
+
+`/people` is one free search over published profiles, listed businesses and listed families, with
+a facet rail (kind, country, state, city, business category) and counts, like r4ck.dev's.
+
+API: `GET|POST|DELETE /api/v1/profile`, `GET /api/v1/profiles/:slug`, `GET /api/v1/people?q=&kind=&country=&region=&city=&category=`.
+CLI: `ancestry profile [on|off] [--slug S --city C --region R --country C --from TOWN ...]`, `ancestry find [search] [--city C ...]`.
+MCP: `my_public_profile`, `update_public_profile`, `find_people`.
+
 ## Network
 
 An add-on with its own tables and routes (`src/network*.ts`), included free with every

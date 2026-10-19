@@ -407,6 +407,18 @@ export class AncestryClient {
     return this.request<{ businesses: { id: string; name: string; category: string | null; role: string; title: string | null; url: string }[] }>('/api/v1/work').then((r) => r.businesses)
   }
 
+  // ---- public profile and Find people (src/profile.ts) ----
+  profile() {
+    return this.request<{ profile: PublicProfile | null; draft: PublicProfile | null }>('/api/v1/profile')
+  }
+  saveProfile(body: Record<string, unknown>) {
+    return this.request<{ profile: PublicProfile }>('/api/v1/profile', { method: 'POST', json: body }).then((r) => r.profile)
+  }
+  findPeople(filters: { q?: string; kind?: string; country?: string; region?: string; city?: string; category?: string } = {}) {
+    const qs = new URLSearchParams(Object.entries(filters).filter((e): e is [string, string] => Boolean(e[1]))).toString()
+    return this.request<{ hits: { kind: string; name: string; url: string; line: string; place: string; photo: string | null }[]; total: number; facets: { key: string; title: string; items: { value: string; label: string; count: number; on: boolean }[] }[] }>(`/api/v1/people${qs ? `?${qs}` : ''}`)
+  }
+
   // ---- listed families: found, never seen ----
   families(q = '') {
     return this.request<{ families: { id: string; name: string; listing: string | null }[] }>(`/api/v1/families?q=${encodeURIComponent(q)}`).then((r) => r.families)
@@ -520,3 +532,5 @@ export type ContactSummary = {
 }
 
 const enc = encodeURIComponent
+
+export type PublicProfile = { slug: string; published: boolean; indexable: boolean; name: string; nickname: string | null; city: string | null; region: string | null; country: string | null; hometown: string | null; bio: string | null; email: string | null; links: { label: string | null; value: string }[]; socials: { label: string | null; value: string }[]; url: string; photo: string | null }
