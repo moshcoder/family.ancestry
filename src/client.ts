@@ -546,6 +546,6 @@ export type ContactSummary = {
 
 const enc = encodeURIComponent
 
-export type SocialAccount = { account: string; network: string; account_url: string | null; posts: number; likes: number; reposts: number; replies: number; last_at: string; hidden: boolean }
+export type SocialAccount = { account: string; network: string; account_url: string | null; posts: number; likes: number | null; reposts: number | null; replies: number | null; last_at: string; hidden: boolean }
 export type SocialPost = { url: string; network: string; account: string; account_url: string | null; text: string; posted_at: string; likes: number | null; reposts: number | null; replies: number | null; counted_at: string | null }
 export type PublicProfile ={ slug: string; published: boolean; indexable: boolean; name: string; nickname: string | null; city: string | null; region: string | null; country: string | null; hometown: string | null; bio: string | null; email: string | null; links: { label: string | null; value: string }[]; socials: { label: string | null; value: string }[]; url: string; photo: string | null }

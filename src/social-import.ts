@@ -79,7 +79,10 @@ export function fromMyna(history: unknown, opts: { skip?: string[] } = {}): OutP
     if (TEST_HOST.test(host) || skip.has(raw.accountId) || seen.has(raw.url)) continue
     seen.add(raw.url)
     const network = String(raw.network ?? raw.accountId.split(':')[0])
-    const text = String(raw.title && raw.text ? `${raw.title}\n\n${raw.text}` : (raw.title ?? raw.text ?? ''))
+    // A forum or blog post's title is often the start of its text already.
+    const title = String(raw.title ?? '').trim().replace(/…$/, '')
+    const body = String(raw.text ?? '')
+    const text = title && body && !body.startsWith(title) ? `${title}\n\n${body}` : body || title
     out.push({ url: raw.url, network, account: raw.accountId, account_url: accountUrl(raw.accountId, raw.url), text: text.slice(0, 5000), posted_at: new Date(raw.at).toISOString(), postId: raw.postId ? String(raw.postId) : null })
   }
   return out.sort((a, b) => b.posted_at.localeCompare(a.posted_at))

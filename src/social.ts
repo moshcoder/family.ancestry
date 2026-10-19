@@ -30,9 +30,10 @@ export type SocialAccount = {
   network: string
   account_url: string | null
   posts: number
-  likes: number
-  reposts: number
-  replies: number
+  /** null when the network keeps no public count (LinkedIn, blogs, forums). */
+  likes: number | null
+  reposts: number | null
+  replies: number | null
   last_at: number
   hidden: boolean
 }
@@ -157,7 +158,7 @@ export class Socials {
   accounts(userId: string): SocialAccount[] {
     return this.store.db
       .query<Omit<SocialAccount, 'hidden'> & { hidden: number }, [string]>(
-        'SELECT account, network, MAX(account_url) AS account_url, COUNT(*) AS posts, COALESCE(SUM(likes), 0) AS likes, COALESCE(SUM(reposts), 0) AS reposts, COALESCE(SUM(replies), 0) AS replies, MAX(posted_at) AS last_at, EXISTS (SELECT 1 FROM social_hidden h WHERE h.user_id = social_posts.user_id AND h.account = social_posts.account) AS hidden FROM social_posts WHERE user_id = ? GROUP BY account, network ORDER BY last_at DESC',
+        'SELECT account, network, MAX(account_url) AS account_url, COUNT(*) AS posts, SUM(likes) AS likes, SUM(reposts) AS reposts, SUM(replies) AS replies, MAX(posted_at) AS last_at, EXISTS (SELECT 1 FROM social_hidden h WHERE h.user_id = social_posts.user_id AND h.account = social_posts.account) AS hidden FROM social_posts WHERE user_id = ? GROUP BY account, network ORDER BY last_at DESC',
       )
       .all(userId)
       .map((a) => ({ ...a, hidden: Boolean(a.hidden) }))
@@ -203,16 +204,17 @@ export function profileSection(name: string, posts: SocialPost[], accounts: Soci
   const links = shown.length
     ? `<p class="small">${shown.map((a) => (a.account_url ? `<a href="${esc(a.account_url)}" rel="me nofollow noopener">${esc(networkName(a.network))}: ${esc(handleOf(a.account))}</a>` : `${esc(networkName(a.network))}: ${esc(handleOf(a.account))}`)).join(' · ')}</p>`
     : ''
-  return `<section class="panel" id="socials"><h2>On ${mine ? 'my' : 'their'} socials</h2>${links}${posts.length ? `<ul class="sposts">${posts.map(postItem).join('')}</ul>` : `<p class="muted small">Nothing yet. <a href="/socials">Connect your socials</a>.</p>`}${mine ? '<p class="small"><a href="/socials">All my socials and engagement</a></p>' : ''}</section>`
+  return `<section class="panel" id="socials"><h2>On social media</h2>${links}${posts.length ? `<ul class="sposts">${posts.map(postItem).join('')}</ul>` : `<p class="muted small">Nothing yet. <a href="/socials">Connect your socials</a>.</p>`}${mine ? '<p class="small"><a href="/socials">All my socials and engagement</a></p>' : ''}</section>`
 }
 
 export function socialsPage(ctx: Ctx, accounts: SocialAccount[], posts: SocialPost[], filter: string | null, profileSlug: string | null): string {
   const csrf = csrfField(ctx)
-  const total = accounts.reduce((s, a) => ({ posts: s.posts + a.posts, likes: s.likes + a.likes, reposts: s.reposts + a.reposts, replies: s.replies + a.replies }), { posts: 0, likes: 0, reposts: 0, replies: 0 })
+  const total = accounts.reduce((s, a) => ({ posts: s.posts + a.posts, likes: s.likes + (a.likes ?? 0), reposts: s.reposts + (a.reposts ?? 0), replies: s.replies + (a.replies ?? 0) }), { posts: 0, likes: 0, reposts: 0, replies: 0 })
+  const n = (x: number | null) => (x === null ? '<span class="muted" title="This network keeps no public count">–</span>' : String(x))
   const rows = accounts
     .map(
       (a) =>
-        `<tr><td><span class="tag">${esc(networkName(a.network))}</span> ${a.account_url ? `<a href="${esc(a.account_url)}" rel="nofollow noopener">${esc(handleOf(a.account))}</a>` : esc(handleOf(a.account))}</td><td><a href="/socials?account=${encodeURIComponent(a.account)}">${a.posts}</a></td><td>${a.likes}</td><td>${a.reposts}</td><td>${a.replies}</td><td class="muted small">${day(a.last_at)}</td><td><form method="post" action="/socials/hide" class="inline">${csrf}<input type="hidden" name="account" value="${esc(a.account)}"><input type="hidden" name="hidden" value="${a.hidden ? '0' : '1'}"><button class="btn small${a.hidden ? '' : ' on'}" title="Show this account's posts on your public profile">${a.hidden ? 'Hidden' : 'On profile'}</button></form></td></tr>`,
+        `<tr><td><span class="tag">${esc(networkName(a.network))}</span> ${a.account_url ? `<a href="${esc(a.account_url)}" rel="nofollow noopener">${esc(handleOf(a.account))}</a>` : esc(handleOf(a.account))}</td><td><a href="/socials?account=${encodeURIComponent(a.account)}">${a.posts}</a></td><td>${n(a.likes)}</td><td>${n(a.reposts)}</td><td>${n(a.replies)}</td><td class="muted small">${day(a.last_at)}</td><td><form method="post" action="/socials/hide" class="inline">${csrf}<input type="hidden" name="account" value="${esc(a.account)}"><input type="hidden" name="hidden" value="${a.hidden ? '0' : '1'}"><button class="btn small${a.hidden ? '' : ' on'}" title="Show this account's posts on your public profile">${a.hidden ? 'Hidden' : 'On profile'}</button></form></td></tr>`,
     )
     .join('')
   const table = accounts.length
