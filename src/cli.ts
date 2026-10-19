@@ -8,6 +8,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { basename } from 'node:path'
 import { AncestryClient, ApiError, readConfig, writeConfig, configPath, type BusinessDetail, type FeedPost, type BusinessSummary, type PersonDetail, type PhotoSummary, type TreeSummary } from './client.js'
 import { VERSION } from './html.js'
+import { fillCounts, fromMyna, MYNA_HISTORY, type OutPost } from './social-import.js'
 
 const HELP = `ancestry ${VERSION}: private family trees, from the terminal
 
@@ -91,6 +92,12 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
                                     your public profile at /profile/<slug>: only what you type, never the tree
   ancestry find [search] [--kind people|businesses|families] [--country C] [--region R] [--city C] [--category C]
                                     Find people: public profiles, listed businesses and families, with facets
+  ancestry social [account] [--limit N]   your posts on other networks, with likes, reposts and replies
+  ancestry social import [file] [--days 30] [--no-counts] [--skip account,...]
+                                    send what myna posted (~/.config/myna/history.json, or a JSON list of
+                                    {url, network, account, text, posted_at}); reads counts for the last --days
+  ancestry social hide|show <account>   keep an account off your public profile, or put it back
+  ancestry social rm <account> | --url URL
 
   ancestry contacts [search] [--circle family|friends|neighbors|business]
   ancestry contact add --name N [--email E] [--phone P] [--circle C] [--relationship R]
@@ -891,6 +898,46 @@ export async function runCli(argv: string[]): Promise<number> {
       case 'find': {
         const r = await client.findPeople({ q: rest.join(' '), kind: str(f.kind), country: str(f.country), region: str(f.region), city: str(f.city), category: str(f.category) })
         print(r, () => (r.hits.length ? r.hits.map((h) => `${h.kind.padEnd(10)} ${h.name}${h.place ? `  ${h.place}` : ''}  ${h.url}`).join('\n') + `\n${r.facets.map((g) => `  ${g.title}: ${g.items.map((i) => `${i.label} (${i.count})`).join(', ')}`).join('\n')}` : 'Nobody public matches that.'))
+        return 0
+      }
+      case 'social': {
+        const [sub, ...args] = rest
+        if (sub === 'import') {
+          const file = args[0] ?? MYNA_HISTORY
+          const parsed = JSON.parse(readFileSync(file, 'utf8'))
+          // A myna history file, or a plain list in the API's own shape.
+          const posts: OutPost[] = Array.isArray(parsed) && parsed[0] && 'account' in parsed[0] ? parsed : fromMyna(parsed, { skip: typeof f.skip === 'string' ? f.skip.split(',') : [] })
+          const days = Number(typeof f.days === 'string' ? f.days : 30)
+          const counted = f['no-counts'] ? 0 : await fillCounts(posts, { since: Date.now() - days * 86_400_000, pauseMs: 200 })
+          let saved = 0
+          let skipped = 0
+          for (let i = 0; i < posts.length; i += 500) {
+            const r = await client.saveSocialPosts(posts.slice(i, i + 500).map(({ postId: _id, ...p }) => p))
+            saved += r.saved
+            skipped += r.skipped
+          }
+          const accounts = new Set(posts.map((p) => p.account))
+          print({ saved, skipped, counted, accounts: [...accounts] }, () => `Saved ${saved} posts from ${accounts.size} accounts${skipped ? ` (${skipped} skipped)` : ''}; read likes, reposts and replies for ${counted}.\n  ${[...accounts].join('\n  ')}`)
+          return 0
+        }
+        if (sub === 'hide' || sub === 'show') {
+          if (!args[0]) throw new Error(`usage: ancestry social ${sub} <account>`)
+          await client.hideSocialAccount(args[0], sub === 'hide')
+          console.log(sub === 'hide' ? `${args[0]} no longer shows on your public profile.` : `${args[0]} shows on your public profile.`)
+          return 0
+        }
+        if (sub === 'rm') {
+          const r = await client.removeSocial({ url: str(f.url), account: str(f.account) ?? args[0] })
+          console.log(`Removed ${r.removed} posts.`)
+          return 0
+        }
+        const r = await client.social(str(f.account) ?? sub ?? null, Number(typeof f.limit === 'string' ? f.limit : 20))
+        const n = (x: number | null) => (x === null ? '-' : String(x))
+        print(r, () =>
+          r.accounts.length
+            ? `${r.accounts.map((a) => `${a.account.padEnd(46)} ${String(a.posts).padStart(4)} posts  ${String(a.likes).padStart(4)} likes  ${String(a.reposts).padStart(3)} reposts  ${String(a.replies).padStart(3)} replies${a.hidden ? '  (hidden)' : ''}`).join('\n')}\n\n${r.posts.map((p) => `${p.posted_at.slice(0, 10)}  ${p.account}  ♥${n(p.likes)} ↻${n(p.reposts)} ↩${n(p.replies)}\n  ${p.text.replace(/\s+/g, ' ').slice(0, 100)}\n  ${p.url}`).join('\n')}`
+            : 'No socials yet. ancestry social import reads what myna posted.',
+        )
         return 0
       }
       case 'families': {

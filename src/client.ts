@@ -414,6 +414,19 @@ export class AncestryClient {
   saveProfile(body: Record<string, unknown>) {
     return this.request<{ profile: PublicProfile }>('/api/v1/profile', { method: 'POST', json: body }).then((r) => r.profile)
   }
+  social(account?: string | null, limit = 50) {
+    const qs = new URLSearchParams({ limit: String(limit), ...(account ? { account } : {}) }).toString()
+    return this.request<{ accounts: SocialAccount[]; posts: SocialPost[] }>(`/api/v1/social?${qs}`)
+  }
+  saveSocialPosts(posts: unknown[]) {
+    return this.request<{ saved: number; skipped: number }>('/api/v1/social/posts', { method: 'POST', json: { posts } })
+  }
+  hideSocialAccount(account: string, hidden = true) {
+    return this.request<{ ok: boolean }>('/api/v1/social/accounts/hide', { method: 'POST', json: { account, hidden } })
+  }
+  removeSocial(what: { url?: string; account?: string }) {
+    return this.request<{ removed: number }>('/api/v1/social/posts/remove', { method: 'POST', json: what })
+  }
   findPeople(filters: { q?: string; kind?: string; country?: string; region?: string; city?: string; category?: string } = {}) {
     const qs = new URLSearchParams(Object.entries(filters).filter((e): e is [string, string] => Boolean(e[1]))).toString()
     return this.request<{ hits: { kind: string; name: string; url: string; line: string; place: string; photo: string | null }[]; total: number; facets: { key: string; title: string; items: { value: string; label: string; count: number; on: boolean }[] }[] }>(`/api/v1/people${qs ? `?${qs}` : ''}`)
@@ -533,4 +546,6 @@ export type ContactSummary = {
 
 const enc = encodeURIComponent
 
-export type PublicProfile = { slug: string; published: boolean; indexable: boolean; name: string; nickname: string | null; city: string | null; region: string | null; country: string | null; hometown: string | null; bio: string | null; email: string | null; links: { label: string | null; value: string }[]; socials: { label: string | null; value: string }[]; url: string; photo: string | null }
+export type SocialAccount = { account: string; network: string; account_url: string | null; posts: number; likes: number; reposts: number; replies: number; last_at: string; hidden: boolean }
+export type SocialPost = { url: string; network: string; account: string; account_url: string | null; text: string; posted_at: string; likes: number | null; reposts: number | null; replies: number | null; counted_at: string | null }
+export type PublicProfile ={ slug: string; published: boolean; indexable: boolean; name: string; nickname: string | null; city: string | null; region: string | null; country: string | null; hometown: string | null; bio: string | null; email: string | null; links: { label: string | null; value: string }[]; socials: { label: string | null; value: string }[]; url: string; photo: string | null }

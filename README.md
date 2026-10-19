@@ -288,6 +288,22 @@ API: `GET|POST|DELETE /api/v1/profile`, `GET /api/v1/profiles/:slug`, `GET /api/
 CLI: `ancestry profile [on|off] [--slug S --city C --region R --country C --from TOWN ...]`, `ancestry find [search] [--city C ...]`.
 MCP: `my_public_profile`, `update_public_profile`, `find_people`.
 
+## Socials
+
+`/socials` is one place for everything you posted on other networks (Bluesky, Mastodon, LinkedIn,
+dev.to, blogs, forums) and how people answered: per-account posts, likes, reposts and replies, and
+every post linked back to the original. Only you see that page. The newest posts also show on your
+public profile under "On my socials", since they are public already; hide an account to keep it off.
+
+The server never calls a network. Posts arrive through the API with your token, from whatever did
+the posting. `ancestry social import` reads [myna](https://mynaposter.com)'s
+`~/.config/myna/history.json` (or a JSON list in the API's shape) and fills the counts from the
+public, keyless APIs of Bluesky, Mastodon and dev.to; run it on a timer to keep them current.
+
+API: `GET /api/v1/social[?account=]`, `POST /api/v1/social/posts {posts: [{url, network, account, text, posted_at, account_url?, likes?, reposts?, replies?}]}` (up to 500, same url updates, missing counts keep theirs), `POST /api/v1/social/accounts/hide {account, hidden}`, `POST /api/v1/social/posts/remove {url | account}`.
+CLI: `ancestry social [account]`, `ancestry social import [file] [--days 30] [--no-counts] [--skip a,b]`, `ancestry social hide|show <account>`, `ancestry social rm <account>`.
+MCP: `my_socials`, `add_social_posts`, `hide_social_account`.
+
 ## Network
 
 An add-on with its own tables and routes (`src/network*.ts`), included free with every

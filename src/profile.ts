@@ -379,7 +379,7 @@ export function settingsPanel(p: Profile | null, site: string): string {
     p?.published
       ? `<p>On: <a href="/profile/${esc(p.slug)}">${esc(site)}/profile/${esc(p.slug)}</a></p>`
       : '<p class="muted small">Off. A page you can send anyone, with your name, where you live and where you\'re from, and links you choose. Never your birthday, family or address.</p>'
-  }<p><a class="btn" href="/settings/profile">${p ? 'Edit' : 'Make'} my public profile</a> <a href="/people">Find people</a></p></section>`
+  }<p><a class="btn" href="/settings/profile">${p ? 'Edit' : 'Make'} my public profile</a> <a href="/socials">My socials</a> <a href="/people">Find people</a></p></section>`
 }
 
 /** vCard 3.0 of what the page shows, nothing more. */
