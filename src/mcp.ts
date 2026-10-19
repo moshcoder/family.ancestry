@@ -38,6 +38,27 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
   server.tool('list_trees', 'List the family trees you can see, with your role in each and how many people they hold.', {}, async () => json(await client.trees()))
 
   server.tool(
+    'list_pickable_people',
+    'Families overlap: everyone you could copy into a tree, from your other trees and your network. Each has a `pick` value for bring_people or create_tree.',
+    { except_tree_id: z.string().optional() },
+    async ({ except_tree_id }: any) => json(await client.pickable(except_tree_id)),
+  )
+
+  server.tool(
+    'create_tree',
+    'Start a family tree. `people` takes pick values from list_pickable_people to start it with people you already have (their links, events and photo come along).',
+    { name: z.string().max(200), description: z.string().max(2000).optional(), people: z.array(z.string()).max(2000).optional(), share: z.boolean().default(true).describe('people with an account can see the new tree') },
+    async ({ name, description, people, share }: any) => json(await client.createTree(name, description, people ?? [], share)),
+  )
+
+  server.tool(
+    'bring_people',
+    'Copy people you already have into a tree (pick values from list_pickable_people). Partners, parents and children among them stay linked.',
+    { tree_id: z.string(), people: z.array(z.string()).min(1).max(2000), share: z.boolean().default(true).describe('people with an account can see this tree') },
+    async ({ tree_id, people, share }: any) => json(await client.bringPeople(tree_id, people, share)),
+  )
+
+  server.tool(
     'search_people',
     'Search the people in a family tree by name, place or year. Every word must match. Returns ids to use with the other tools. Businesses: search_businesses.',
     { tree_id: z.string(), query: z.string().max(200).default(''), limit: z.number().int().min(1).max(500).optional() },

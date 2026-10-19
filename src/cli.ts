@@ -14,7 +14,12 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
   ancestry login [--url URL]        sign in through the browser (or --token fa_...)
   ancestry logout | whoami
   ancestry trees                    list your trees
-  ancestry new <name>               start a tree
+  ancestry new <name> [--from PICK,PICK...] [--no-share]
+                                    start a tree; --from copies people you already have (see pickable)
+  ancestry pickable                 people in your other trees and your network, with their PICK values
+  ancestry bring <PICK...> [--tree T] [--no-share]
+                                    copy them into a tree: families overlap. Links among them come along;
+                                    anyone with an account becomes a viewer unless --no-share
   ancestry use <tree>               set the default tree (id or name)
   ancestry people [search]          list or search people
   ancestry show <person>            everything about one person
@@ -113,7 +118,7 @@ export function parseArgs(argv: string[]): Args {
     if (m) {
       const key = short[m[1]!] ?? m[1]!
       if (m[2] !== undefined) out.flags[key] = m[2]
-      else if (argv[i + 1] !== undefined && !argv[i + 1]!.startsWith('-') && !['living', 'json', 'privacy', 'help', 'version', 'full', 'raised', 'create'].includes(key)) out.flags[key] = argv[++i]!
+      else if (argv[i + 1] !== undefined && !argv[i + 1]!.startsWith('-') && !['living', 'json', 'privacy', 'help', 'version', 'full', 'raised', 'create', 'no-share'].includes(key)) out.flags[key] = argv[++i]!
       else out.flags[key] = true
     } else out._.push(a)
   }
@@ -421,9 +426,23 @@ export async function runCli(argv: string[]): Promise<number> {
         return 0
       }
       case 'new': {
-        const tree = await client.createTree(rest.join(' ') || 'Family tree', str(f.description))
+        const from = (str(f.from) ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+        const tree = await client.createTree(rest.join(' ') || 'Family tree', str(f.description), from, f['no-share'] !== true)
         writeConfig({ ...readConfig(), tree: tree.id })
-        print(tree, () => `Started ${tree.name} (${tree.id}); it is now your default tree.`)
+        print(tree, () => `Started ${tree.name} (${tree.id}); it is now your default tree.${tree.added ? ` Copied in ${tree.added} ${tree.added === 1 ? 'person' : 'people'}${tree.shared ? `; ${tree.shared} can now see it` : ''}.` : ''}`)
+        return 0
+      }
+      case 'pickable': {
+        const current = readConfig().tree
+        const r = await client.pickable(str(f.tree) ?? current)
+        print(r, () => [...r.trees.map((t) => `${t.name}\n${t.people.map((p) => `  ${p.pick}  ${p.name}${p.birth_date || p.death_date ? ` (${p.birth_date ?? ''}-${p.death_date ?? ''})` : ''}`).join('\n')}`), r.contacts.length ? `Your network\n${r.contacts.map((k) => `  ${k.pick}  ${k.name}  ${k.circle}${k.has_account ? ', has an account' : ''}`).join('\n')}` : ''].filter(Boolean).join('\n') || 'Nobody to pick yet.')
+        return 0
+      }
+      case 'bring': {
+        const tree = await pickTree(client, f.tree)
+        if (!rest.length) throw new Error('name at least one PICK value: ancestry pickable lists them')
+        const r = await client.bringPeople(tree.id, rest, f['no-share'] !== true)
+        print(r, () => `Copied ${r.added} ${r.added === 1 ? 'person' : 'people'} into ${tree.name}${r.shared ? `; ${r.shared} can now see it` : ''}.`)
         return 0
       }
       case 'use': {

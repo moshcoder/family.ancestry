@@ -181,5 +181,15 @@
     })
   }
 
+  // "Add people you already have": narrow the checkboxes by name; ticked ones always stay in view.
+  for (const input of document.querySelectorAll('[data-pick-filter]')) {
+    const box = input.parentElement.querySelector('.pickbox')
+    input.addEventListener('input', () => {
+      const words = input.value.toLowerCase().split(/\s+/).filter(Boolean)
+      for (const row of box.querySelectorAll('.pickrow')) row.hidden = !row.querySelector('input').checked && !words.every((w) => row.dataset.name.includes(w))
+      for (const set of box.querySelectorAll('fieldset')) set.hidden = ![...set.querySelectorAll('.pickrow')].some((r) => !r.hidden)
+    })
+  }
+
   if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {})
 })()

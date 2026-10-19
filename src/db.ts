@@ -716,6 +716,66 @@ export class Store {
     return rows.filter((p) => words.every((w) => hay(p).includes(w))).slice(0, limit)
   }
 
+  /** Everyone this user can already see, tree by tree: what "pick people you already have" offers. */
+  pickablePeople(userId: string, exceptTreeId: string | null = null): { tree: Tree; people: Person[] }[] {
+    return this.treesFor(userId)
+      .filter((t) => t.id !== exceptTreeId && t.people > 0)
+      .map((t) => ({ tree: this.tree(t.id)!, people: this.people(t.id, 2000) }))
+  }
+
+  /**
+   * Families overlap: bring people from trees this user belongs to into `targetId`.
+   * Each pick is copied with its events and profile photo; partnerships, children and
+   * bonds come along when both ends were picked from the same tree (a family with one
+   * picked partner still carries the picked children). Someone who claimed their
+   * profile keeps it here, and with `share` becomes a viewer of this tree too.
+   */
+  copyPeople(targetId: string, userId: string, picks: { tree: string; person: string }[], opts: { share?: boolean } = {}): { added: Person[]; shared: string[] } {
+    const added: Person[] = []
+    const shared: string[] = []
+    this.tx(() => {
+      const bySource = new Map<string, Map<string, string>>()
+      for (const pick of picks.slice(0, 2000)) {
+        if (pick.tree === targetId || !this.role(pick.tree, userId)) continue
+        const from = this.person(pick.tree, pick.person)
+        const ids = bySource.get(pick.tree) ?? new Map<string, string>()
+        if (!from || ids.has(from.id)) continue
+        bySource.set(pick.tree, ids)
+        const copy = this.addPerson(targetId, from as unknown as Record<string, unknown>, from.kind === 'pet' ? 'pet' : 'person')
+        ids.set(from.id, copy.id)
+        added.push(copy)
+        for (const e of this.events(pick.tree, from.id)) this.addEvent(targetId, copy.id, e)
+        const photo = from.photo_id ? this.mediaData(pick.tree, from.photo_id) : null
+        if (photo) this.setPhoto(targetId, copy.id, this.addMedia(targetId, copy.id, { filename: photo.filename, mime: photo.mime, data: photo.data, caption: photo.caption, uploadedBy: userId }).id)
+        const holder = this.profileUser(pick.tree, from.id)
+        if (holder && !this.profilePerson(targetId, holder.id) && (opts.share || this.role(targetId, holder.id))) {
+          if (!this.role(targetId, holder.id)) {
+            this.setMember(targetId, holder.id, 'viewer')
+            shared.push(holder.id)
+          }
+          this.claimProfile(targetId, copy.id, holder.id)
+          if (holder.id === userId) this.updateTree(targetId, { home_person_id: copy.id })
+        }
+      }
+      for (const [sourceId, ids] of bySource) {
+        for (const fam of this.families(sourceId)) {
+          const p1 = fam.partner1_id ? (ids.get(fam.partner1_id) ?? null) : null
+          const p2 = fam.partner2_id ? (ids.get(fam.partner2_id) ?? null) : null
+          const kids = this.childLinksOf(sourceId, fam.id).filter((k) => ids.has(k.person_id))
+          if (!(p1 && p2) && !((p1 || p2) && kids.length) && !(kids.length > 1)) continue
+          const copy = this.createFamily(targetId, p1, p2, fam)
+          for (const k of kids) this.addChild(targetId, copy.id, ids.get(k.person_id)!, k.relation)
+        }
+        for (const b of this.allBonds(sourceId)) {
+          const a = ids.get(b.person_id)
+          const o = ids.get(b.other_id)
+          if (a && o) this.addBond(targetId, a, o, b.kind, b.note)
+        }
+      }
+    })
+    return { added, shared }
+  }
+
   surnames(treeId: string): { surname: string; n: number }[] {
     return this.db.query<{ surname: string; n: number }, [string]>("SELECT surname, COUNT(*) AS n FROM people WHERE tree_id = ? AND surname != '' GROUP BY surname ORDER BY n DESC, surname LIMIT 200").all(treeId)
   }

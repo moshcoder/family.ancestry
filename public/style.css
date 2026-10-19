@@ -220,3 +220,6 @@ fieldset legend { font-weight: 600; padding: 0 4px; }
 .hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
 ul.families { list-style: none; padding: 0; }
 ul.families li { padding: 10px 0; border-bottom: 1px solid var(--line, #ddd); }
+.picker h3 { margin: 6px 0 2px; font-size: 1rem; }
+.pickbox { max-height: 320px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; padding: 2px 8px; margin: 8px 0; }
+label.check.pickrow { margin: 4px 0; }

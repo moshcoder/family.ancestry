@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.11.0'
+export const VERSION = '0.12.0'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -146,7 +146,25 @@ export function messagePage(ctx: Ctx, title: string, message: string, status = '
 
 // ---- trees -----------------------------------------------------------------
 
-export function treesPage(ctx: Ctx, trees: (Tree & { role: Role; people: number })[], work: { id: string; name: string }[] = []): string {
+/** People this user already has, by tree, plus their network: what a tree can be started from. */
+export type Pickable = { sources: { tree: Tree; people: Person[] }[]; contacts: { id: string; name: string; circle: string; linked: boolean }[] }
+
+/** Checkboxes for people you already have, so overlapping families share them instead of retyping them. */
+export function peoplePicker(pick: Pickable | undefined): string {
+  if (!pick || (!pick.sources.length && !pick.contacts.length)) return ''
+  const row = (value: string, name: string, extra: string) => `<label class="check pickrow" data-name="${esc(name.toLowerCase())}"><input type="checkbox" name="pick" value="${esc(value)}"> ${esc(name)}${extra ? ` <span class="muted small">${esc(extra)}</span>` : ''}</label>`
+  const groups = pick.sources
+    .map((s) => `<fieldset><legend>${esc(s.tree.name)}</legend>${s.people.map((p) => row(`p:${s.tree.id}:${p.id}`, fullName(p), [lifespan(p), p.kind === 'pet' ? (p.species ?? 'pet') : ''].filter(Boolean).join(' · '))).join('')}</fieldset>`)
+    .join('')
+  const contacts = pick.contacts.length ? `<fieldset><legend>Your network</legend>${pick.contacts.map((c) => row(`c:${c.id}`, c.name, [c.circle, c.linked ? 'has an account' : ''].filter(Boolean).join(' · '))).join('')}</fieldset>` : ''
+  return `<div class="picker"><h3>Add people you already have</h3>
+  <p class="muted small">Families overlap. Tick anyone from your other trees or your network: they come over with their dates, events and photo, and the parents, partners and children among the people you tick stay linked.</p>
+  <input type="search" data-pick-filter placeholder="Filter by name" aria-label="Filter people">
+  <div class="pickbox">${groups}${contacts}</div>
+  <label class="check"><input type="checkbox" name="share" value="1" checked> Let the people I tick who have an account see this tree (as viewers)</label></div>`
+}
+
+export function treesPage(ctx: Ctx, trees: (Tree & { role: Role; people: number })[], work: { id: string; name: string }[] = [], pick?: Pickable): string {
   const list = trees.length
     ? `<ul class="cards">${trees.map((t) => `<li><a href="/t/${t.id}"><h3>${esc(t.name)}</h3><p class="muted">${t.people} ${t.people === 1 ? 'person' : 'people'} · ${t.role}</p>${t.description ? `<p>${esc(t.description)}</p>` : ''}</a></li>`).join('')}</ul>`
     : '<p class="empty">No trees yet. Start one below, or import a GEDCOM file from another site.</p>'
@@ -158,6 +176,7 @@ export function treesPage(ctx: Ctx, trees: (Tree & { role: Role; people: number 
 <form method="post" action="/trees" class="panel">${csrfField(ctx)}<h2>Start a tree</h2>
   <label>Name<input name="name" required maxlength="200" placeholder="The Ettinger family"></label>
   <label>Description<textarea name="description" rows="2" maxlength="2000"></textarea></label>
+  ${peoplePicker(pick)}
   <button>Create tree</button></form>
 <form method="post" action="/trees/import" enctype="multipart/form-data" class="panel">${csrfField(ctx)}<h2>Import a GEDCOM</h2>
   <p class="muted small">From Ancestry: Trees → Tree settings → Export tree. Most other sites call it "Export GEDCOM".</p>
@@ -171,7 +190,7 @@ export function treesPage(ctx: Ctx, trees: (Tree & { role: Role; people: number 
 const personLink = (treeId: string, p: Person | null | undefined, cls = '') =>
   p ? `<a class="pl ${cls} sex-${p.sex}" href="/t/${treeId}/p/${p.id}">${esc(fullName(p))}${lifespan(p) ? ` <span class="yrs">${esc(lifespan(p))}</span>` : ''}</a>` : '<span class="muted">unknown</span>'
 
-export function treePage(ctx: Ctx, tree: Tree, role: Role, data: { stats: Record<string, number>; home: Person | null; people: Person[]; businesses?: Business[]; surnames: { surname: string; n: number }[]; query: string; plan?: boolean }): string {
+export function treePage(ctx: Ctx, tree: Tree, role: Role, data: { stats: Record<string, number>; home: Person | null; people: Person[]; businesses?: Business[]; surnames: { surname: string; n: number }[]; query: string; plan?: boolean; pick?: Pickable }): string {
   const edit = canEdit(role)
   const list = data.people.length
     ? `<table class="people"><thead><tr><th>Name</th><th>Born</th><th>Died</th></tr></thead><tbody>${data.people
@@ -192,6 +211,7 @@ ${data.home ? `<p>Home person: ${personLink(tree.id, data.home)}</p>` : ''}
 ${data.surnames.length && !data.query ? `<p class="surnames">${data.surnames.slice(0, 40).map((s) => `<a href="/t/${tree.id}?q=${encodeURIComponent(s.surname)}">${esc(s.surname)} <span>${s.n}</span></a>`).join('')}</p>` : ''}
 ${businesses}${data.businesses?.length && !data.people.length ? '' : list}
 ${edit ? `<details class="panel"${data.people.length ? '' : ' open'}><summary>Add a person</summary>${personForm(ctx, `/t/${tree.id}/people`, null, 'Add person')}</details>
+${peoplePicker(data.pick) ? `<form method="post" action="/t/${tree.id}/bring" class="panel">${csrfField(ctx)}<h2>Bring in people from your other trees</h2>${peoplePicker(data.pick)}<button>Add the people I ticked</button></form>` : ''}
 <details class="panel"><summary>Import a GEDCOM into this tree</summary><form method="post" action="/t/${tree.id}/import" enctype="multipart/form-data">${csrfField(ctx)}<input type="file" name="file" accept=".ged,.gedcom,text/plain" required> <button>Import</button></form></details>` : ''}
 ${role === 'owner' ? `<details class="panel"><summary>Tree settings</summary><form method="post" action="/t/${tree.id}/settings">${csrfField(ctx)}<label>Name<input name="name" value="${esc(tree.name)}" maxlength="200"></label><label>Description<textarea name="description" rows="2">${esc(tree.description ?? '')}</textarea></label><button>Save</button></form>
 <form method="post" action="/t/${tree.id}/delete" data-confirm="Delete ${esc(tree.name)} and everyone in it? This cannot be undone.">${csrfField(ctx)}<button class="danger">Delete this tree</button></form></details>` : ''}`,
