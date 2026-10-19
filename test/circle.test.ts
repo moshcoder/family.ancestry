@@ -59,3 +59,17 @@ test('person page shows the circle and starts a new family tree from the ticked 
   expect(api.person.circle.groups.find((g: any) => g.label === 'Pets').people[0].name).toBe('Socs')
   expect(api.person.circle.businesses[0]).toMatchObject({ name: 'IBM', role: 'employee' })
 })
+
+test('circle prints each lifespan once', async () => {
+  const store = new Store(':memory:')
+  const me = store.findOrCreateUser('a@example.com')
+  const tree = store.createTree(me.id, 'T')
+  const a = store.addPerson(tree.id, { given: 'Ann', surname: 'X' })
+  const b = store.addPerson(tree.id, { given: 'Bea', surname: 'X', birth_date: '1971' })
+  store.addBond(tree.id, a.id, b.id, 'friend')
+  const auth = new Auth(store, async () => {}, 'https://family.test')
+  const app = createApp({ store, auth, site: 'https://family.test' })
+  const html = await (await app.request(`https://family.test/t/${tree.id}/p/${a.id}`, { headers: { cookie: `fa_session=${auth.createSession(me.id)}` } })).text()
+  const at = html.indexOf('<section class="circle"')
+  expect(html.slice(at, html.indexOf('</section>', at)).split('1971').length - 1).toBe(1)
+})
