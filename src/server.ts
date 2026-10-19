@@ -601,8 +601,8 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     if (t.error) return t.error
     const body = await form(c)
     if (!('living' in body)) body.living = '0'
-    store.updatePerson(t.tree.id, c.req.param('person'), body)
-    return c.redirect(`/t/${t.tree.id}/p/${c.req.param('person')}?ok=Saved`)
+    const { synced } = store.updatePersonEverywhere(t.tree.id, c.req.param('person'), body, c.get('user')?.id)
+    return c.redirect(`/t/${t.tree.id}/p/${c.req.param('person')}?ok=${encodeURIComponent(synced ? `Saved, here and in ${synced} other ${synced === 1 ? 'tree' : 'trees'}` : 'Saved')}`)
   })
   app.post('/t/:tree/p/:person/delete', (c) => {
     const t = treeFor(c, 'edit')
@@ -1082,8 +1082,8 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   api.patch('/trees/:tree/people/:person', async (c) => {
     const t = personFor(c)
     if (t.error) return t.error
-    const p = store.updatePerson(t.tree.id, c.req.param('person'), await json(c))
-    return p ? c.json({ person: personOut(t.tree.id, p, true) }) : bad(c, 'no such person', 404)
+    const { person: p, synced } = store.updatePersonEverywhere(t.tree.id, c.req.param('person'), await json(c), apiUser(c)?.id)
+    return p ? c.json({ person: personOut(t.tree.id, p, true), synced }) : bad(c, 'no such person', 404)
   })
   api.delete('/trees/:tree/people/:person', (c) => {
     const t = treeFor(c, 'edit')
