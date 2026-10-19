@@ -85,6 +85,12 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
   )
 
   server.tool('update_person', 'Change facts about a person. Only the fields given are changed.', { tree_id: z.string(), person_id: z.string(), ...person }, async ({ tree_id, person_id, ...fields }: any) => text(formatPerson(await client.updatePerson(tree_id, person_id, fields))))
+  server.tool('set_relationship_status', "Two partners' relationship status: married, engaged, partners, dating, separated, divorced or widowed. An ending keeps the kind; a current status clears the ending.", { tree_id: z.string(), person_id: z.string(), partner_id: z.string(), status: z.enum(['married', 'engaged', 'partners', 'dating', 'separated', 'divorced', 'widowed']) }, async ({ tree_id, person_id, partner_id, status }: any) => {
+    const union = (await client.person(tree_id, person_id)).unions.find((u) => u.partner?.id === partner_id)
+    if (!union) throw new Error('no partnership between those two')
+    const fam = await client.setStatus(tree_id, union.family_id, status)
+    return text(`Now ${fam.end_kind ?? fam.kind}.`)
+  })
 
   server.tool(
     'link_relative',

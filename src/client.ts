@@ -261,6 +261,10 @@ export class AncestryClient {
   addBond(tree: string, person: string, body: { kind: string; other_id?: string; note?: string; [k: string]: unknown }) {
     return this.request<{ person: PersonDetail; other: PersonSummary }>(`/api/v1/trees/${enc(tree)}/people/${enc(person)}/bonds`, { method: 'POST', json: body })
   }
+  /** A partnership's relationship status: married, engaged, partners, dating, separated, divorced, widowed. */
+  setStatus(tree: string, family: string, status: string) {
+    return this.request<{ family: { id: string; kind: string; end_kind: string | null } }>(`/api/v1/trees/${enc(tree)}/families/${enc(family)}`, { method: 'PATCH', json: { status } }).then((r) => r.family)
+  }
   removeBond(tree: string, id: string) {
     return this.request<{ ok: boolean }>(`/api/v1/trees/${enc(tree)}/bonds/${enc(id)}`, { method: 'DELETE' })
   }

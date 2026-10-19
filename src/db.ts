@@ -112,7 +112,7 @@ export type Business = {
 export type BusinessRole = { id: string; tree_id: string; business_id: string; person_id: string; role: string; title: string | null; start_date: string | null; end_date: string | null; note: string | null; created_at: number }
 export type SiblingKind = 'full' | 'half' | 'step' | 'adoptive' | 'foster'
 export type Sibling = { person: Person; kind: SiblingKind; via: Person | null }
-export type CircleGroup = { label: string; people: { person: Person; tag?: string }[] }
+export type CircleGroup = { label: string; people: { person: Person; tag?: string; family?: Family }[] }
 export type Circle = { groups: CircleGroup[]; businesses: { business: Business; role: string }[] }
 /** `union` is the partnership's kind on a partner step: married, partners or dating. */
 export type PathStep = { person: Person; step: 'self' | 'parent' | 'child' | 'partner'; relation?: string; union?: string }
@@ -354,6 +354,16 @@ CREATE TABLE IF NOT EXISTS payments (
 
 
 /** divorced, separated or widowed; anything else is no ending kind. */
+/**
+ * A relationship status (married, engaged, partners, dating, separated, divorced, widowed) as
+ * partnership fields: an ending keeps the kind, a current status clears any ending.
+ */
+export const unionStatus = (status: unknown): { kind?: string; end_kind?: string | null; end_date?: string | null } | null => {
+  const st = String(status ?? '').toLowerCase()
+  if ((UNION_ENDS as readonly string[]).includes(st)) return { end_kind: st }
+  if ((UNION_KINDS as readonly string[]).includes(st)) return { kind: st, end_kind: null, end_date: null }
+  return null
+}
 export const unionEnd = (value: unknown): string | null => ((UNION_ENDS as readonly string[]).includes(String(value ?? '').toLowerCase()) ? String(value).toLowerCase() : null)
 
 export const clean = (value: unknown, max = 500): string | null => {
@@ -1116,7 +1126,7 @@ export class Store {
    */
   circle(treeId: string, personId: string): Circle {
     const seen = new Set([personId])
-    const group = (label: string, rows: { person: Person; tag?: string }[]): CircleGroup => ({
+    const group = (label: string, rows: { person: Person; tag?: string; family?: Family }[]): CircleGroup => ({
       label,
       people: rows.filter((r) => !seen.has(r.person.id) && seen.add(r.person.id)),
     })
@@ -1132,7 +1142,7 @@ export class Store {
     const groups = [
       group('Parents', [...parents, ...this.stepParents(treeId, personId).map((person) => ({ person, tag: 'step' }))]),
       group('Brothers and sisters', siblings.map((s) => ({ person: s.person, tag: s.kind === 'full' ? undefined : s.kind === 'adoptive' ? 'adopted' : s.kind }))),
-      group('Partners', unions.flatMap((u) => (u.partner ? [{ person: u.partner, tag: u.family.end_kind ?? (u.family.end_date ? 'divorced' : u.family.kind) }] : []))),
+      group('Partners', unions.flatMap((u) => (u.partner ? [{ person: u.partner, tag: u.family.end_kind ?? (u.family.end_date ? 'divorced' : u.family.kind), family: u.family }] : []))),
       group('Children', [...plain(children), ...this.stepChildren(treeId, personId).flatMap((x) => x.children.map((person) => ({ person, tag: 'step' })))]),
       group('Grandparents', plain(parentFams.flatMap((f) => f.parents).flatMap((p) => this.parents(treeId, p.id)))),
       group('Grandchildren', plain(children.flatMap((c) => kidsOf(c.id)))),
