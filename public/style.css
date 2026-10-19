@@ -205,7 +205,8 @@ blockquote.notes { margin: 8px 0; padding: 6px 14px; border-left: 3px solid var(
 .ring-bar .ring-home { color: var(--accent); font-weight: 700; }
 .ring-bar .ring-sites { display: inline-flex; gap: 12px; padding: 0 12px; border-left: 1px solid var(--line); border-right: 1px solid var(--line); }
 .ring-bar [aria-current='page'] { color: var(--ink); }
-@media (max-width: 640px) { .ring-bar .ring-sites, .ring-bar .ring-home span { display: none; } }
+.ring-bar .ring-start { margin-left: auto; color: var(--accent); font-weight: 700; }
+@media (max-width: 640px) { .ring-bar .ring-home span { display: none; } }
 
 /* crawlproof ad units: a cross-origin frame, sized to its format. */
 .ad-unit { margin: 24px auto; display: flex; justify-content: center; }
