@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.13.2'
+export const VERSION = '0.14.0'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -56,7 +56,7 @@ export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [
 <!--ring-bar-->
 <header class="top">
   <a class="brand" href="/">${leaf()}<span>family<b>.ancestry</b></span></a>
-  <nav>${ctx.user ? `<a href="/trees">Trees</a><a href="/network">Network</a><a href="/local">Local</a><a href="/inbox">Inbox${ctx.unread ? ` <span class="badge">${ctx.unread}</span>` : ''}</a><a href="/settings">${esc(ctx.user.name ?? ctx.user.email)}</a>` : '<a href="/families">Families</a><a href="/signin">Sign in</a>'}</nav>
+  <nav>${ctx.user ? `<a href="/feed">Feed</a><a href="/trees">Trees</a><a href="/network">Network</a><a href="/local">Local</a><a href="/inbox">Inbox${ctx.unread ? ` <span class="badge">${ctx.unread}</span>` : ''}</a><a href="/settings">${esc(ctx.user.name ?? ctx.user.email)}</a>` : '<a href="/families">Families</a><a href="/signin">Sign in</a>'}</nav>
 </header>
 <main class="${opts.wide ? 'wide' : ''}">
 ${crumbs}

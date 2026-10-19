@@ -21,6 +21,7 @@ import * as html from './html.js'
 import { Network } from './network.js'
 import { mountNetwork } from './network-routes.js'
 import { Local, mountLocal } from './local.js'
+import { Feed, mountFeed } from './feed.js'
 import { mountBusinesses, personBusinesses, personBusinessesOut } from './business.js'
 import { mountAlbums } from './album.js'
 import { listingPanel, Listings, mountListings } from './listing.js'
@@ -1261,6 +1262,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     treeFor,
   })
   mountLocal(app, api, { local: new Local(store, net), ctx, form })
+  mountFeed(app, api, { feed: new Feed(store, net), ctx, form })
   // Free on every tree; never behind the Family plan.
   // A business's team: invited to the business, never to the tree.
   const team = (cx: html.Ctx, tree: Tree, role: Role, b: Business) => teamPanel(cx, tree, role, b, { members: teams.members(b.id), pending: canEdit(role) ? teams.pendingInvites(b.id) : [], waiting: canEdit(role) ? teams.waiting(b.id) : [], settings: teams.settings(b.id) })

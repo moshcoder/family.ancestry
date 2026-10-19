@@ -6,7 +6,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { basename } from 'node:path'
-import { AncestryClient, ApiError, readConfig, writeConfig, configPath, type BusinessDetail, type BusinessSummary, type PersonDetail, type PhotoSummary, type TreeSummary } from './client.js'
+import { AncestryClient, ApiError, readConfig, writeConfig, configPath, type BusinessDetail, type FeedPost, type BusinessSummary, type PersonDetail, type PhotoSummary, type TreeSummary } from './client.js'
 import { VERSION } from './html.js'
 
 const HELP = `ancestry ${VERSION}: private family trees, from the terminal
@@ -51,6 +51,11 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
   ancestry upload <photo...> [--album A] [--caption C] [--of PERSON]
                                     add photos to the family album; --album names an album
                                     (made if new); any verified member can
+  ancestry feed [--user NAME]       your family feed (you + who you subscribe to), or one person's posts
+  ancestry post <text> [--family TREE]   post to everyone who knows you, or to one family
+  ancestry subscribe <name|all> [--tree T]   subscribe to someone you know (all: everyone, or a family)
+  ancestry unsubscribe <name>       stop seeing someone's posts
+  ancestry comment <post> <text> | ancestry like <post>
   ancestry local [search] [--category Plumber]   businesses people you know recommend
   ancestry local add <name> --category C [--town T] [--phone P] [--website W] [--note TEXT]
                                     recommend a business to everyone who knows you
@@ -270,6 +275,28 @@ const years = (p: { birth_date: string | null; death_date: string | null }) => {
   const b = y(p.birth_date)
   const d = y(p.death_date)
   return b || d ? `(${b ?? '?'}–${d ?? ''})` : ''
+}
+
+/** Someone you know, by id or by (part of) their name. */
+async function feedPerson(client: AncestryClient, who: string): Promise<{ id: string; name: string }> {
+  const people = await client.feedPeople()
+  const q = who.trim().toLowerCase()
+  if (!q) throw new Error('name someone: ancestry feed --user "Aunt Rose"')
+  const hit = people.find((p) => p.id === who) ?? people.find((p) => p.name.toLowerCase() === q) ?? people.filter((p) => p.name.toLowerCase().includes(q))
+  if (Array.isArray(hit)) {
+    if (hit.length === 1) return hit[0]!
+    throw new Error(hit.length ? `which one? ${hit.map((p) => `${p.name} (${p.id})`).join(', ')}` : `nobody you know matches "${who}"`)
+  }
+  return hit
+}
+
+export function formatPost(p: FeedPost): string {
+  const lines = [`${p.author.name}  ${new Date(p.created_at).toISOString().slice(0, 16).replace('T', ' ')}  ${p.family ? `to ${p.family}` : 'to everyone'}  [${p.id}]`]
+  if (p.body) lines.push(...p.body.split('\n').map((l) => `  ${l}`))
+  if (p.photo_url) lines.push('  (photo)')
+  if (p.likes) lines.push(`  ♥ ${p.likes}${p.liked ? ' (you)' : ''}`)
+  for (const c of p.comments) lines.push(`    ${c.author.name}: ${c.body}`)
+  return lines.join('\n')
 }
 
 export function formatPerson(p: PersonDetail): string {
@@ -679,6 +706,49 @@ export async function runCli(argv: string[]): Promise<number> {
         }
         const plan = await client.plan(tree.id)
         print(plan, () => (plan.active ? `${tree.name} is on the Family plan: pets, and invite everyone you want.` : `${tree.name} is on the free plan. The Family plan is ${plan.price} once: ancestry plan buy --chain ${plan.chains[0] ?? 'USDC_POL'}\n  or ${plan.url}`))
+        return 0
+      }
+      case 'feed': {
+        const whom = str(f.user) ? await feedPerson(client, str(f.user)!) : null
+        const posts = whom ? await client.feedOf(whom.id) : await client.feed()
+        print(posts, () => (posts.length ? posts.map(formatPost).join('\n\n') : 'Nothing in your feed yet: ancestry subscribe all'))
+        return 0
+      }
+      case 'post': {
+        const text = rest.join(' ').trim()
+        if (!text) throw new Error('say something: ancestry post "We made it to the lake"')
+        const family = f.family ? (await pickTree(client, f.family)).id : undefined
+        const p = await client.post(text, family)
+        print(p, () => `Posted ${p.id} to ${p.family ?? 'everyone who knows you'}.`)
+        return 0
+      }
+      case 'subscribe': {
+        if (rest[0] === 'all') {
+          const n = await client.subscribeAll(f.tree ? (await pickTree(client, f.tree)).id : undefined)
+          print({ subscribed: n }, () => `Subscribed to ${n} ${n === 1 ? 'person' : 'people'}.`)
+          return 0
+        }
+        const whom = await feedPerson(client, rest.join(' '))
+        await client.subscribe(whom.id)
+        console.log(`Subscribed to ${whom.name}.`)
+        return 0
+      }
+      case 'unsubscribe': {
+        const whom = await feedPerson(client, rest.join(' '))
+        await client.unsubscribe(whom.id)
+        console.log(`Unsubscribed from ${whom.name}.`)
+        return 0
+      }
+      case 'comment': {
+        if (!rest[0] || !rest[1]) throw new Error('ancestry comment <post-id> <text>')
+        const c = await client.comment(rest[0], rest.slice(1).join(' '))
+        print(c, () => 'Commented.')
+        return 0
+      }
+      case 'like': {
+        if (!rest[0]) throw new Error('ancestry like <post-id>')
+        const liked = await client.like(rest[0])
+        console.log(liked ? 'Liked.' : 'Unliked.')
         return 0
       }
       case 'local': {
