@@ -317,7 +317,7 @@ ${chips}<div class="finder">${rail}<section><p class="muted small">${r.total} ${
 
 const socialHref = socialUrl
 
-export function profilePage(ctx: Ctx, p: Profile, site: string, mine: boolean): string {
+export function profilePage(ctx: Ctx, p: Profile, site: string, mine: boolean, posts = ''): string {
   const url = `${site}/profile/${p.slug}`
   const place = placeOf(p)
   const description = [place && `Lives in ${place}`, p.hometown && `from ${p.hometown}`].filter(Boolean).join(', ') || `${p.name} on family.ancestry`
@@ -338,6 +338,7 @@ ${mine && !p.published ? '<p class="flash">Only you can see this: your profile i
 ${place ? `<p>Lives in <a href="/people?${new URLSearchParams(Object.fromEntries([['country', p.country], ['region', p.region], ['city', p.city]].filter(([, v]) => v).map(([k, v]) => [k, v!.toLowerCase()]))).toString()}">${esc(place)}</a></p>` : ''}${p.hometown ? `<p>From ${esc(p.hometown)}</p>` : ''}</div></header>
 ${p.bio ? `<div class="notes">${esc(p.bio).replace(/\n/g, '<br>')}</div>` : ''}
 ${p.email || p.links.length || socials.length ? `<ul class="plinks">${p.email ? `<li><a href="mailto:${esc(p.email)}">${esc(p.email)}</a></li>` : ''}${p.links.map((l) => `<li><a href="${esc(l.value)}" rel="me nofollow noopener">${esc(l.label ?? l.value.replace(/^https?:\/\//, ''))}</a></li>`).join('')}${socials.map(({ s, href }) => `<li>${href ? `<a href="${esc(href)}" rel="me nofollow noopener">` : ''}${esc(s.label ? `${s.label}: ${s.value}` : s.value)}${href ? '</a>' : ''}</li>`).join('')}</ul>` : ''}
+${posts}
 <p class="row"><a class="btn" href="/profile/${esc(p.slug)}/card.vcf">Save contact</a>${mine ? ' <a class="btn" href="/settings/profile">Edit</a>' : ''}</p>
 <p class="muted small">${esc(p.name)} chose what this page shows. Family trees on family.ancestry stay private. <a href="/people">Find people</a></p>
 </article>`,
@@ -415,6 +416,8 @@ export type ProfileDeps = {
   site: string
   ctx: (c: Context, extra?: Partial<Ctx>) => Ctx
   form: (c: Context) => Promise<Record<string, any>>
+  /** The owner's feed posts this viewer may see (the feed's rules), and a box when it is theirs. */
+  posts?: (c: Context, p: Profile) => string
 }
 
 export function mountProfiles(app: Hono<any>, api: Hono<any>, d: ProfileDeps) {
@@ -448,7 +451,7 @@ export function mountProfiles(app: Hono<any>, api: Hono<any>, d: ProfileDeps) {
   app.get('/profile/:slug', (c) => {
     const p = visible(c)
     if (!p) return notFound(c)
-    return c.html(profilePage(d.ctx(c), p, site, p.user_id === me(c)?.id))
+    return c.html(profilePage(d.ctx(c), p, site, p.user_id === me(c)?.id, d.posts?.(c, p) ?? ''))
   })
   app.get('/settings/profile', (c) => {
     const u = me(c)
