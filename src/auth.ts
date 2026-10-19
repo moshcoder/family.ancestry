@@ -12,7 +12,7 @@
  * Every secret is stored as its SHA-256 only. The magic-link endpoint never says
  * whether an address has an account.
  */
-import { createHash, timingSafeEqual } from 'node:crypto'
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
 import {
   generateAuthenticationOptions,
   generateRegistrationOptions,
@@ -46,6 +46,25 @@ export function resendMailer(apiKey: string, from: string, fetchImpl: typeof fet
     if (!res.ok) throw new Error(`mail provider answered ${res.status}${body.message ? `: ${body.message}` : ''}`)
     return body.id ?? null
   }
+}
+
+/**
+ * A Resend webhook (Svix): HMAC-SHA256 of "<svix-id>.<svix-timestamp>.<body>" with the
+ * base64 secret after "whsec_", any of the space-separated "v1,<sig>" values, within 5 minutes.
+ */
+export function verifyResendWebhook(secret: string, body: string, headers: { id?: string | null; timestamp?: string | null; signature?: string | null }, now = Date.now()): boolean {
+  const { id, timestamp, signature } = headers
+  if (!secret || !id || !timestamp || !signature) return false
+  const ts = Number(timestamp)
+  if (!Number.isFinite(ts) || Math.abs(now / 1000 - ts) > 300) return false
+  const key = Buffer.from(secret.replace(/^whsec_/, ''), 'base64')
+  const expected = createHmac('sha256', key).update(`${id}.${timestamp}.${body}`).digest()
+  return signature.split(' ').some((part) => {
+    const [version, sig] = part.split(',')
+    if (version !== 'v1' || !sig) return false
+    const given = Buffer.from(sig, 'base64')
+    return given.length === expected.length && timingSafeEqual(given, expected)
+  })
 }
 
 /** Resend's last word on a message, from its id. Null when it cannot say (network, unknown id). */

@@ -13,7 +13,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { createBridgeClient } from '@profullstack/bridges'
 import { join } from 'node:path'
 import { BONDS, CHILD_RELATIONS, Store, UNION_KINDS, bondKind, canEdit, canManage, grantable, inviteRole, fullName, type Business, type InviteRole, newId, type Person, type Role, type Tree, type User } from './db.js'
-import { Auth, SESSION_COOKIE, consoleMailer, resendMailer, resendStatus, safeNext, validEmail, type Mailer, type MailStatus } from './auth.js'
+import { Auth, SESSION_COOKIE, consoleMailer, resendMailer, resendStatus, safeNext, validEmail, verifyResendWebhook, type Mailer, type MailStatus } from './auth.js'
 import { exportGedcom, importGedcom, describeImport } from './gedcom.js'
 import { CONTACT_KEYS, readContact } from './contact.js'
 import { describeRelation } from './relate.js'
@@ -42,7 +42,7 @@ const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp
  * the Moshpit name for people who are not on Moshpit DNS. Links we email to someone
  * else (invites) use it, because we cannot know which internet they are on.
  */
-export type AppOptions = { store: Store; auth: Auth; site: string; publicSite?: string; publicDir?: string; net?: Network; plan?: PlanConfig; fetcher?: typeof fetch; pitWorld?: PitWorldSignIn | null; redirectHosts?: string[]; mailStatus?: ((id: string) => Promise<MailStatus | null>) | null }
+export type AppOptions = { store: Store; auth: Auth; site: string; publicSite?: string; publicDir?: string; net?: Network; plan?: PlanConfig; fetcher?: typeof fetch; pitWorld?: PitWorldSignIn | null; redirectHosts?: string[]; mailStatus?: ((id: string) => Promise<MailStatus | null>) | null; resendWebhookSecret?: string | null }
 
 /** Sign in with pit.world: the one account for every *.pit.world site. The secret is HMAC-SHA256(PIT_BRIDGE_KEY, our relay host), which pit.world derives too. */
 export type PitWorldSignIn = { secret: string; base?: string; fetch?: typeof fetch }
@@ -91,7 +91,7 @@ function limiter(limit: number, windowMs: number) {
 /** "Jane Doe (1901–1980) #abc123" from the datalist -> abc123. */
 export const pickId = (value: unknown): string | null => String(value ?? '').match(/#([A-Za-z0-9_-]{6,})\s*$/)?.[1] ?? (/^[A-Za-z0-9_-]{6,}$/.test(String(value ?? '').trim()) ? String(value).trim() : null)
 
-export function createApp({ store, auth, site, publicSite = site, publicDir = join(import.meta.dir, '..', 'public'), net = new Network(store), plan = planFromEnv({}), fetcher = fetch, pitWorld = null, redirectHosts = [], mailStatus = null }: AppOptions) {
+export function createApp({ store, auth, site, publicSite = site, publicDir = join(import.meta.dir, '..', 'public'), net = new Network(store), plan = planFromEnv({}), fetcher = fetch, pitWorld = null, redirectHosts = [], mailStatus = null, resendWebhookSecret = null }: AppOptions) {
   // A request relayed by pit.world says so in X-Forwarded-Host; a sign-in link for it must open there too.
   // Only the one configured address is believed, so a forged header can at worst pick that address.
   const publicHost = new URL(publicSite).host
@@ -743,6 +743,26 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
       console.error(`[plan] checkout failed: ${(error as Error).message}`)
       return c.redirect(`/t/${t.tree.id}/plan?ok=${encodeURIComponent(`Could not start the payment: ${(error as Error).message}`)}`)
     }
+  })
+  /**
+   * Resend tells us what became of each email (delivered, bounced, ...), signed with the
+   * webhook secret. That is how a send-only key still learns about bounces.
+   */
+  app.post('/webhooks/resend', async (c) => {
+    const raw = await c.req.text()
+    if (!resendWebhookSecret || !verifyResendWebhook(resendWebhookSecret, raw, { id: c.req.header('svix-id'), timestamp: c.req.header('svix-timestamp'), signature: c.req.header('svix-signature') })) return c.json({ error: 'bad signature' }, 401)
+    let event: { type?: string; data?: { email_id?: string; bounce?: { message?: string; diagnosticCode?: string[] }; failed?: { reason?: string } } }
+    try {
+      event = JSON.parse(raw)
+    } catch {
+      return c.json({ error: 'bad json' }, 400)
+    }
+    const status = event.type?.startsWith('email.') ? event.type.slice('email.'.length) : null
+    const id = event.data?.email_id
+    if (!status || !id) return c.json({ ok: true, ignored: 'not an email event' })
+    const reason = event.data?.bounce ? (event.data.bounce.diagnosticCode?.[0] ?? event.data.bounce.message ?? null) : (event.data?.failed?.reason ?? null)
+    // Only messages we sent count: other apps on the same Resend account are ignored.
+    return c.json({ ok: true, matched: store.mailEvent(id, status, reason) })
   })
   /** CoinPay calls this; it proves itself with the signature, not a session. */
   app.post('/webhooks/coinpay', async (c) => {
@@ -1596,13 +1616,16 @@ export function serve() {
   const store = new Store(join(dataDir, 'family.db'))
   const mailer: Mailer = process.env.RESEND_API_KEY ? resendMailer(process.env.RESEND_API_KEY, process.env.MAIL_FROM ?? 'family.ancestry <hello@pit.world>') : consoleMailer
   const auth = new Auth(store, mailer, site)
-  const mailStatus = process.env.RESEND_API_KEY ? resendStatus(process.env.RESEND_API_KEY) : null
+  // With a webhook, Resend pushes each email's fate and the key can be send-only (it cannot read
+  // /emails/:id). Without one, a full-access key is asked when the Members page opens.
+  const resendWebhookSecret = process.env.RESEND_WEBHOOK_SECRET || null
+  const mailStatus = process.env.RESEND_API_KEY && !resendWebhookSecret ? resendStatus(process.env.RESEND_API_KEY) : null
   // Ours lives at family.ancestry, relayed by pit.world; a self-hosted copy on an ordinary domain needs no relay.
   const publicSite = (process.env.ANCESTRY_PUBLIC_SITE ?? (new URL(site).hostname === 'family.ancestry' ? 'https://family.ancestry.pit.world' : site)).replace(/\/+$/, '')
   const pitWorld = process.env.PIT_BRIDGE_SECRET ? { secret: process.env.PIT_BRIDGE_SECRET, ...(process.env.PIT_WORLD_URL ? { base: process.env.PIT_WORLD_URL } : {}) } : null
   // Names that only redirect here. family.tree is ours too: ANCESTRY_REDIRECT_HOSTS="" turns it off.
   const redirectHosts = (process.env.ANCESTRY_REDIRECT_HOSTS ?? (new URL(site).hostname === 'family.ancestry' ? 'family.tree' : '')).split(/[\s,]+/).filter(Boolean)
-  const app = createApp({ store, auth, site, publicSite, plan: planFromEnv(), pitWorld, redirectHosts, mailStatus })
+  const app = createApp({ store, auth, site, publicSite, plan: planFromEnv(), pitWorld, redirectHosts, mailStatus, resendWebhookSecret })
   const port = Number(process.env.PORT ?? 8792)
   startRingRefresh()
   Bun.serve({ port, hostname: process.env.HOST ?? '127.0.0.1', fetch: app.fetch, maxRequestBodySize: 30 * 1024 * 1024 })

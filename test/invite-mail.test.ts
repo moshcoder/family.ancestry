@@ -84,3 +84,38 @@ test('Resend: the send returns its id, an error carries the reason, the status r
   expect(await resendStatus('re_x', fake)('em_1')).toEqual({ status: 'bounced', reason: 'smtp; 552 mailbox not found' })
   expect(calls.at(-1)).toBe('GET https://api.resend.com/emails/em_1')
 })
+
+test('Resend webhook: a signed bounce marks the invite; bad signatures, stale events and other apps are refused or ignored', async () => {
+  const { createHmac } = await import('node:crypto')
+  const secret = `whsec_${Buffer.from('family-ancestry-test-secret').toString('base64')}`
+  const store = new Store(':memory:')
+  const auth = new Auth(store, async () => 'em_42', SITE)
+  const app = createApp({ store, auth, site: SITE, resendWebhookSecret: secret })
+  const me = store.findOrCreateUser('tony@example.com')
+  const tree = store.createTree(me.id, 'Fam')
+  const cookie = `fa_session=${auth.createSession(me.id)}; fa_csrf=${CSRF}`
+  await app.request(`${SITE}/t/${tree.id}/invites`, { method: 'POST', headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ _csrf: CSRF, email: 'rmarcos@yahoo.example' }) })
+  expect(store.pendingInvites(tree.id)[0]!.mail_id).toBe('em_42')
+
+  const hook = (event: unknown, opts: { ts?: number; sign?: string } = {}) => {
+    const body = JSON.stringify(event)
+    const ts = String(opts.ts ?? Math.floor(Date.now() / 1000))
+    const sig = createHmac('sha256', Buffer.from(secret.slice(6), 'base64')).update(`msg_1.${ts}.${body}`).digest('base64')
+    return app.request(`${SITE}/webhooks/resend`, { method: 'POST', headers: { 'content-type': 'application/json', 'svix-id': 'msg_1', 'svix-timestamp': ts, 'svix-signature': opts.sign ?? `v1,${sig}` }, body })
+  }
+  const delivered = { type: 'email.delivered', data: { email_id: 'em_42' } }
+  expect((await hook(delivered, { sign: 'v1,AAAA' })).status).toBe(401)
+  expect((await hook(delivered, { ts: Math.floor(Date.now() / 1000) - 3600 })).status).toBe(401)
+  expect(((await (await hook(delivered)).json()) as any).matched).toBe(true)
+  // A late "sent" does not undo "delivered".
+  await hook({ type: 'email.sent', data: { email_id: 'em_42' } })
+  expect(store.pendingInvites(tree.id)[0]!.mail_status).toBe('delivered')
+  await hook({ type: 'email.bounced', data: { email_id: 'em_42', bounce: { message: 'hard', diagnosticCode: ['smtp; 552 1 Requested mail action aborted, mailbox not found'] } } })
+  const inv = store.pendingInvites(tree.id)[0]!
+  expect(inv.mail_status).toBe('bounced')
+  expect(inv.mail_error).toContain('mailbox not found')
+  // Someone else's email on the same Resend account: accepted, matched nothing.
+  expect(((await (await hook({ type: 'email.delivered', data: { email_id: 'other-app' } })).json()) as any).matched).toBe(false)
+  const page = await (await app.request(`${SITE}/t/${tree.id}/members`, { headers: { cookie } })).text()
+  expect(page).toContain('bounced: that address does not exist')
+})
