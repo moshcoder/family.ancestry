@@ -48,7 +48,7 @@ describe('public profiles', () => {
 
   test('off until turned on; on, it shows only what the owner typed, never the tree', async () => {
     const w = world()
-    const tony = w.user('tony@example.com', 'Tony')
+    const tony = w.user('tony@example.com', 'Anthony Ettinger')
     const tree = w.store.createTree(tony.id, 'The Ettinger Family')
     const me = w.store.addPerson(tree.id, { given: 'Anthony', surname: 'Ettinger', nickname: 'Tony', birth_date: '4 JUL 1975', birth_place: 'Secretville, Illinois', living: '1' })
     const mom = w.store.addPerson(tree.id, { given: 'Maidenname', surname: 'Motherly', living: '1' })
@@ -81,6 +81,18 @@ describe('public profiles', () => {
     expect(card).toContain('ADR:;;;Los Gatos;CA;;USA')
     expect(card).not.toContain('BDAY')
     expect(mom.id).toBeTruthy()
+  })
+
+  test('an account claimed as a relative never gets the relative on its form', async () => {
+    const w = world()
+    const tony = w.user('tony@example.com', 'Anthony Ettinger')
+    const tree = w.store.createTree(tony.id, 'The Ettinger Family')
+    const aunt = w.store.addPerson(tree.id, { given: 'Joellen', surname: 'Arnold', nickname: 'Jo', living: '1' })
+    w.store.db.query('INSERT INTO profiles (tree_id, person_id, user_id, created_at) VALUES (?,?,?,?)').run(tree.id, aunt.id, tony.id, Date.now())
+    const form = await (await w.as(tony).get('/settings/profile')).text()
+    expect(form).toContain('value="Anthony Ettinger"')
+    expect(form).toContain('value="anthony.ettinger"')
+    for (const wrong of ['Joellen', 'Arnold', 'value="Jo"']) expect(form).not.toContain(wrong)
   })
 
   test('addresses are unique: the second Anthony Ettinger is offered the town', async () => {
