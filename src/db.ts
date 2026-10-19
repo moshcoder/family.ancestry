@@ -618,6 +618,19 @@ export class Store {
     return this.db.query<Invite, [string, number]>('SELECT token_hash AS id, tree_id, role, email, person_id, note, created_by, created_at, expires_at, used_by, mail_id, mail_status, mail_error FROM invites WHERE tree_id = ? AND used_by IS NULL AND expires_at > ? ORDER BY created_at DESC').all(treeId, this.now())
   }
 
+  /**
+   * A mail provider's event for one message (by its id), applied to the invite that sent it.
+   * Never steps backwards: a late "sent" cannot hide a "delivered", nothing hides a bounce.
+   */
+  mailEvent(mailId: string, status: string, error: string | null = null): boolean {
+    const rank = (s: string | null | undefined) => ({ queued: 0, sent: 1, delivery_delayed: 2, delivered: 3, opened: 4, clicked: 5 })[s ?? ''] ?? (s ? 9 : -1)
+    const row = this.db.query<{ token_hash: string; mail_status: string | null }, [string]>('SELECT token_hash, mail_status FROM invites WHERE mail_id = ?').get(mailId)
+    if (!row) return false
+    if (rank(status) < rank(row.mail_status)) return true
+    this.setInviteMail(row.token_hash, { mail_status: status, mail_error: error }, true)
+    return true
+  }
+
   /** Record what happened to an invite's email. `invite` is the raw token, or with `byId` the token hash shown as an invite's id. */
   setInviteMail(invite: string, mail: InviteMail, byId = false) {
     this.db.query('UPDATE invites SET mail_id = coalesce(?, mail_id), mail_status = ?, mail_error = ? WHERE token_hash = ?').run(mail.mail_id ?? null, mail.mail_status, clean(mail.mail_error, 300), byId ? invite : sha256(invite))
