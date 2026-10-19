@@ -24,7 +24,7 @@ import * as html from './html.js'
 import { Network } from './network.js'
 import { mountNetwork } from './network-routes.js'
 import { Local, mountLocal } from './local.js'
-import { Feed, mountFeed } from './feed.js'
+import { Feed, mountFeed, personPosts } from './feed.js'
 import { mountBusinesses, personBusinesses, personBusinessesOut } from './business.js'
 import { mountAlbums } from './album.js'
 import { listingPanel, Listings, mountListings } from './listing.js'
@@ -118,6 +118,20 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   const listings = new Listings(store)
   const teams = new Teams(store)
   const profiles = new Profiles(store)
+  const feed = new Feed(store, net)
+  /**
+   * The posts panel on a person page. It is yours to post on when you claimed it, or when it
+   * carries your account's name (one person, two accounts: only one of them can claim it).
+   */
+  const postsFor = (c: Context, tree: Tree, person: Person, holder: User | null, me: User) => {
+    if (person.kind !== 'person') return ''
+    const mine = holder?.id === me.id || Boolean(me.name && fullName(person).toLowerCase() === me.name.trim().toLowerCase())
+    // Whoever claimed them, and members of this tree whose account carries their name.
+    const named = store.members(tree.id).filter((m) => store.user(m.user_id)?.name?.trim().toLowerCase() === fullName(person).toLowerCase()).map((m) => m.user_id)
+    const authors = [...new Set([holder?.id, mine ? me.id : null, ...named].filter((x): x is string => Boolean(x)))]
+    const items = authors.flatMap((a) => feed.of(me.id, a, { limit: 5 })).sort((a, b) => b.created_at - a.created_at).slice(0, 5)
+    return personPosts(ctx(c), me, { tree, families: store.treesFor(me.id).map((x) => store.tree(x.id)!), items, canPost: mine, back: `/t/${tree.id}/p/${person.id}` })
+  }
   const secure = (c: Context) => (c.req.header('x-forwarded-proto') ?? new URL(c.req.url).protocol.replace(':', '')) === 'https'
   const ip = (c: Context) => c.req.header('x-real-ip') ?? c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? 'local'
 
@@ -573,6 +587,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
         circle: store.circle(t.tree.id, person.id),
         plan: hasPlan(plan, store, t.tree),
         profile,
+        posts: postsFor(c, t.tree, person, profile, t.user),
         self: profile?.id === t.user.id,
         // A member with no profile yet, looking at a living person nobody has claimed: "this is me".
         claimable: !profile && person.kind === 'person' && !person.death_date && !person.death_place && !store.profilePerson(t.tree.id, t.user.id),
@@ -1342,7 +1357,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     treeFor,
   })
   mountLocal(app, api, { local: new Local(store, net), ctx, form })
-  mountFeed(app, api, { feed: new Feed(store, net), ctx, form })
+  mountFeed(app, api, { feed, ctx, form })
   // Free on every tree; never behind the Family plan.
   // A business's team: invited to the business, never to the tree.
   const team = (cx: html.Ctx, tree: Tree, role: Role, b: Business) => teamPanel(cx, tree, role, b, { members: teams.members(b.id), pending: canEdit(role) ? teams.pendingInvites(b.id) : [], waiting: canEdit(role) ? teams.waiting(b.id) : [], settings: teams.settings(b.id) })

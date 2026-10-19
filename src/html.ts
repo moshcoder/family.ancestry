@@ -9,7 +9,7 @@ import { pitFooter } from './pit-footer.js'
 import { ringFooter, ringFooterOptions, setRingFooterOptions } from './ring-footer.js'
 import { BONDS, UNION_KINDS, UNION_ENDS, canManage, grantable, fullName, lifespan, type Business, type Circle, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.18.0'
+export const VERSION = '0.19.0'
 
 // The footer's own links; the ring nav and copyright come from @profullstack/footer.
 setRingFooterOptions(
@@ -381,6 +381,8 @@ function petForm(ctx: Ctx, tree: Tree, person: Person, plan: boolean): string {
 const SIBLING_WORDS: Record<string, string> = { full: '', half: 'half', step: 'step', adoptive: 'adopted', foster: 'foster' }
 
 export type PersonView = {
+  /** Their posts, and on your own page a box to post (src/feed.ts personPosts). */
+  posts?: string
   person: Person
   parents: { family: Family; relation: string; parents: Person[]; siblings: Person[] }[]
   unions: { family: Family; partner: Person | null; children: Person[] }[]
@@ -489,6 +491,7 @@ ${facts.map(([k, val]) => `<p><b>${k}</b> ${esc(val)}</p>`).join('')}
 ${v.profile ? `<p class="small muted">${v.self ? 'This is you. Keep it up to date.' : `Managed by ${esc(v.profile.name ?? v.profile.email)}, in the family since ${new Date(v.profile.created_at).getFullYear()}.`}</p>` : (v.invite ?? '')}
 ${v.claimable ? `<form method="post" action="/t/${tree.id}/claim" class="inline" data-confirm="Claim ${esc(fullName(p))} as you? The owner can see who claimed it.">${csrfField(ctx)}<input type="hidden" name="person_id" value="${p.id}"><button class="btn">This is me</button></form>` : ''}
 ${v.welcome && v.self && !p.photo_id ? `<form method="post" action="/t/${tree.id}/p/${p.id}/media" enctype="multipart/form-data" class="panel pform">${csrfField(ctx)}<h2>Add your photo</h2><p class="muted small">So the family knows it's you. JPEG, PNG, WebP or AVIF, under 8 MB.</p><input type="file" name="file" accept="image/*" capture="user" required><button>Upload</button></form>` : ''}
+${v.posts ?? ''}
 ${v.network ?? ''}
 <div class="actions">${pet ? '' : `<a class="btn" href="/t/${tree.id}/pedigree/${p.id}">Pedigree</a>`}${pet ? '' : `<a class="btn" href="/t/${tree.id}/descendants/${p.id}">Descendants</a><a class="btn" href="/t/${tree.id}/relate?a=${tree.home_person_id ?? ''}&b=${p.id}">Related how?</a>`}${edit && !pet && tree.home_person_id !== p.id ? `<form method="post" action="/t/${tree.id}/home" class="inline">${csrfField(ctx)}<input type="hidden" name="person_id" value="${p.id}"><button class="btn">Make home person</button></form>` : ''}</div></div></div>
 
