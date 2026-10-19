@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.12.0'
+export const VERSION = '0.12.1'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -50,7 +50,7 @@ export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="${asset('/style.css')}">
-<script src="${asset('/app.js')}" defer></script>
+<script src="${asset('/app.js')}" defer></script>${statsScript()}
 </head>
 <body>
 <!--ring-bar-->
@@ -81,6 +81,13 @@ ${adBanner('text_link')}
 export const AD_SLOT = process.env.CRAWLPROOF_AD_SLOT ?? 'cb4310c4-7001-46ca-b625-159ee73df46b'
 export const adBanner = (format: 'banner_300x250' | 'text_link' = 'banner_300x250') =>
   AD_SLOT === 'off' ? '' : `<div class="ad-unit ad-${format}"><iframe src="https://crawlproof.com/api/ads/frame?slot=${encodeURIComponent(AD_SLOT)}&amp;format=${format}" title="Advertisement" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation" scrolling="no"></iframe></div>`
+
+/**
+ * crawlproof analytics: one async script, so CSP adds crawlproof.com to script-src
+ * and connect-src (the beacon). CRAWLPROOF_SITE_ID overrides the project; 'off' drops it.
+ */
+export const STATS_SITE = process.env.CRAWLPROOF_SITE_ID ?? 'e30916b7-dca3-4115-9db0-c2e1bee8eb27'
+export const statsScript = () => (STATS_SITE === 'off' ? '' : `\n<script data-site="${esc(STATS_SITE)}" src="https://crawlproof.com/stats.js" async></script>`)
 
 const leaf = () => `<svg class="leaf" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 29V14" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round"/><path d="M16 15c-7 0-11-4-11-11 7 0 11 4 11 11zM16 19c6 0 10-3.5 10-10-6 0-10 3.5-10 10z" fill="currentColor"/></svg>`
 
