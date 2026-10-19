@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.13.0'
+export const VERSION = '0.13.1'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -291,7 +291,7 @@ function relativeForm(ctx: Ctx, tree: Tree, person: Person, kind: RelativeKind, 
   return `<details class="panel"><summary>${titles[kind]}</summary>
 <form method="post" action="/t/${tree.id}/p/${person.id}/relative" class="pform">${csrfField(ctx)}<input type="hidden" name="as" value="${kind}">
   ${kind === 'grandparent' && !parents.length ? '<p class="muted small">No parents recorded: we put an "Unknown" parent in between, so you can fill them in later.</p>' : ''}
-  <p class="muted small">Someone already in the tree:</p>
+  <p class="muted small">Someone already in this tree, or in one of your other family trees:</p>
   <div class="row"><input name="existing" list="people-${tree.id}" placeholder="Start typing a name" autocomplete="off"> </div>
   <p class="muted small">Or someone new:</p>
   <div class="grid2"><label>Given names<input name="given" maxlength="200"></label><label>Surname<input name="surname" maxlength="200" value="${surname}"></label></div>
@@ -309,7 +309,7 @@ function bondForm(ctx: Ctx, tree: Tree, person: Person): string {
   return `<details class="panel" open><summary>Add a friend, neighbor, coworker, godparent, who raised them…</summary>
 <form method="post" action="/t/${tree.id}/p/${person.id}/bonds" class="pform">${csrfField(ctx)}
   <label>They are ${esc(person.given || 'this person')}'s<select name="kind">${[...groups].map(([g, kinds]) => `<optgroup label="${esc(g)}">${kinds.map(([k, b]) => `<option value="${k}"${k === 'friend' ? ' selected' : ''}>${esc(b.as.toLowerCase())}</option>`).join('')}</optgroup>`).join('')}</select></label>
-  <p class="muted small">Someone already in the tree:</p>
+  <p class="muted small">Someone already in this tree, or in one of your other family trees:</p>
   <div class="row"><input name="existing" list="people-${tree.id}" placeholder="Start typing a name" autocomplete="off"></div>
   <p class="muted small">Or someone new:</p>
   <div class="grid2"><label>Given names<input name="given" maxlength="200"></label><label>Surname<input name="surname" maxlength="200"></label></div>
@@ -355,6 +355,8 @@ export type PersonView = {
   media: Media[]
   sources: Source[]
   everyone: Person[]
+  /** People in the viewer's other trees: picking one copies them in. */
+  elsewhere?: { tree: Tree; person: Person }[]
   /** The member who is this person, if one has joined as them. */
   profile?: User | null
   /** The viewer is this person: they may keep their own profile up to date. */
@@ -388,7 +390,7 @@ export function personPage(ctx: Ctx, tree: Tree, role: Role, v: PersonView): str
     ...v.events,
     ...(p.death_date || p.death_place ? [{ type: 'Death', date: p.death_date, place: p.death_place, description: null, id: '' }] : []),
   ]
-  const datalist = `<datalist id="people-${tree.id}">${v.everyone.filter((o) => o.id !== p.id).map((o) => `<option value="${esc(`${fullName(o)}${lifespan(o) ? ` (${lifespan(o)})` : ''} #${o.id}`)}"></option>`).join('')}</datalist>`
+  const datalist = `<datalist id="people-${tree.id}">${v.everyone.filter((o) => o.id !== p.id).map((o) => `<option value="${esc(`${fullName(o)}${lifespan(o) ? ` (${lifespan(o)})` : ''} #${o.id}`)}"></option>`).join('')}${(v.elsewhere ?? []).map((o) => `<option value="${esc(`${fullName(o.person)}${lifespan(o.person) ? ` (${lifespan(o.person)})` : ''} · from ${o.tree.name} #${o.tree.id}/${o.person.id}`)}"></option>`).join('')}</datalist>`
   return layout(
     ctx,
     fullName(p),

@@ -557,6 +557,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
         media: store.mediaFor(t.tree.id, person.id),
         sources: store.sources(t.tree.id),
         everyone: canEdit(t.role) ? store.people(t.tree.id, 5000).filter((o) => o.kind === 'person') : [],
+        elsewhere: canEdit(t.role) ? elsewhere(t.tree.id, t.user.id) : [],
         siblings: store.siblings(t.tree.id, person.id),
         stepParents: store.stepParents(t.tree.id, person.id),
         grandparents: store.parents(t.tree.id, person.id).flatMap((pp) => store.parents(t.tree.id, pp.id)),
@@ -609,14 +610,44 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     store.deletePerson(t.tree.id, c.req.param('person'))
     return c.redirect(`/t/${t.tree.id}?ok=Deleted`)
   })
+  /**
+   * Families overlap: a pick may be someone in another of your trees (`… #<tree>/<person>`).
+   * They are copied into this tree first, and `undo` takes the copy back out if linking then fails.
+   */
+  const fromOtherTree = (treeId: string, userId: string, body: Record<string, any>): { body: Record<string, any>; undo: () => void } => {
+    for (const key of ['existing', 'existing_id', 'other_id']) {
+      const m = String(body[key] ?? '').match(/#?([A-Za-z0-9_-]{6,})\/([A-Za-z0-9_-]{6,})\s*$/)
+      if (!m) continue
+      const copy = store.copyPeople(treeId, userId, [{ tree: m[1]!, person: m[2]! }]).added[0]
+      if (!copy) throw new Error('that person is not in a tree you belong to')
+      return { body: { ...body, [key]: copy.id }, undo: () => store.deletePerson(treeId, copy.id) }
+    }
+    return { body, undo: () => {} }
+  }
+  /** People in your other trees who are not already here (same name and birth date), for "someone already in the tree". */
+  const elsewhere = (treeId: string, userId: string): { tree: Tree; person: Person }[] => {
+    const key = (p: Person) => `${fullName(p).toLowerCase()}|${p.birth_date ?? ''}`
+    const seen = new Set(store.people(treeId, 5000).map(key))
+    return store.pickablePeople(userId, treeId).flatMap((s) =>
+      s.people.flatMap((person) => {
+        if (person.kind !== 'person' || seen.has(key(person))) return []
+        seen.add(key(person))
+        return [{ tree: s.tree, person }]
+      }),
+    )
+  }
+
   app.post('/t/:tree/p/:person/relative', async (c) => {
     const t = treeFor(c, 'edit')
     if (t.error) return t.error
-    const body = await form(c)
+    let undo = () => {}
     try {
-      const other = addRelative(store, t.tree.id, c.req.param('person'), body)
+      const picked = fromOtherTree(t.tree.id, t.user.id, await form(c))
+      undo = picked.undo
+      const other = addRelative(store, t.tree.id, c.req.param('person'), picked.body)
       return c.redirect(`/t/${t.tree.id}/p/${c.req.param('person')}?ok=${encodeURIComponent(`Added ${fullName(other)}`)}`)
     } catch (error) {
+      undo()
       return c.redirect(`/t/${t.tree.id}/p/${c.req.param('person')}?ok=${encodeURIComponent(`Not added: ${(error as Error).message}`)}`)
     }
   })
@@ -631,12 +662,15 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   app.post('/t/:tree/p/:person/bonds', async (c) => {
     const t = treeFor(c, 'edit')
     if (t.error) return t.error
-    const body = await form(c)
     const back = `/t/${t.tree.id}/p/${c.req.param('person')}`
+    let undo = () => {}
     try {
-      const other = addBondFrom(t.tree.id, c.req.param('person'), body)
+      const picked = fromOtherTree(t.tree.id, t.user.id, await form(c))
+      undo = picked.undo
+      const other = addBondFrom(t.tree.id, c.req.param('person'), picked.body)
       return c.redirect(`${back}?ok=${encodeURIComponent(`Added ${fullName(other)}`)}`)
     } catch (error) {
+      undo()
       return c.redirect(`${back}?ok=${encodeURIComponent(`Not added: ${(error as Error).message}`)}`)
     }
   })
@@ -1026,11 +1060,16 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   api.post('/trees/:tree/people', async (c) => {
     const t = treeFor(c, 'edit')
     if (t.error) return t.error
-    const body = await json(c)
+    const raw = await json(c)
+    let undo = () => {}
     try {
+      const picked = raw.relative_of && raw.as ? fromOtherTree(t.tree.id, apiUser(c)!.id, raw) : { body: raw, undo }
+      undo = picked.undo
+      const body = picked.body
       if (body.relative_of && body.as) return c.json({ person: personOut(t.tree.id, addRelative(store, t.tree.id, String(body.relative_of), body), true) }, 201)
       return c.json({ person: personOut(t.tree.id, store.addPerson(t.tree.id, body), true) }, 201)
     } catch (error) {
+      undo()
       return bad(c, error)
     }
   })
@@ -1066,10 +1105,14 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   api.post('/trees/:tree/people/:person/bonds', async (c) => {
     const t = treeFor(c, 'edit')
     if (t.error) return t.error
+    let undo = () => {}
     try {
-      const other = addBondFrom(t.tree.id, c.req.param('person'), await json(c))
+      const picked = fromOtherTree(t.tree.id, apiUser(c)!.id, await json(c))
+      undo = picked.undo
+      const other = addBondFrom(t.tree.id, c.req.param('person'), picked.body)
       return c.json({ person: personOut(t.tree.id, store.person(t.tree.id, c.req.param('person'))!, true), other: personOut(t.tree.id, other) }, 201)
     } catch (error) {
+      undo()
       return bad(c, error)
     }
   })
