@@ -198,10 +198,11 @@ CREATE TABLE IF NOT EXISTS famous_queue (
 
 const OUT_SQL = 'SELECT f.* FROM famous_links l JOIN famous f ON f.qid = l.to_qid WHERE l.from_qid = ? AND l.rel IN (SELECT value FROM json_each(?))'
 const IN_SQL = 'SELECT f.* FROM famous_links l JOIN famous f ON f.qid = l.from_qid WHERE l.to_qid = ? AND l.rel IN (SELECT value FROM json_each(?))'
-const LIST_WHERE =
-  "WHERE (?1 IS NULL OR kind = ?1) AND NOT EXISTS (SELECT 1 FROM json_each(?2) w WHERE lower(label) || ' ' || lower(coalesce(description, '')) NOT LIKE '%' || w.value || '%' ESCAPE '\\')"
-const LIST_COUNT_SQL = 'SELECT count(*) n FROM famous ' + LIST_WHERE
-const LIST_ROWS_SQL = 'SELECT * FROM famous ' + LIST_WHERE + ' ORDER BY sitelinks DESC, label LIMIT ?3 OFFSET ?4'
+// ?1 kind or null, ?2 the search words as a JSON array: every one must appear in the name or description.
+const LIST_COUNT_SQL =
+  "SELECT count(*) n FROM famous WHERE (?1 IS NULL OR kind = ?1) AND NOT EXISTS (SELECT 1 FROM json_each(?2) w WHERE lower(label) || ' ' || lower(coalesce(description, '')) NOT LIKE '%' || w.value || '%' ESCAPE '\\')"
+const LIST_ROWS_SQL =
+  "SELECT * FROM famous WHERE (?1 IS NULL OR kind = ?1) AND NOT EXISTS (SELECT 1 FROM json_each(?2) w WHERE lower(label) || ' ' || lower(coalesce(description, '')) NOT LIKE '%' || w.value || '%' ESCAPE '\\') ORDER BY sitelinks DESC, label LIMIT ?3 OFFSET ?4"
 
 export const MAX_DEPTH = Number(process.env.FAMOUS_MAX_DEPTH ?? 3)
 export const MAX_ENTRIES = Number(process.env.FAMOUS_MAX ?? 40000)
