@@ -14,7 +14,7 @@ import { RING_PLACEHOLDER, ringBar, startRingRefresh, visitorOnMoshpit } from '.
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { createBridgeClient } from '@profullstack/bridges'
 import { join } from 'node:path'
-import { BONDS, CHILD_RELATIONS, Store, UNION_KINDS, bondKind, canEdit, canManage, grantable, inviteRole, fullName, type Business, type InviteRole, newId, type Person, type Role, type Tree, type User } from './db.js'
+import { BONDS, CHILD_RELATIONS, Store, UNION_KINDS, unionStatus, bondKind, canEdit, canManage, grantable, inviteRole, fullName, type Business, type InviteRole, newId, type Person, type Role, type Tree, type User } from './db.js'
 import { Auth, SESSION_COOKIE, consoleMailer, resendMailer, resendStatus, safeNext, validEmail, verifyResendWebhook, type Mailer, type MailStatus } from './auth.js'
 import { exportGedcom, importGedcom, describeImport } from './gedcom.js'
 import { CONTACT_KEYS, readContact } from './contact.js'
@@ -793,7 +793,9 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     const t = treeFor(c, 'edit')
     if (t.error) return t.error
     const body = await form(c)
-    store.updateFamily(t.tree.id, c.req.param('family'), { kind: body.kind, start_date: body.start_date, start_place: body.start_place, end_date: body.end_date, end_kind: body.end_kind, end_place: body.end_place })
+    // One "status" select (the circle on a person page) or the full edit form.
+    const status = body.status !== undefined ? unionStatus(body.status) : null
+    store.updateFamily(t.tree.id, c.req.param('family'), status ?? { kind: body.kind, start_date: body.start_date, start_place: body.start_place, end_date: body.end_date, end_kind: body.end_kind, end_place: body.end_place })
     return c.redirect(c.req.header('referer')?.startsWith(site) ? c.req.header('referer')! : `/t/${t.tree.id}`)
   })
   app.post('/t/:tree/f/:family/delete', (c) => {
@@ -1180,6 +1182,17 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
       undo()
       return bad(c, error)
     }
+  })
+  /** A partnership: {status} (married, engaged, partners, dating, separated, divorced, widowed) or {kind, start_date, end_date, end_kind, …}. */
+  api.patch('/trees/:tree/families/:family', async (c) => {
+    const t = treeFor(c, 'edit')
+    if (t.error) return t.error
+    const body = await json(c)
+    if (!store.family(t.tree.id, c.req.param('family'))) return bad(c, 'no such partnership', 404)
+    const status = body.status !== undefined ? unionStatus(body.status) : null
+    if (body.status !== undefined && !status) return bad(c, 'status is one of married, engaged, partners, dating, separated, divorced, widowed')
+    store.updateFamily(t.tree.id, c.req.param('family'), status ?? { kind: body.kind, start_date: body.start_date, start_place: body.start_place, end_date: body.end_date, end_kind: body.end_kind, end_place: body.end_place })
+    return c.json({ family: store.family(t.tree.id, c.req.param('family')) })
   })
   api.delete('/trees/:tree/bonds/:bond', (c) => {
     const t = treeFor(c, 'edit')

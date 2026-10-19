@@ -7,9 +7,9 @@ import { formatAddresses, formatLabeled, hasContact, readContact, socialUrl, typ
 import { readFileSync } from 'node:fs'
 import { pitFooter } from './pit-footer.js'
 import { ringFooter, ringFooterOptions, setRingFooterOptions } from './ring-footer.js'
-import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Circle, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
+import { BONDS, UNION_KINDS, UNION_ENDS, canManage, grantable, fullName, lifespan, type Business, type Circle, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.16.2'
+export const VERSION = '0.16.3'
 
 // The footer's own links; the ring nav and copyright come from @profullstack/footer.
 setRingFooterOptions(
@@ -427,15 +427,32 @@ export type PersonView = {
  * Everyone in one person's life on one screen: family near and far, pets, friends and other
  * bonds, businesses. Tick some and start a new family tree with them (the 0.12 picker).
  */
+/** A partnership as one word on a circle row: Married, Partner, Engaged, Dating; Divorced etc. once it ended. */
+const UNION_TAG: Record<string, string> = { married: 'Married', engaged: 'Engaged', partners: 'Partner', dating: 'Dating' }
+const STATUSES: string[] = [...UNION_KINDS, ...UNION_ENDS]
+const STATUS_WORD: Record<string, string> = { ...UNION_TAG, separated: 'Separated', divorced: 'Divorced', widowed: 'Widowed' }
+const unionTag = (f: Family) => {
+  const end = f.end_kind ?? (f.end_date ? 'divorced' : null)
+  return end ? end[0]!.toUpperCase() + end.slice(1) : (UNION_TAG[f.kind] ?? f.kind)
+}
+
 const CLOSE = new Set(['Parents', 'Brothers and sisters', 'Partners', 'Children', 'Pets', 'Owners'])
 
-function circleSection(ctx: Ctx, tree: Tree, p: Person, circle: Circle): string {
+function circleSection(ctx: Ctx, tree: Tree, p: Person, circle: Circle, edit: boolean): string {
   const count = circle.groups.reduce((n, g) => n + g.people.length, 0)
   if (!count && !circle.businesses.length) return ''
   const first = p.nickname || p.given.split(' ')[0] || fullName(p)
   const box = (o: Person, checked: boolean) => `<input type="checkbox" name="pick" value="p:${tree.id}:${o.id}"${checked ? ' checked' : ''} aria-label="Bring ${esc(fullName(o))}">`
+  // A partnership's relationship status: a select bound by form= to a small form outside the start-a-tree one.
+  const fid = (f: Family) => `union-${f.id}`
+  const unionPicker = (f: Family) => {
+    const now = f.end_kind ?? (f.end_date ? 'divorced' : f.kind)
+    const opts = [...STATUSES, ...(STATUSES.includes(now) ? [] : [now])]
+    return `<select name="status" form="${fid(f)}" data-autosubmit aria-label="Relationship status">${opts.map((k) => `<option value="${esc(k)}"${k === now ? ' selected' : ''}>${esc(STATUS_WORD[k] ?? k)}</option>`).join('')}</select><noscript><button form="${fid(f)}" class="small">Save</button></noscript>`
+  }
+  const unionForms = edit ? circle.groups.flatMap((g) => g.people.flatMap((r) => (r.family ? [`<form method="post" action="/t/${tree.id}/f/${r.family.id}" id="${fid(r.family)}" class="inline">${csrfField(ctx)}</form>`] : []))).join('') : ''
   const groups = circle.groups
-    .map((g) => `<div class="circle-group"><h3>${esc(g.label)} <span class="muted small">${g.people.length}</span></h3><ul class="plain">${g.people.map((r) => `<li><label class="pick">${box(r.person, CLOSE.has(g.label))}</label> ${personLink(tree.id, r.person)}${r.tag ? ` <span class="tag">${esc(r.tag)}</span>` : ''}${r.person.kind === 'pet' && r.person.species ? ` <span class="muted small">${esc(r.person.species)}</span>` : ''}</li>`).join('')}</ul></div>`)
+    .map((g) => `<div class="circle-group"><h3>${esc(g.label)} <span class="muted small">${g.people.length}</span></h3><ul class="plain">${g.people.map((r) => `<li><label class="pick">${box(r.person, CLOSE.has(g.label))}</label> ${personLink(tree.id, r.person)}${r.family ? (edit ? ` ${unionPicker(r.family)}` : ` <span class="tag">${esc(unionTag(r.family))}</span>`) : r.tag ? ` <span class="tag">${esc(r.tag)}</span>` : ''}${r.person.kind === 'pet' && r.person.species ? ` <span class="muted small">${esc(r.person.species)}</span>` : ''}</li>`).join('')}</ul></div>`)
     .join('')
   const biz = circle.businesses.length
     ? `<div class="circle-group"><h3>Businesses <span class="muted small">${circle.businesses.length}</span></h3><ul class="plain">${circle.businesses.map((b) => `<li><a class="pl biz" href="/t/${tree.id}/b/${b.business.id}">${esc(b.business.name)}</a> <span class="tag">${esc(b.role)}</span></li>`).join('')}</ul></div>`
@@ -445,7 +462,7 @@ function circleSection(ctx: Ctx, tree: Tree, p: Person, circle: Circle): string 
 <form method="post" action="/trees" class="pform">${csrfField(ctx)}<input type="hidden" name="pick" value="p:${tree.id}:${p.id}">
 <div class="circle-grid">${groups}${biz}</div>
 ${count ? `<div class="panel"><p class="small muted">Start a new family from here: ${esc(first)} and everyone ticked are copied into a new tree of yours. Families can overlap; edits to a name or date carry across the copies.</p><div class="row"><input name="name" value="${esc(name)}" maxlength="200" aria-label="New tree name" required><label class="check small"><input type="checkbox" name="share" value="1" checked> Let the people I tick who have an account see this tree (as viewers)</label><button>Start a new family tree</button></div></div>` : ''}
-</form></section>`
+</form>${unionForms}</section>`
 }
 
 export function personPage(ctx: Ctx, tree: Tree, role: Role, v: PersonView): string {
@@ -477,7 +494,7 @@ ${v.network ?? ''}
 
 ${pet ? '' : contactSection(ctx, tree, p, own, Boolean(v.self))}
 
-${v.circle ? circleSection(ctx, tree, p, v.circle) : ''}
+${v.circle ? circleSection(ctx, tree, p, v.circle, edit) : ''}
 
 ${pet ? '' : `<div class="cols">
 <section><h2>Parents</h2>${
