@@ -485,8 +485,15 @@ export class Store {
 
   // ---- users -------------------------------------------------------------
 
+  /** An account by its own email, or by a second address linked to it (an 'email' identity), so both sign in to one account. */
   userByEmail(email: string): User | null {
-    return this.db.query<User, [string]>('SELECT id,email,name,created_at FROM users WHERE email = ?').get(email.trim().toLowerCase()) ?? null
+    const address = email.trim().toLowerCase()
+    return this.db.query<User, [string]>('SELECT id,email,name,created_at FROM users WHERE email = ?').get(address) ?? this.userByIdentity('email', address)
+  }
+
+  /** Link a second email address to an account: a magic link to it signs in there instead of making a new account. */
+  linkEmail(userId: string, email: string) {
+    this.linkIdentity(userId, 'email', email.trim().toLowerCase())
   }
 
   user(id: string): User | null {
