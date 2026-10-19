@@ -95,6 +95,34 @@ describe('public profiles', () => {
     for (const wrong of ['Joellen', 'Arnold', 'value="Jo"']) expect(form).not.toContain(wrong)
   })
 
+  test('posts on the profile follow the feed: family sees what was shared with them, strangers see none', async () => {
+    const w = world()
+    const tony = w.user('tony@example.com', 'Anthony Ettinger')
+    const work = w.user('work@example.com', 'Anthony Ettinger')
+    const karen = w.user('karen@example.com', 'Karen')
+    const nosy = w.user('nosy@example.com', 'Nosy')
+    const tree = w.store.createTree(work.id, 'The Ettinger Family')
+    w.store.setMember(tree.id, tony.id, 'admin')
+    w.store.setMember(tree.id, karen.id, 'viewer')
+    await w.as(tony).post('/settings/profile', ANTHONY)
+
+    expect(await (await w.as(tony).get('/profile/anthony.ettinger')).text()).toContain('Post to your feed')
+    const posted = await w.as(tony).post('/feed', { body: 'Family news from Tony', audience: tree.id, next: '/profile/anthony.ettinger' })
+    expect(posted.headers.get('location')).toStartWith('/profile/anthony.ettinger?ok=Posted')
+    // His other account (same name, same tree) counts as him.
+    await w.as(work).post('/feed', { body: 'Posted from work', audience: 'everyone' })
+
+    const family = await (await w.as(karen).get('/profile/anthony.ettinger')).text()
+    expect(family).toContain('Family news from Tony')
+    expect(family).toContain('Posted from work')
+    expect(family).not.toContain('Post to your feed')
+    for (const outsider of [await (await w.as(nosy).get('/profile/anthony.ettinger')).text(), await (await w.stranger().get('/profile/anthony.ettinger')).text()]) {
+      expect(outsider).not.toContain('Family news from Tony')
+      expect(outsider).not.toContain('Posted from work')
+      expect(outsider).toContain('shares posts with family and friends only')
+    }
+  })
+
   test('addresses are unique: the second Anthony Ettinger is offered the town', async () => {
     const w = world()
     const a = w.user('a@example.com', 'Anthony Ettinger')

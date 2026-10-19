@@ -347,14 +347,14 @@ ${v.people.length ? `<ul class="plain">${v.people.map((p) => `<li><a href="/feed
  * On a person page: their posts you may see, and, when the page is yours, an open box to
  * post (to this family by default). Posting and replying come back to the page.
  */
-export function personPosts(ctx: Ctx, me: User, v: { tree: Tree; families: Tree[]; items: FeedItem[]; canPost: boolean; back: string }): string {
+export function personPosts(ctx: Ctx, me: User, v: { tree: Tree | null; families: Tree[]; items: FeedItem[]; canPost: boolean; back: string }): string {
   if (!v.canPost && !v.items.length) return ''
   const esc = html.esc
   const csrf = `<input type="hidden" name="_csrf" value="${esc(ctx.csrf)}">`
   const box = v.canPost
     ? `<form method="post" action="/feed" enctype="multipart/form-data" class="pform">${csrf}<input type="hidden" name="next" value="${esc(v.back)}">
   <label>Post to your feed<textarea name="body" rows="3" maxlength="5000" placeholder="News, a photo, a memory…"></textarea></label>
-  <div class="grid2"><label>Who sees it<select name="audience"><option value="${esc(v.tree.id)}" selected>Only ${esc(v.tree.name)}</option><option value="everyone">Everyone who knows me</option>${v.families.filter((t) => t.id !== v.tree.id).map((t) => `<option value="${esc(t.id)}">Only ${esc(t.name)}</option>`).join('')}</select></label><label>Photo (optional)<input type="file" name="photo" accept="image/*"></label></div>
+  <div class="grid2"><label>Who sees it<select name="audience">${v.tree ? `<option value="${esc(v.tree.id)}" selected>Only ${esc(v.tree.name)}</option>` : ''}<option value="everyone"${v.tree ? '' : ' selected'}>Everyone who knows me</option>${v.families.filter((t) => t.id !== v.tree?.id).map((t) => `<option value="${esc(t.id)}">Only ${esc(t.name)}</option>`).join('')}</select></label><label>Photo (optional)<input type="file" name="photo" accept="image/*"></label></div>
   <button>Post</button></form>`
     : ''
   return `<section class="panel" id="posts"><h2>${v.canPost ? 'Your posts' : 'Posts'}</h2>${box}${v.items.map((p) => postHtml(ctx, me.id, p)).join('')}${v.items.length ? '<p class="small"><a href="/feed">Everything in your feed</a></p>' : ''}</section>`
@@ -382,14 +382,14 @@ export function mountFeed(app: Hono<any>, api: Hono<any>, d: FeedDeps) {
     const ref = c.req.header('referer') ?? ''
     try {
       const u = new URL(ref)
-      return u.pathname.startsWith('/feed') || u.pathname.startsWith('/t/') ? u.pathname : fallback
+      return u.pathname.startsWith('/feed') || u.pathname.startsWith('/t/') || u.pathname.startsWith('/profile/') ? u.pathname : fallback
     } catch {
       return fallback
     }
   }
   const flash = (path: string, note: string) => `${path}?ok=${encodeURIComponent(note)}`
   /** Back to a person page the post was written on, or the feed. Only paths inside a tree. */
-  const next = (body: Record<string, any>) => (typeof body.next === 'string' && /^\/t\/[\w-]+\/p\/[\w-]+$/.test(body.next) ? body.next : '/feed')
+  const next = (body: Record<string, any>) => (typeof body.next === 'string' && (/^\/t\/[\w-]+\/p\/[\w-]+$/.test(body.next) || /^\/profile\/[a-z0-9.-]+$/.test(body.next)) ? body.next : '/feed')
   const signin = (c: Context) => c.redirect(`/signin?next=${encodeURIComponent(c.req.path)}`)
 
   app.get('/feed', (c) => {
