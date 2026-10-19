@@ -139,3 +139,30 @@ test('a person page picks a relative from another tree: Barbara becomes Mary\'s 
   expect(decodeURIComponent(bad.headers.get('location')!)).toContain('Not added')
   expect(store.people(guizio.id).some((p) => p.given === 'Pet')).toBe(false)
 })
+
+test('the same person in two trees: a nickname set in one shows in the other, only where you may edit', async () => {
+  const { store, as } = world()
+  const me = store.findOrCreateUser('me@example.com')
+  const owner = store.findOrCreateUser('owner@example.com')
+  const ettinger = store.createTree(me.id, 'Ettinger')
+  const kathleen = store.addPerson(ettinger.id, { given: 'Kathleen', surname: 'Ettinger', birth_date: '2008', notes: 'Ettinger notes' })
+  const tosh = store.createTree(me.id, 'Toshikian')
+  const copy = store.copyPeople(tosh.id, me.id, [{ tree: ettinger.id, person: kathleen.id }]).added[0]!
+  // A third tree where I am only a viewer gets a copy too (made by its owner), and must not change.
+  const theirs = store.createTree(owner.id, 'Theirs')
+  store.setMember(ettinger.id, owner.id, 'viewer')
+  const theirCopy = store.copyPeople(theirs.id, owner.id, [{ tree: ettinger.id, person: kathleen.id }]).added[0]!
+  store.setMember(theirs.id, me.id, 'viewer')
+
+  const res = await as(me).post(`/t/${tosh.id}/p/${copy.id}`, [['given', 'Kathleen'], ['surname', 'Ettinger'], ['nickname', 'Leenie'], ['birth_date', '2008'], ['notes', 'Toshikian notes']])
+  expect(decodeURIComponent(res.headers.get('location')!)).toContain('Saved, here and in 1 other tree')
+  expect(store.person(tosh.id, copy.id)!.nickname).toBe('Leenie')
+  expect(store.person(ettinger.id, kathleen.id)!.nickname).toBe('Leenie')
+  // Notes are per tree; untouched fields are not rewritten.
+  expect(store.person(ettinger.id, kathleen.id)!.notes).toBe('Ettinger notes')
+  expect(store.person(theirs.id, theirCopy.id)!.nickname).toBeNull()
+
+  // And back the other way.
+  await as(me).post(`/t/${ettinger.id}/p/${kathleen.id}`, [['given', 'Kathleen'], ['surname', 'Ettinger'], ['nickname', 'Leen'], ['birth_date', '2008']])
+  expect(store.person(tosh.id, copy.id)!.nickname).toBe('Leen')
+})

@@ -63,6 +63,8 @@ export type Person = {
   /** 'person', or 'pet' (Family plan): a pet has owners, never parents or partners. */
   kind: 'person' | 'pet'
   species: string | null
+  /** Shared by every copy of this person across trees (copyPeople): edits to one carry to the others. */
+  origin_key?: string | null
   created_at: number
   updated_at: number
 }
@@ -200,6 +202,9 @@ export function normalizeBusiness(input: Record<string, unknown>): BusinessInput
 }
 
 export type PersonInput = Partial<Pick<Person, (typeof PERSON_FIELDS)[number]>>
+
+/** What is true of a person whichever tree they are in; notes stay per tree. */
+export const SYNCED_FIELDS = ['given', 'surname', 'nickname', 'sex', 'birth_date', 'birth_place', 'death_date', 'death_place', 'living'] as const
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -404,6 +409,8 @@ export class Store {
     if (!peopleCols.includes('kind')) this.db.run("ALTER TABLE people ADD COLUMN kind TEXT NOT NULL DEFAULT 'person'")
     if (!peopleCols.includes('species')) this.db.run('ALTER TABLE people ADD COLUMN species TEXT')
     if (!peopleCols.includes('nickname')) this.db.run('ALTER TABLE people ADD COLUMN nickname TEXT')
+    if (!peopleCols.includes('origin_key')) this.db.run('ALTER TABLE people ADD COLUMN origin_key TEXT')
+    this.db.run('CREATE INDEX IF NOT EXISTS people_origin ON people(origin_key)')
     const treeCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('trees')").all().map((c) => c.name)
     if (!treeCols.includes('plan_paid_at')) this.db.run('ALTER TABLE trees ADD COLUMN plan_paid_at INTEGER')
     // 0.5.0: photos of a business.
@@ -701,6 +708,43 @@ export class Store {
     })
   }
 
+  /** Mark `copyId` as the same person as `from`: one origin key for the whole family of copies. */
+  linkCopies(from: Person, copyId: string) {
+    const key = from.origin_key ?? from.id
+    if (!from.origin_key) this.db.query('UPDATE people SET origin_key = ? WHERE id = ?').run(key, from.id)
+    this.db.query('UPDATE people SET origin_key = ? WHERE id = ?').run(key, copyId)
+  }
+
+  /** Every other copy of this person, in any tree. */
+  copiesOf(treeId: string, id: string): Person[] {
+    const p = this.person(treeId, id)
+    if (!p?.origin_key) return []
+    return this.db.query<Person, [string, string]>('SELECT * FROM people WHERE origin_key = ? AND id != ?').all(p.origin_key, id)
+  }
+
+  /**
+   * Edit a person and carry what changed to their copies in the user's other trees:
+   * the same person in two families has one name, one nickname, one set of dates.
+   * Only fields this edit changed travel, and only to trees where the user may edit that copy.
+   */
+  updatePersonEverywhere(treeId: string, id: string, input: Record<string, unknown>, userId: string | null | undefined): { person: Person | null; synced: number } {
+    const before = this.person(treeId, id)
+    const person = this.updatePerson(treeId, id, input)
+    if (!before || !person || !userId) return { person, synced: 0 }
+    const changed: Record<string, unknown> = {}
+    for (const key of SYNCED_FIELDS) if (person[key] !== before[key]) changed[key] = person[key]
+    if (!Object.keys(changed).length) return { person, synced: 0 }
+    let synced = 0
+    this.tx(() => {
+      for (const copy of this.copiesOf(treeId, id)) {
+        if (!this.canEditPerson(copy.tree_id, copy.id, userId)) continue
+        this.updatePerson(copy.tree_id, copy.id, changed)
+        synced++
+      }
+    })
+    return { person, synced }
+  }
+
   people(treeId: string, limit = 5000): Person[] {
     return this.db.query<Person, [string, number]>('SELECT * FROM people WHERE tree_id = ? ORDER BY surname, given LIMIT ?').all(treeId, limit)
   }
@@ -746,6 +790,7 @@ export class Store {
         if (!from || ids.has(from.id)) continue
         bySource.set(pick.tree, ids)
         const copy = this.addPerson(targetId, from as unknown as Record<string, unknown>, from.kind === 'pet' ? 'pet' : 'person')
+        this.linkCopies(from, copy.id)
         ids.set(from.id, copy.id)
         added.push(copy)
         for (const e of this.events(pick.tree, from.id)) this.addEvent(targetId, copy.id, e)
