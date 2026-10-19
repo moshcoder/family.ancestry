@@ -935,7 +935,7 @@ export async function runCli(argv: string[]): Promise<number> {
         const n = (x: number | null) => (x === null ? '-' : String(x))
         print(r, () =>
           r.accounts.length
-            ? `${r.accounts.map((a) => `${a.account.padEnd(46)} ${String(a.posts).padStart(4)} posts  ${String(a.likes).padStart(4)} likes  ${String(a.reposts).padStart(3)} reposts  ${String(a.replies).padStart(3)} replies${a.hidden ? '  (hidden)' : ''}`).join('\n')}\n\n${r.posts.map((p) => `${p.posted_at.slice(0, 10)}  ${p.account}  ♥${n(p.likes)} ↻${n(p.reposts)} ↩${n(p.replies)}\n  ${p.text.replace(/\s+/g, ' ').slice(0, 100)}\n  ${p.url}`).join('\n')}`
+            ? `${r.accounts.map((a) => `${a.account.padEnd(46)} ${String(a.posts).padStart(4)} posts  ${n(a.likes).padStart(4)} likes  ${n(a.reposts).padStart(3)} reposts  ${n(a.replies).padStart(3)} replies${a.hidden ? '  (hidden)' : ''}`).join('\n')}\n\n${r.posts.map((p) => `${p.posted_at.slice(0, 10)}  ${p.account}  ♥${n(p.likes)} ↻${n(p.reposts)} ↩${n(p.replies)}\n  ${p.text.replace(/\s+/g, ' ').slice(0, 100)}\n  ${p.url}`).join('\n')}`
             : 'No socials yet. ancestry social import reads what myna posted.',
         )
         return 0

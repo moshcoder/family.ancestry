@@ -56,6 +56,9 @@ describe('socials', () => {
     expect(accountUrl('tsbb:member@bbs.hqtui.com', 'https://bbs.hqtui.com/t/x-91')).toBe('https://bbs.hqtui.com/')
     expect(accountUrl('linkedin:Tony E', 'https://www.linkedin.com/feed/update/1')).toBeNull()
     expect(fromMyna(HISTORY, { skip: ['linkedin:Tony E'] }).length).toBe(3)
+    // A title that is the start of the text is not said twice.
+    const forum = fromMyna({ entries: [{ at: '2026-10-19T00:00:00Z', accountId: 'tsbb:me@bbs.example.net.co', network: 'tsbb', title: 'I used to write…', text: 'I used to write software. Now…', ok: true, url: 'https://bbs.hqtui.com/t/1' }] })
+    expect(forum[0]!.text).toBe('I used to write software. Now…')
   })
 
   test('counts come from each network public API', async () => {
@@ -96,7 +99,7 @@ describe('socials', () => {
 
     // Anyone, signed in or not, sees them on the public profile.
     const page = await (await w.stranger().get('/profile/anthony.ettinger')).text()
-    expect(page).toContain('On their socials')
+    expect(page).toContain('On social media')
     expect(page).toContain('Toot toot')
     expect(page).toContain('href="https://defcon.social/@tony"')
     expect(page).toContain('5 likes · 2 reposts · 1 reply')
