@@ -7,7 +7,7 @@ import { formatAddresses, formatLabeled, hasContact, readContact, socialUrl, typ
 import { readFileSync } from 'node:fs'
 import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.15.3'
+export const VERSION = '0.15.4'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -51,7 +51,7 @@ export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="${asset('/style.css')}">
-<script src="${asset('/app.js')}" defer></script>${statsScript()}
+<script src="${asset('/app.js')}" defer></script>
 </head>
 <body>
 <!--ring-bar-->
@@ -67,8 +67,8 @@ ${body}
 ${adBanner('text_link')}
 <footer class="foot">
   <span>family.ancestry ${VERSION} · open source (MIT) · <a href="https://github.com/moshcoder/family.ancestry">code</a> · <a href="/about">about</a> · <a href="/connect">reach it from anywhere</a></span>
-  <span>A <a href="https://pit.world">Moshpit</a> name. Your tree is private to the people you invite.</span>
-</footer>
+  <span>A <a href="https://pit.world">Moshpit</a> name. Your tree is private to the people you invite.</span>${footerAd()}
+</footer>${statsScript()}
 </body>
 </html>`
 }
@@ -84,10 +84,19 @@ export const adBanner = (format: 'banner_300x250' | 'text_link' = 'banner_300x25
   AD_SLOT === 'off' ? '' : `<div class="ad-unit ad-${format}"><iframe src="https://crawlproof.com/api/ads/frame?slot=${encodeURIComponent(AD_SLOT)}&amp;format=${format}" title="Advertisement" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation" scrolling="no"></iframe></div>`
 
 /**
+ * The footer's crawlproof ad network unit, filled by ad.js. Its creative is a srcdoc
+ * frame that inherits our CSP, hence 'unsafe-inline' styles and https: images there.
+ * CRAWLPROOF_FOOTER_SLOT overrides the slot; 'off' drops it.
+ */
+export const FOOTER_SLOT = process.env.CRAWLPROOF_FOOTER_SLOT ?? 'da845841-3551-4962-8ed6-2e6a65e5b0c7'
+export const footerAd = () =>
+  FOOTER_SLOT === 'off' ? '' : `\n  <aside class="foot-ad" data-ad-network="cMfVN1_KxJlc-bX8" data-cp-ad data-slot="${esc(FOOTER_SLOT)}" data-format="banner_300x250"></aside>\n  <script src="https://crawlproof.com/ad.js" async></script>`
+
+/**
  * crawlproof analytics: one async script, so CSP adds crawlproof.com to script-src
  * and connect-src (the beacon). CRAWLPROOF_SITE_ID overrides the project; 'off' drops it.
  */
-export const STATS_SITE = process.env.CRAWLPROOF_SITE_ID ?? 'e30916b7-dca3-4115-9db0-c2e1bee8eb27'
+export const STATS_SITE = process.env.CRAWLPROOF_SITE_ID ?? 'd6df6a46-dfb8-4a55-a60c-5b7fd5a6975c'
 export const statsScript = () => (STATS_SITE === 'off' ? '' : `\n<script data-site="${esc(STATS_SITE)}" src="https://crawlproof.com/stats.js" async></script>`)
 
 const leaf = () => `<svg class="leaf" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 29V14" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round"/><path d="M16 15c-7 0-11-4-11-11 7 0 11 4 11 11zM16 19c6 0 10-3.5 10-10-6 0-10 3.5-10 10z" fill="currentColor"/></svg>`
