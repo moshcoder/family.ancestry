@@ -9,6 +9,7 @@ import * as html from './html.js'
 import * as page from './network-html.js'
 import { asCircle, CIRCLES, contactName, parseVcards, toVcard, type Circle, type Contact, type Network } from './network.js'
 import { validEmail, type Mail } from './auth.js'
+import { readContact, socialUrl } from './contact.js'
 
 export type NetworkDeps = {
   store: Store
@@ -102,7 +103,11 @@ export function mountNetwork(app: Hono<any>, api: Hono<any>, d: NetworkDeps) {
       contact = net.updateContact(u.id, contact.id, fields)!
       if (!contact.person_id) net.linkContact(u.id, contact.id, { tree_id: tree.id, person_id: person.id })
     } else {
-      contact = net.addContact(u.id, { ...fields, name: fullName(person), birthday: person.birth_date ?? null, emails: email ? [email] : [] }, { tree_id: tree.id, person_id: person.id })
+      // What the tree knows about reaching them comes along; socials ride as links.
+      const card = readContact(person.contact)
+      const emails = email && !card.emails.some((e) => e.value === email) ? [{ label: null, value: email }, ...card.emails] : card.emails
+      const links = [...card.links, ...card.socials.flatMap((x) => (socialUrl(x) ? [{ label: x.label, value: socialUrl(x)! }] : []))]
+      contact = net.addContact(u.id, { ...fields, name: fullName(person), nickname: person.nickname ?? null, birthday: person.birth_date ?? null, emails, phones: card.phones, addresses: card.addresses, links }, { tree_id: tree.id, person_id: person.id })
     }
     const added = `${contactName(contact)} is in your ${contact.circle}.`
     if (!truthy(body.connect)) return { contact, result: added }

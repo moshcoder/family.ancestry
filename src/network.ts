@@ -18,13 +18,14 @@
  */
 import type { Database } from 'bun:sqlite'
 import { clean, newId, sha256, type Store, type User } from './db.js'
+import { parseAddresses, parseEmails, parseLinks, parsePhones, type Address, type Labeled } from './contact.js'
 
 export type Circle = 'family' | 'friends' | 'neighbors' | 'business'
 export const CIRCLES: Circle[] = ['family', 'friends', 'neighbors', 'business']
 export const asCircle = (value: unknown): Circle => (CIRCLES.includes(String(value) as Circle) ? (String(value) as Circle) : 'friends')
 
-export type Labeled = { label: string | null; value: string }
-export type Address = { label: string | null; lines: string }
+export type { Labeled, Address } from './contact.js'
+export { parseLabeled, parseAddresses, formatLabeled, formatAddresses } from './contact.js'
 
 export type Contact = {
   id: string
@@ -109,53 +110,15 @@ const parseJson = <T>(text: unknown): T[] => {
   }
 }
 
-/**
- * "home: jane@example.com" per line, or a JSON array of {label, value}. The label
- * is optional; a value with no colon-prefixed word is just a value.
- */
-export function parseLabeled(input: unknown, max = 20, valueMax = 300): Labeled[] {
-  const rows: Labeled[] = Array.isArray(input)
-    ? input.map((v: any) => (typeof v === 'string' ? splitLabel(v) : { label: clean(v?.label, 40), value: String(v?.value ?? '') }))
-    : String(input ?? '').split(/\r?\n/).map(splitLabel)
-  return rows.map((r) => ({ label: clean(r.label, 40), value: clean(r.value, valueMax) ?? '' })).filter((r) => r.value).slice(0, max)
-}
-
-function splitLabel(line: string): Labeled {
-  // A label is one or two short words before a colon; "https://..." and "+1 (555): x" are not labels.
-  const m = line.match(/^\s*([A-Za-z][A-Za-z ]{0,24}):\s*(.+)$/)
-  if (m && !/^(https?|mailto|tel)$/i.test(m[1]!.trim())) return { label: m[1]!.trim().toLowerCase(), value: m[2]!.trim() }
-  return { label: null, value: line.trim() }
-}
-
-/** Addresses: blank-line separated blocks, each optionally starting "home:" on its first line. */
-export function parseAddresses(input: unknown, max = 10): Address[] {
-  const blocks: Address[] = Array.isArray(input)
-    ? input.map((v: any) => ({ label: clean(v?.label, 40), lines: String(v?.lines ?? v?.value ?? '') }))
-    : String(input ?? '')
-        .split(/\r?\n\s*\r?\n/)
-        .map((block) => {
-          const first = splitLabel(block.split(/\r?\n/)[0] ?? '')
-          const rest = block.split(/\r?\n/).slice(1)
-          return { label: first.label, lines: [first.value, ...rest].join('\n') }
-        })
-  return blocks
-    .map((b) => ({ label: clean(b.label, 40), lines: b.lines.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).join('\n').slice(0, 600) }))
-    .filter((b) => b.lines)
-    .slice(0, max)
-}
-
-export const formatLabeled = (rows: Labeled[]) => rows.map((r) => (r.label ? `${r.label}: ${r.value}` : r.value)).join('\n')
-export const formatAddresses = (rows: Address[]) => rows.map((r) => (r.label ? `${r.label}: ${r.lines}` : r.lines)).join('\n\n')
-
 export function normalizeContact(input: Record<string, unknown>): Partial<Contact> {
   const out: Partial<Contact> = {}
   if ('circle' in input) out.circle = asCircle(input.circle)
   if ('name' in input) out.name = clean(input.name, 200) ?? ''
   for (const key of ['nickname', 'relationship', 'company', 'title', 'birthday', 'anniversary'] as const) if (key in input) out[key] = clean(input[key], 200)
   if ('notes' in input) out.notes = clean(input.notes, 20_000)
-  if ('emails' in input) out.emails = parseLabeled(input.emails).map((e) => ({ ...e, value: e.value.toLowerCase() }))
-  if ('phones' in input) out.phones = parseLabeled(input.phones, 20, 60)
-  if ('links' in input) out.links = parseLabeled(input.links, 20, 2000).filter((l) => /^https?:\/\//i.test(l.value))
+  if ('emails' in input) out.emails = parseEmails(input.emails)
+  if ('phones' in input) out.phones = parsePhones(input.phones)
+  if ('links' in input) out.links = parseLinks(input.links)
   if ('addresses' in input) out.addresses = parseAddresses(input.addresses)
   return out
 }

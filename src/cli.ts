@@ -25,6 +25,8 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
   ancestry show <person>            everything about one person
   ancestry add --given G --surname S [--nickname N] [--sex F|M] [--born DATE] [--birthplace P]
                [--died DATE] [--deathplace P] [--living]
+               [--email E] [--phone P] [--address "1 Main St, Town CA"] [--link URL] [--social "instagram: @tony"]
+               (on edit, contact flags add to what is there; "cell: 408 555 0100" labels a value)
                [--parent-of ID | --child-of ID | --partner-of ID | --sibling-of ID | --grandparent-of ID |
                 --great-grandparent-of ID | --grandchild-of ID | --aunt-uncle-of ID | --niece-nephew-of ID | --cousin-of ID]
                [--relation birth|adopted|step|foster] [--sibling full|half|adopted|foster|step]
@@ -139,6 +141,18 @@ export function personFields(flags: Record<string, string | true>): Record<strin
   for (const [flag, field] of Object.entries(map)) if (typeof flags[flag] === 'string') out[field] = flags[flag]
   if (flags.living === true) out.living = true
   if (flags['not-living'] === true) out.living = false
+  Object.assign(out, personCardFlags(flags))
+  return out
+}
+
+/** --email/--phone/--address/--link/--social on a person: one value each, "label: value" allowed. */
+export function personCardFlags(flags: Record<string, string | true>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (typeof flags.email === 'string') out.emails = [flags.email]
+  if (typeof flags.phone === 'string') out.phones = [flags.phone]
+  if (typeof flags.address === 'string') out.addresses = flags.address.replace(/,\s*/g, '\n')
+  if (typeof flags.link === 'string') out.links = [flags.link]
+  if (typeof flags.social === 'string') out.socials = [flags.social]
   return out
 }
 
@@ -304,6 +318,12 @@ export function formatPerson(p: PersonDetail): string {
   if (p.birth_date || p.birth_place) lines.push(`  born   ${[p.birth_date, p.birth_place].filter(Boolean).join(', ')}`)
   if (p.death_date || p.death_place) lines.push(`  died   ${[p.death_date, p.death_place].filter(Boolean).join(', ')}`)
   else if (p.living) lines.push('  living')
+  const card = p.contact
+  for (const x of card?.phones ?? []) lines.push(`  ${x.label ?? 'phone'}  ${x.value}`)
+  for (const x of card?.emails ?? []) lines.push(`  ${x.label ?? 'email'}  ${x.value}`)
+  for (const x of card?.addresses ?? []) lines.push(`  ${x.label ?? 'address'}  ${x.lines.replace(/\n/g, ', ')}`)
+  for (const x of card?.socials ?? []) lines.push(`  ${x.label ?? 'social'}  ${x.value}`)
+  for (const x of card?.links ?? []) lines.push(`  ${x.label ?? 'link'}  ${x.value}`)
   for (const f of p.parents) lines.push(`  parents ${f.parents.map((x) => `${x.name} [${x.id}]`).join(' & ') || 'unknown'}${f.relation !== 'birth' ? ` (${f.relation})` : ''}`)
   if (p.siblings?.length) lines.push(`  siblings ${p.siblings.map((x) => `${x.name}${x.kind !== 'full' ? ` (${x.kind})` : ''}`).join(', ')}`)
   for (const b of p.bonds ?? []) lines.push(`  ${b.label.toLowerCase()} ${b.other.name} [${b.other.id}]${b.note ? `, ${b.note}` : ''}`)
@@ -611,7 +631,20 @@ export async function runCli(argv: string[]): Promise<number> {
       }
       case 'edit': {
         const tree = await pickTree(client, f.tree)
-        const p = await client.updatePerson(tree.id, await pickPerson(client, tree.id, rest[0]), personFields(f))
+        const id = await pickPerson(client, tree.id, rest[0])
+        const fields = personFields(f)
+        // On edit a contact flag adds to what is there; the web form is where lists are rewritten.
+        if (Object.keys(personCardFlags(f)).length) {
+          const card = (await client.person(tree.id, id)).contact
+          if (card) {
+            if (fields.emails) fields.emails = [...card.emails, ...(fields.emails as string[])]
+            if (fields.phones) fields.phones = [...card.phones, ...(fields.phones as string[])]
+            if (fields.links) fields.links = [...card.links, ...(fields.links as string[])]
+            if (fields.socials) fields.socials = [...card.socials, ...(fields.socials as string[])]
+            if (fields.addresses) fields.addresses = [...card.addresses, { label: null, lines: fields.addresses as string }]
+          }
+        }
+        const p = await client.updatePerson(tree.id, id, fields)
         print(p, () => formatPerson(p))
         return 0
       }

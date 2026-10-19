@@ -5,6 +5,7 @@
 import { adBanner, csrfField, esc, layout, type Ctx } from './html.js'
 import { fullName, lifespan, type Person, type Tree, type User } from './db.js'
 import { CIRCLES, contactName, formatAddresses, formatLabeled, type Circle, type Contact, type Message, type Recommendation, type Thread } from './network.js'
+import { readContact } from './contact.js'
 
 export const ADDONS = [
   {
@@ -182,7 +183,7 @@ export function personNetworkBox(ctx: Ctx, tree: Tree, person: Person, contact: 
   if (contact) return `<a class="btn" href="/network/c/${contact.id}">In my network · ${CIRCLE_LABEL[contact.circle]}</a>`
   const name = person.given || fullName(person)
   return `<details class="mini"><summary>Add ${esc(name)} to my network</summary><form method="post" action="/t/${tree.id}/p/${person.id}/network" class="pform">${csrfField(ctx)}
-<div class="grid3"><label>Circle<select name="circle">${CIRCLES.map((x) => `<option value="${x}"${x === 'friends' ? ' selected' : ''}>${CIRCLE_LABEL[x]}</option>`).join('')}</select></label><label>Their email<input name="email" type="email" placeholder="${esc(name.toLowerCase().replace(/\W+/g, '') || 'them')}@example.com"></label><label>How you know them<input name="relationship" maxlength="200" placeholder="cousin, college roommate"></label></div>
+<div class="grid3"><label>Circle<select name="circle">${CIRCLES.map((x) => `<option value="${x}"${x === 'friends' ? ' selected' : ''}>${CIRCLE_LABEL[x]}</option>`).join('')}</select></label><label>Their email<input name="email" type="email" value="${esc(readContact(person.contact).emails[0]?.value ?? '')}" placeholder="${esc(name.toLowerCase().replace(/\W+/g, '') || 'them')}@example.com"></label><label>How you know them<input name="relationship" maxlength="200" placeholder="cousin, college roommate"></label></div>
 ${connectFields('note')}
 <p class="muted small">Your network is private to you: ${esc(name)} sees nothing unless you ask to connect.</p><button>Add to my network</button></form></details>`
 }

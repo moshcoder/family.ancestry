@@ -28,6 +28,7 @@
  */
 import type { Store, Person } from './db.js'
 import { BONDS, BUSINESS_ROLES, bondKind, businessRole, fullName } from './db.js'
+import { readContact, type Labeled } from './contact.js'
 
 export type GedLine = { level: number; xref: string | null; tag: string; value: string; children: GedLine[] }
 
@@ -52,6 +53,9 @@ export function parseLines(text: string): GedLine[] {
 
 const child = (node: GedLine, tag: string) => node.children.find((c) => c.tag === tag)
 const childValue = (node: GedLine, tag: string) => child(node, tag)?.value.trim() || null
+
+/** `1 RESI` holding only an address (no date, place or description): where to reach someone, not an event. */
+const isAddress = (node: GedLine) => node.tag === 'RESI' && Boolean(child(node, 'ADDR')) && !node.value.trim() && !child(node, 'DATE') && !child(node, 'PLAC')
 
 /** A value plus its CONT (new line) and CONC (same line) continuations. */
 function fullText(node: GedLine): string {
@@ -121,6 +125,7 @@ export function importGedcom(store: Store, treeId: string, text: string): Import
       const deat = child(rec, 'DEAT')
       const notes = rec.children.filter((c) => c.tag === 'NOTE' && !c.value.startsWith('@')).map(fullText).join('\n\n')
       const sex = childValue(rec, 'SEX')
+      const labeled = (tag: string): Labeled[] => rec.children.filter((c) => c.tag === tag && c.value.trim()).map((c) => ({ label: unat(childValue(c, 'TYPE')), value: unat(c.value.trim())! }))
       const p = store.addPerson(treeId, {
         given: name.given,
         nickname: nickname ?? null,
@@ -133,6 +138,11 @@ export function importGedcom(store: Store, treeId: string, text: string): Import
         // GEDCOM has no "living" flag; the convention is: no death record and born within ~110 years.
         living: !deat && isProbablyLiving(birt ? childValue(birt, 'DATE') : null) ? 1 : 0,
         notes: notes || null,
+        emails: labeled('EMAIL'),
+        phones: labeled('PHON'),
+        links: labeled('WWW'),
+        socials: labeled('_SOCIAL'),
+        addresses: rec.children.filter(isAddress).map((c) => ({ label: unat(childValue(c, 'TYPE')), lines: unat(fullText(child(c, 'ADDR')!))! })),
       })
       people.set(rec.xref, p.id)
       result.people++
@@ -140,7 +150,8 @@ export function importGedcom(store: Store, treeId: string, text: string): Import
       for (const c of rec.children) {
         const label = EVENT_LABELS[c.tag]
         // A role we exported ourselves: the _BUS record brings it back as a role, not an event.
-        if (label && !child(c, '_BUS')) {
+        // A residence that is only an address is a contact address, not something that happened.
+        if (label && !child(c, '_BUS') && !isAddress(c)) {
           const type = c.tag === 'EVEN' || c.tag === 'FACT' ? (childValue(c, 'TYPE') ?? label) : label
           store.addEvent(treeId, p.id, { type, date: childValue(c, 'DATE'), place: childValue(c, 'PLAC'), description: c.value.trim() || (child(c, 'NOTE') ? fullText(child(c, 'NOTE')!) : null) })
           result.events++
@@ -323,6 +334,22 @@ export function exportGedcom(store: Store, treeId: string, options: ExportOption
     if (p.surname) out.push(`2 SURN ${gedSafe(p.surname)}`)
     if (p.nickname) out.push(`2 NICK ${gedSafe(p.nickname)}`)
     if (p.sex !== 'U') out.push(`1 SEX ${p.sex === 'X' ? 'U' : p.sex}`)
+    const card = readContact(p.contact)
+    const labeled = (tag: string, rows: Labeled[]) => {
+      for (const r of rows) {
+        out.push(`1 ${tag} ${gedSafe(r.value)}`)
+        if (r.label) out.push(`2 TYPE ${gedSafe(r.label)}`)
+      }
+    }
+    labeled('EMAIL', card.emails)
+    labeled('PHON', card.phones)
+    labeled('WWW', card.links)
+    labeled('_SOCIAL', card.socials)
+    for (const a of card.addresses) {
+      out.push('1 RESI')
+      if (a.label) out.push(`2 TYPE ${gedSafe(a.label)}`)
+      emitText(2, 'ADDR', a.lines.replace(/@/g, '@@'), out)
+    }
     if (p.birth_date || p.birth_place) {
       out.push('1 BIRT')
       if (p.birth_date) out.push(`2 DATE ${gedSafe(p.birth_date)}`)
