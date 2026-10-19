@@ -73,3 +73,49 @@ test('circle prints each lifespan once', async () => {
   const at = html.indexOf('<section class="circle"')
   expect(html.slice(at, html.indexOf('</section>', at)).split('1971').length - 1).toBe(1)
 })
+
+test('partner row: viewers see Married/Partner, editors set the relationship status in place', async () => {
+  const { store, me, tree, david } = family()
+  const CSRF = 'testcsrftoken0123456789'
+  const auth = new Auth(store, async () => {}, 'https://family.test')
+  const app = createApp({ store, auth, site: 'https://family.test' })
+  const cookie = `fa_session=${auth.createSession(me.id)}; fa_csrf=${CSRF}`
+  const page = async (c = cookie) => {
+    const html = await (await app.request(`https://family.test/t/${tree.id}/p/${david.id}`, { headers: { cookie: c } })).text()
+    const at = html.indexOf('<section class="circle"')
+    return html.slice(at, html.indexOf('</section>', at))
+  }
+  const fam = store.spouseFamilies(tree.id, david.id)[0]!.family
+  const circle = await page()
+  expect(circle).toContain('aria-label="Relationship status"')
+  for (const word of ['Married', 'Engaged', 'Partner', 'Dating', 'Separated', 'Divorced', 'Widowed']) expect(circle).toContain(`>${word}</option>`)
+  expect(circle).toContain('value="partners" selected')
+  expect(circle).toContain(`id="union-${fam.id}"`)
+  const post = (status: string) =>
+    app.request(`https://family.test/t/${tree.id}/f/${fam.id}`, { method: 'POST', headers: { cookie, 'content-type': 'application/x-www-form-urlencoded', referer: `https://family.test/t/${tree.id}/p/${david.id}` }, body: new URLSearchParams({ _csrf: CSRF, status }) })
+  await post('married')
+  expect(store.family(tree.id, fam.id)).toMatchObject({ kind: 'married', end_kind: null })
+  await post('divorced')
+  expect(store.family(tree.id, fam.id)).toMatchObject({ kind: 'married', end_kind: 'divorced' })
+  expect(await page()).toContain('value="divorced" selected')
+  await post('married')
+  expect(store.family(tree.id, fam.id)).toMatchObject({ kind: 'married', end_kind: null, end_date: null })
+  // A viewer gets the word, not the select.
+  const viewer = store.findOrCreateUser('v@example.com')
+  store.setMember(tree.id, viewer.id, 'viewer')
+  const seen = await page(`fa_session=${auth.createSession(viewer.id)}`)
+  expect(seen).toContain('<span class="tag">Married</span>')
+  expect(seen).not.toContain('aria-label="Relationship status"')
+})
+
+test('API sets a relationship status and refuses a made-up one', async () => {
+  const { store, me, tree, david } = family()
+  const auth = new Auth(store, async () => {}, 'https://family.test')
+  const app = createApp({ store, auth, site: 'https://family.test' })
+  const fam = store.spouseFamilies(tree.id, david.id)[0]!.family
+  const patch = (status: string) =>
+    app.request(`https://family.test/api/v1/trees/${tree.id}/families/${fam.id}`, { method: 'PATCH', headers: { authorization: `Bearer ${auth.createToken(me.id, 'test')}`, 'content-type': 'application/json' }, body: JSON.stringify({ status }) })
+  const ok = (await (await patch('separated')).json()) as any
+  expect(ok.family).toMatchObject({ kind: 'partners', end_kind: 'separated' })
+  expect((await patch('situationship')).status).toBe(400)
+})

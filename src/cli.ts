@@ -36,6 +36,8 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
                                     business_partner, employer, client, doctor, classmate, teacher,
                                     mentor, raised_by, guardian, godparent, caregiver, chosen_family
                                     a bond that is not descent: "bond Sam raised_by Rose"
+  ancestry status <person> <partner> <married|engaged|partners|dating|separated|divorced|widowed>
+                                    their relationship status: "status David Karen married"
   ancestry pet <owner> <name> [--species Dog] [--born DATE]   (Family plan)
   ancestry plan [buy --chain USDC_POL]     the one-time Family plan for this tree
   ancestry claim [person]           say which person you are (or add yourself)
@@ -724,6 +726,17 @@ export async function runCli(argv: string[]): Promise<number> {
         if (!who || !kind || !other.length) throw new Error(`ancestry bond <person> <${PERSON_BONDS.join('|')}> <other>`)
         const r = await client.addBond(tree.id, await pickPerson(client, tree.id, who), { kind, other_id: await pickPerson(client, tree.id, other.join(' ')), note: str(f.note) })
         print(r, () => formatPerson(r.person))
+        return 0
+      }
+      case 'status': {
+        const tree = await pickTree(client, f.tree)
+        const [who, partner, status] = rest
+        if (!who || !partner || !status) throw new Error('ancestry status <person> <partner> <married|engaged|partners|dating|separated|divorced|widowed>')
+        const [a, b] = [await pickPerson(client, tree.id, who), await pickPerson(client, tree.id, partner)]
+        const union = (await client.person(tree.id, a)).unions.find((u) => u.partner?.id === b)
+        if (!union) throw new Error('no partnership between those two; add one with: ancestry add --partner-of')
+        const fam = await client.setStatus(tree.id, union.family_id, status)
+        print(fam, () => `Now ${fam.end_kind ?? fam.kind}.`)
         return 0
       }
       case 'pet': {
