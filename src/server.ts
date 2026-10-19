@@ -750,7 +750,10 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
    */
   app.post('/webhooks/resend', async (c) => {
     const raw = await c.req.text()
-    if (!resendWebhookSecret || !verifyResendWebhook(resendWebhookSecret, raw, { id: c.req.header('svix-id'), timestamp: c.req.header('svix-timestamp'), signature: c.req.header('svix-signature') })) return c.json({ error: 'bad signature' }, 401)
+    if (!resendWebhookSecret || !verifyResendWebhook(resendWebhookSecret, raw, { id: c.req.header('svix-id'), timestamp: c.req.header('svix-timestamp'), signature: c.req.header('svix-signature') })) {
+      if (c.req.header('svix-id')) console.error(`[resend] webhook ${c.req.header('svix-id')} refused: bad signature`)
+      return c.json({ error: 'bad signature' }, 401)
+    }
     let event: { type?: string; data?: { email_id?: string; bounce?: { message?: string; diagnosticCode?: string[] }; failed?: { reason?: string } } }
     try {
       event = JSON.parse(raw)
@@ -762,7 +765,9 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     if (!status || !id) return c.json({ ok: true, ignored: 'not an email event' })
     const reason = event.data?.bounce ? (event.data.bounce.diagnosticCode?.[0] ?? event.data.bounce.message ?? null) : (event.data?.failed?.reason ?? null)
     // Only messages we sent count: other apps on the same Resend account are ignored.
-    return c.json({ ok: true, matched: store.mailEvent(id, status, reason) })
+    const matched = store.mailEvent(id, status, reason)
+    console.log(`[resend] ${event.type} ${id}${matched ? ' -> invite' : ''}${reason ? ` (${reason})` : ''}`)
+    return c.json({ ok: true, matched })
   })
   /** CoinPay calls this; it proves itself with the signature, not a session. */
   app.post('/webhooks/coinpay', async (c) => {
