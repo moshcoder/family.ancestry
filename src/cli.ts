@@ -429,7 +429,7 @@ export async function runCli(argv: string[]): Promise<number> {
         const from = (str(f.from) ?? '').split(',').map((s) => s.trim()).filter(Boolean)
         const tree = await client.createTree(rest.join(' ') || 'Family tree', str(f.description), from, f['no-share'] !== true)
         writeConfig({ ...readConfig(), tree: tree.id })
-        print(tree, () => `Started ${tree.name} (${tree.id}); it is now your default tree.${tree.added ? ` Copied in ${tree.added} ${tree.added === 1 ? 'person' : 'people'}${tree.shared ? `; ${tree.shared} can now see it` : ''}.` : ''}`)
+        print(tree, () => `Started ${tree.name} (${tree.id}); it is now your default tree.${tree.added ? ` Copied in ${tree.added} ${tree.added === 1 ? 'person' : 'people'}${tree.shared ? `; ${tree.shared} can now see it` : ''}${tree.emailed.length ? ` (emailed ${tree.emailed.join(', ')})` : ''}.` : ''}`)
         return 0
       }
       case 'pickable': {
@@ -442,7 +442,7 @@ export async function runCli(argv: string[]): Promise<number> {
         const tree = await pickTree(client, f.tree)
         if (!rest.length) throw new Error('name at least one PICK value: ancestry pickable lists them')
         const r = await client.bringPeople(tree.id, rest, f['no-share'] !== true)
-        print(r, () => `Copied ${r.added} ${r.added === 1 ? 'person' : 'people'} into ${tree.name}${r.shared ? `; ${r.shared} can now see it` : ''}.`)
+        print(r, () => `Copied ${r.added} ${r.added === 1 ? 'person' : 'people'} into ${tree.name}${r.shared ? `; ${r.shared} can now see it` : ''}${r.emailed?.length ? ` (emailed ${r.emailed.join(', ')})` : ''}.`)
         return 0
       }
       case 'use': {

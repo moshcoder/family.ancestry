@@ -9,7 +9,8 @@ const CSRF = 'testcsrftoken0123456789'
 
 function world() {
   const store = new Store(':memory:')
-  const auth = new Auth(store, async () => {}, SITE)
+  const sent: { to: string; subject: string; text: string }[] = []
+  const auth = new Auth(store, async (m) => void sent.push(m), SITE)
   const net = new Network(store)
   const app = createApp({ store, auth, site: SITE, net })
   const as = (user: User) => {
@@ -18,11 +19,11 @@ function world() {
     const post = (path: string, fields: [string, string][]) => app.request(`${SITE}${path}`, { method: 'POST', headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams([['_csrf', CSRF], ...fields]) })
     return { get, post }
   }
-  return { store, net, as }
+  return { store, net, as, sent }
 }
 
 test('a new tree starts from people already in another tree: links, events and accounts come along', async () => {
-  const { store, as } = world()
+  const { store, as, sent } = world()
   const me = store.findOrCreateUser('me@example.com')
   const liz = store.findOrCreateUser('liz@example.com')
   const ettinger = store.createTree(me.id, 'The Ettinger Family')
@@ -44,7 +45,11 @@ test('a new tree starts from people already in another tree: links, events and a
   const res = await as(me).post('/trees', [['name', 'The Toshikian Family'], ['pick', `p:${ettinger.id}:${mom.id}`], ['pick', `p:${ettinger.id}:${kid.id}`], ['share', '1']])
   expect(res.status).toBe(302)
   const treeId = res.headers.get('location')!.match(/\/t\/([^?]+)/)![1]!
-  expect(decodeURIComponent(res.headers.get('location')!)).toContain('Added 2 people; 1 of them can now see this tree')
+  expect(decodeURIComponent(res.headers.get('location')!)).toContain('Added 2 people; 1 of them can now see this tree (emailed liz@example.com)')
+  // Liz is told, or being added is invisible to her.
+  expect(sent.map((m) => m.to)).toEqual(['liz@example.com'])
+  expect(sent[0]!.subject).toContain('added you to the The Toshikian Family family tree')
+  expect(sent[0]!.text).toContain(`${SITE}/t/`)
   const people = store.people(treeId)
   expect(people.map((p) => p.given).sort()).toEqual(['Kathleen', 'Liz'])
   const newMom = people.find((p) => p.given === 'Liz')!
@@ -79,7 +84,7 @@ test('without share, accounts are not given access; someone else\'s tree cannot 
 })
 
 test('an existing tree brings in people from another tree and from the network', async () => {
-  const { store, net, as } = world()
+  const { store, net, as, sent } = world()
   const me = store.findOrCreateUser('me@example.com')
   const shawn = store.findOrCreateUser('shawn@example.com')
   const a = store.createTree(me.id, 'A')
@@ -96,7 +101,8 @@ test('an existing tree brings in people from another tree and from the network',
   expect(page).not.toContain(`value="p:${b.id}:`)
 
   const res = await as(me).post(`/t/${b.id}/bring`, [['pick', `p:${a.id}:${p1.id}`], ['pick', `p:${a.id}:${p2.id}`], ['pick', `c:${contact.id}`], ['share', '1']])
-  expect(decodeURIComponent(res.headers.get('location')!)).toContain('Added 3 people; 1 of them can now see this tree')
+  expect(decodeURIComponent(res.headers.get('location')!)).toContain('Added 3 people; 1 of them can now see this tree (emailed shawn@example.com)')
+  expect(sent.map((m) => m.to)).toEqual(['shawn@example.com'])
   const gp = store.people(b.id).find((p) => p.given === 'Grandpa')!
   expect(store.spouseFamilies(b.id, gp.id)[0]!.partner!.given).toBe('Grandma')
   const sh = store.people(b.id).find((p) => p.given === 'Shawn')!
