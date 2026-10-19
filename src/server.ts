@@ -8,6 +8,7 @@
  *                                FAMILY_PLAN_USD (49) for the one-time Family plan
  */
 import { Hono, type Context } from 'hono'
+import { startPitFooterRefresh } from './pit-footer.js'
 import { RING_PLACEHOLDER, ringBar, startRingRefresh, visitorOnMoshpit } from './ring.js'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { createBridgeClient } from '@profullstack/bridges'
@@ -1638,6 +1639,7 @@ export function serve() {
   const app = createApp({ store, auth, site, publicSite, plan: planFromEnv(), pitWorld, redirectHosts, mailStatus, resendWebhookSecret })
   const port = Number(process.env.PORT ?? 8792)
   startRingRefresh()
+  startPitFooterRefresh('family.ancestry')
   Bun.serve({ port, hostname: process.env.HOST ?? '127.0.0.1', fetch: app.fetch, maxRequestBodySize: 30 * 1024 * 1024 })
   console.log(`family.ancestry ${html.VERSION} on http://${process.env.HOST ?? '127.0.0.1'}:${port} (${site}, data ${dataDir}${process.env.RESEND_API_KEY ? '' : ', mail to console'})`)
 }
