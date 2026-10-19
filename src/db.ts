@@ -112,6 +112,8 @@ export type Business = {
 export type BusinessRole = { id: string; tree_id: string; business_id: string; person_id: string; role: string; title: string | null; start_date: string | null; end_date: string | null; note: string | null; created_at: number }
 export type SiblingKind = 'full' | 'half' | 'step' | 'adoptive' | 'foster'
 export type Sibling = { person: Person; kind: SiblingKind; via: Person | null }
+export type CircleGroup = { label: string; people: { person: Person; tag?: string }[] }
+export type Circle = { groups: CircleGroup[]; businesses: { business: Business; role: string }[] }
 /** `union` is the partnership's kind on a partner step: married, partners or dating. */
 export type PathStep = { person: Person; step: 'self' | 'parent' | 'child' | 'partner'; relation?: string; union?: string }
 /** What a partnership can be. Divorced is a marriage with an end date. */
@@ -1106,6 +1108,42 @@ export class Store {
     const out = new Map<string, Person>()
     for (const f of mine) for (const p of f.parents) for (const u of this.spouseFamilies(treeId, p.id)) if (u.partner && !parents.has(u.partner.id)) out.set(u.partner.id, u.partner)
     return [...out.values()]
+  }
+
+  /**
+   * Everyone in this person's life, grouped: close and wider family, pets, bonds, businesses.
+   * Each person appears once, in the closest group that holds them.
+   */
+  circle(treeId: string, personId: string): Circle {
+    const seen = new Set([personId])
+    const group = (label: string, rows: { person: Person; tag?: string }[]): CircleGroup => ({
+      label,
+      people: rows.filter((r) => !seen.has(r.person.id) && seen.add(r.person.id)),
+    })
+    const plain = (people: Person[]) => people.map((person) => ({ person }))
+    const kidsOf = (id: string) => this.spouseFamilies(treeId, id).flatMap((u) => u.children)
+    const parentFams = this.parentFamilies(treeId, personId)
+    const parents = parentFams.flatMap((f) => f.parents.map((person) => ({ person, tag: f.relation !== 'birth' ? f.relation : undefined })))
+    const siblings = this.siblings(treeId, personId)
+    const unions = this.spouseFamilies(treeId, personId)
+    const children = unions.flatMap((u) => u.children)
+    const auntsUncles = parentFams.flatMap((f) => f.parents).flatMap((p) => this.siblings(treeId, p.id).map((s) => s.person))
+    const bonds = this.bondsFor(treeId, personId)
+    const groups = [
+      group('Parents', [...parents, ...this.stepParents(treeId, personId).map((person) => ({ person, tag: 'step' }))]),
+      group('Brothers and sisters', siblings.map((s) => ({ person: s.person, tag: s.kind === 'full' ? undefined : s.kind === 'adoptive' ? 'adopted' : s.kind }))),
+      group('Partners', unions.flatMap((u) => (u.partner ? [{ person: u.partner, tag: u.family.end_kind ?? (u.family.end_date ? 'divorced' : u.family.kind) }] : []))),
+      group('Children', [...plain(children), ...this.stepChildren(treeId, personId).flatMap((x) => x.children.map((person) => ({ person, tag: 'step' })))]),
+      group('Grandparents', plain(parentFams.flatMap((f) => f.parents).flatMap((p) => this.parents(treeId, p.id)))),
+      group('Grandchildren', plain(children.flatMap((c) => kidsOf(c.id)))),
+      group('Aunts and uncles', plain(auntsUncles)),
+      group('Nieces and nephews', plain(siblings.flatMap((s) => kidsOf(s.person.id)))),
+      group('Cousins', plain(auntsUncles.flatMap((a) => kidsOf(a.id)))),
+      group(this.person(treeId, personId)?.kind === 'pet' ? 'Owners' : 'Pets', plain(bonds.filter((b) => b.kind === 'pet').map((b) => b.other))),
+      group('Friends, godparents and others', bonds.filter((b) => b.kind !== 'pet').map((b) => ({ person: b.other, tag: b.label }))),
+    ].filter((g) => g.people.length)
+    const businesses = this.businessesOf(treeId, personId).map((r) => ({ business: r.business, role: r.title || r.role }))
+    return { groups, businesses }
   }
 
   // ---- bonds outside the bloodline, and pets -------------------------------

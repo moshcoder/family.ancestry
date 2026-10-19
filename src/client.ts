@@ -125,6 +125,8 @@ export type PersonDetail = PersonSummary & {
   siblings?: { id: string; name: string; kind: string; via: { id: string; name: string } | null }[]
   bonds?: { id: string; kind: string; label: string; other: { id: string; name: string; kind: string }; note: string | null }[]
   pets?: { id: string; name: string; species: string | null }[]
+  /** Everyone in their life, grouped: Parents, Brothers and sisters, … Cousins, Pets, Friends …; plus businesses. */
+  circle?: { groups: { label: string; people: { id: string; name: string; kind: string; tag: string | null }[] }[]; businesses: { id: string; name: string; role: string }[] }
   businesses?: { role_id: string; business: { id: string; name: string; category: string | null }; role: string; label: string; title: string | null; start_date: string | null; end_date: string | null }[]
   kind?: string
   species?: string | null
