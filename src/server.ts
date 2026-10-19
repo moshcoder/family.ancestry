@@ -566,6 +566,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
         auntsUncles: store.parents(t.tree.id, person.id).flatMap((pp) => store.siblings(t.tree.id, pp.id).map((s) => s.person)),
         bonds: store.bondsFor(t.tree.id, person.id),
         pets: store.petsOf(t.tree.id, person.id),
+        circle: store.circle(t.tree.id, person.id),
         plan: hasPlan(plan, store, t.tree),
         profile,
         self: profile?.id === t.user.id,
@@ -1068,6 +1069,10 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
       bonds: store.bondsFor(treeId, p.id).map((b) => ({ id: b.id, kind: b.kind, label: b.label, other: { id: b.other.id, name: fullName(b.other), kind: b.other.kind }, note: b.note })),
       pets: store.petsOf(treeId, p.id).map((x) => ({ id: x.id, name: fullName(x), species: x.species })),
       businesses: personBusinessesOut(store, treeId, p.id),
+      circle: (() => {
+        const c = store.circle(treeId, p.id)
+        return { groups: c.groups.map((g) => ({ label: g.label, people: g.people.map((r) => ({ id: r.person.id, name: fullName(r.person), kind: r.person.kind, tag: r.tag ?? null })) })), businesses: c.businesses.map((b) => ({ id: b.business.id, name: b.business.name, role: b.role })) }
+      })(),
     }
   }
 

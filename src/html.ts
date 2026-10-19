@@ -5,9 +5,9 @@
 import { createHash } from 'node:crypto'
 import { formatAddresses, formatLabeled, hasContact, readContact, socialUrl, type PersonContact } from './contact.js'
 import { readFileSync } from 'node:fs'
-import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
+import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Circle, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.15.4'
+export const VERSION = '0.16.0'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -420,6 +420,33 @@ export type PersonView = {
   eventForm?: string
   /** Their partners' children by someone else, per partnership. */
   stepChildren?: { familyId: string; children: Person[] }[]
+  /** Everyone in their life, grouped (store.circle). */
+  circle?: Circle
+}
+
+/**
+ * Everyone in one person's life on one screen: family near and far, pets, friends and other
+ * bonds, businesses. Tick some and start a new family tree with them (the 0.12 picker).
+ */
+const CLOSE = new Set(['Parents', 'Brothers and sisters', 'Partners', 'Children', 'Pets', 'Owners'])
+
+function circleSection(ctx: Ctx, tree: Tree, p: Person, circle: Circle): string {
+  const count = circle.groups.reduce((n, g) => n + g.people.length, 0)
+  if (!count && !circle.businesses.length) return ''
+  const first = p.nickname || p.given.split(' ')[0] || fullName(p)
+  const box = (o: Person, checked: boolean) => `<input type="checkbox" name="pick" value="p:${tree.id}:${o.id}"${checked ? ' checked' : ''} aria-label="Bring ${esc(fullName(o))}">`
+  const groups = circle.groups
+    .map((g) => `<div class="circle-group"><h3>${esc(g.label)} <span class="muted small">${g.people.length}</span></h3><ul class="plain">${g.people.map((r) => `<li><label class="pick">${box(r.person, CLOSE.has(g.label))}</label> ${personLink(tree.id, r.person)}${r.tag ? ` <span class="tag">${esc(r.tag)}</span>` : ''}${r.person.kind === 'pet' && r.person.species ? ` <span class="muted small">${esc(r.person.species)}</span>` : lifespan(r.person) ? ` <span class="muted small">${esc(lifespan(r.person))}</span>` : ''}</li>`).join('')}</ul></div>`)
+    .join('')
+  const biz = circle.businesses.length
+    ? `<div class="circle-group"><h3>Businesses <span class="muted small">${circle.businesses.length}</span></h3><ul class="plain">${circle.businesses.map((b) => `<li><a class="pl biz" href="/t/${tree.id}/b/${b.business.id}">${esc(b.business.name)}</a> <span class="tag">${esc(b.role)}</span></li>`).join('')}</ul></div>`
+    : ''
+  const name = `The ${p.surname || fullName(p)} Family`
+  return `<section class="circle" id="circle"><h2>Everyone in ${esc(first)}'s life <span class="muted small">${count} ${count === 1 ? 'person' : 'people'}${circle.businesses.length ? ` · ${circle.businesses.length} ${circle.businesses.length === 1 ? 'business' : 'businesses'}` : ''}</span></h2>
+<form method="post" action="/trees" class="pform">${csrfField(ctx)}<input type="hidden" name="pick" value="p:${tree.id}:${p.id}">
+<div class="circle-grid">${groups}${biz}</div>
+${count ? `<div class="panel"><p class="small muted">Start a new family from here: ${esc(first)} and everyone ticked are copied into a new tree of yours. Families can overlap; edits to a name or date carry across the copies.</p><div class="row"><input name="name" value="${esc(name)}" maxlength="200" aria-label="New tree name" required><label class="check small"><input type="checkbox" name="share" value="1" checked> Let the people I tick who have an account see this tree (as viewers)</label><button>Start a new family tree</button></div></div>` : ''}
+</form></section>`
 }
 
 export function personPage(ctx: Ctx, tree: Tree, role: Role, v: PersonView): string {
@@ -450,6 +477,8 @@ ${v.network ?? ''}
 <div class="actions">${pet ? '' : `<a class="btn" href="/t/${tree.id}/pedigree/${p.id}">Pedigree</a>`}${pet ? '' : `<a class="btn" href="/t/${tree.id}/descendants/${p.id}">Descendants</a><a class="btn" href="/t/${tree.id}/relate?a=${tree.home_person_id ?? ''}&b=${p.id}">Related how?</a>`}${edit && !pet && tree.home_person_id !== p.id ? `<form method="post" action="/t/${tree.id}/home" class="inline">${csrfField(ctx)}<input type="hidden" name="person_id" value="${p.id}"><button class="btn">Make home person</button></form>` : ''}</div></div></div>
 
 ${pet ? '' : contactSection(ctx, tree, p, own, Boolean(v.self))}
+
+${v.circle ? circleSection(ctx, tree, p, v.circle) : ''}
 
 ${pet ? '' : `<div class="cols">
 <section><h2>Parents</h2>${

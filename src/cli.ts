@@ -313,6 +313,8 @@ export function formatPost(p: FeedPost): string {
   return lines.join('\n')
 }
 
+const WIDER = new Set(['Grandparents', 'Grandchildren', 'Aunts and uncles', 'Nieces and nephews', 'Cousins'])
+
 export function formatPerson(p: PersonDetail): string {
   const lines = [`${p.name}${p.nickname ? ` "${p.nickname}"` : ''} ${years(p)}`, `  id ${p.id}  ${p.url}`]
   if (p.birth_date || p.birth_place) lines.push(`  born   ${[p.birth_date, p.birth_place].filter(Boolean).join(', ')}`)
@@ -327,6 +329,8 @@ export function formatPerson(p: PersonDetail): string {
   for (const f of p.parents) lines.push(`  parents ${f.parents.map((x) => `${x.name} [${x.id}]`).join(' & ') || 'unknown'}${f.relation !== 'birth' ? ` (${f.relation})` : ''}`)
   if (p.siblings?.length) lines.push(`  siblings ${p.siblings.map((x) => `${x.name}${x.kind !== 'full' ? ` (${x.kind})` : ''}`).join(', ')}`)
   for (const b of p.bonds ?? []) lines.push(`  ${b.label.toLowerCase()} ${b.other.name} [${b.other.id}]${b.note ? `, ${b.note}` : ''}`)
+  // The wider family the lines above leave out (store.circle).
+  for (const g of p.circle?.groups ?? []) if (WIDER.has(g.label)) lines.push(`  ${g.label.toLowerCase()} ${g.people.map((x) => `${x.name}${x.tag ? ` (${x.tag})` : ''} [${x.id}]`).join(', ')}`)
   if (p.pets?.length) lines.push(`  pets ${p.pets.map((x) => `${x.name}${x.species ? ` (${x.species})` : ''}`).join(', ')}`)
   for (const b of p.businesses ?? []) lines.push(`  ${b.label.toLowerCase()} ${b.business.name} [${b.business.id}]${b.start_date || b.end_date ? ` ${b.start_date ?? '?'}–${b.end_date ?? ''}` : ''}`)
   for (const u of p.unions) {
