@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.12.1'
+export const VERSION = '0.12.2'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -501,11 +501,61 @@ function descendantList(treeId: string, d: Descendant): string {
   return `${personLink(treeId, d.person)}${unions ? `<ul class="unions">${unions}</ul>` : ''}`
 }
 
+/**
+ * Descendants left to right, like the pedigree: a person in column g, each partner in a
+ * smaller box under them, and that couple's children in column g + 1, starting level with it.
+ */
+export function descendantsSvg(treeId: string, root: Descendant): string {
+  const boxW = 210
+  const boxH = 52
+  const partnerH = 38
+  const indent = 18
+  const gapX = 40
+  const gapY = 12
+  const parts: string[] = []
+  let width = 0
+  const box = (p: Person, x: number, y: number, w: number, h: number, cls: string, label: string) =>
+    `<a href="/t/${treeId}/descendants/${p.id}"><g class="box ${cls} sex-${p.sex}"><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="7"/>${
+      h > 40 ? `<text x="${x + 10}" y="${y + 21}" class="nm">${esc(label)}</text><text x="${x + 10}" y="${y + 39}" class="yr">${esc(lifespan(p))}</text>` : `<text x="${x + 10}" y="${y + 16}" class="nm sm">${esc(label)}</text><text x="${x + 10}" y="${y + 31}" class="yr">${esc(lifespan(p))}</text>`
+    }</g></a>`
+  const edge = (fromX: number, fromY: number, toX: number, toY: number) => `<path class="edge" d="M${fromX} ${fromY} H${fromX + gapX / 2} V${toY} H${toX}"/>`
+  /** Draws d with its top at y; returns the y below everything it drew. */
+  const place = (d: Descendant, col: number, top: number): number => {
+    const x = col * (boxW + gapX)
+    width = Math.max(width, x + boxW)
+    parts.push(box(d.person, x, top, boxW, boxH, '', trim(fullName(d.person), 26)))
+    let cursor = top + boxH + gapY
+    d.unions.forEach((u, i) => {
+      if (!u.partner && !u.children.length) return
+      const py = i === 0 ? top + boxH + 4 : cursor
+      if (u.partner) parts.push(box(u.partner, x + indent, py, boxW - indent, partnerH, 'partner', `& ${trim(fullName(u.partner), 23)}`))
+      else parts.push(`<g class="box partner empty"><rect x="${x + indent}" y="${py}" width="${boxW - indent}" height="${partnerH}" rx="7"/><text x="${x + indent + 10}" y="${py + 24}" class="yr">&amp; unknown</text></g>`)
+      // The couple's line leaves from between the two boxes on the first union, from the partner after that.
+      const fromY = i === 0 ? top + boxH + 2 : py + partnerH / 2
+      let childTop = i === 0 ? top : py
+      for (const c of u.children) {
+        parts.push(edge(x + boxW, fromY, x + boxW + gapX, childTop + boxH / 2))
+        childTop = place(c, col + 1, childTop)
+      }
+      cursor = Math.max(py + partnerH + gapY, childTop)
+    })
+    return Math.max(cursor, top + boxH + gapY)
+  }
+  const height = place(root, 0, 0)
+  // Edges were pushed before the boxes they reach; draw them underneath.
+  const edges = parts.filter((p) => p.startsWith('<path'))
+  const boxes = parts.filter((p) => !p.startsWith('<path'))
+  return `<svg class="pedigree descendants" viewBox="-2 -2 ${width + 4} ${height + 4}" width="${width + 4}" height="${height + 4}" role="img" aria-label="Descendants chart">${edges.join('')}${boxes.join('')}</svg>`
+}
+
 export function descendantsPage(ctx: Ctx, tree: Tree, d: Descendant, depth: number): string {
   return layout(
     ctx,
     `Descendants of ${fullName(d.person)}`,
     `<div class="titlebar"><h1>Descendants of ${personLink(tree.id, d.person)}</h1><div class="actions">${[2, 3, 4, 6].map((g) => `<a class="btn${g === depth ? ' on' : ''}" href="/t/${tree.id}/descendants/${d.person.id}?g=${g}">${g} gen</a>`).join('')}<a class="btn" href="/t/${tree.id}/pedigree/${d.person.id}">Pedigree</a></div></div>
+<p class="muted small">Click anyone to put them at the root. Partners sit under the person, with their children to the right.</p>
+<div class="chart">${descendantsSvg(tree.id, d)}</div>
+<h2>As a list</h2>
 <div class="desc">${descendantList(tree.id, d)}</div>`,
     { crumbs: [['/trees', 'Trees'], [`/t/${tree.id}`, tree.name], [`/t/${tree.id}/p/${d.person.id}`, fullName(d.person)], ['', 'Descendants']], wide: true },
   )

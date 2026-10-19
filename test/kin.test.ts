@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test'
 import { Store, fullName } from '../src/db.ts'
 import { Auth } from '../src/auth.ts'
 import { addRelative, createApp } from '../src/server.ts'
+import { descendantsSvg } from '../src/html.ts'
 
 const setup = () => {
   const store = new Store(':memory:')
@@ -45,4 +46,20 @@ test('Add a friend is on every person page, open, with every kind of bond', asyn
   const bob = store.addPerson(tree.id, { given: 'Bob', surname: 'Ettinger', sex: 'M' })
   store.addBond(tree.id, martha.id, bob.id, 'coworker')
   expect(store.bondsFor(tree.id, bob.id)[0]!.label).toBe('Coworker')
+})
+
+test('the descendants page draws a chart: partners under the person, children to the right', () => {
+  const store = new Store(':memory:')
+  const me = store.findOrCreateUser('chart@example.com')
+  const tree = store.createTree(me.id, 'Chart')
+  const dad = store.addPerson(tree.id, { given: 'Robert', surname: 'E', sex: 'M' })
+  const mom = store.addPerson(tree.id, { given: 'Mary', surname: 'E', sex: 'F' })
+  const kid = store.addPerson(tree.id, { given: 'Anthony', surname: 'E', sex: 'M' })
+  const fam = store.createFamily(tree.id, dad.id, mom.id)
+  store.addChild(tree.id, fam.id, kid.id)
+  const svg = descendantsSvg(tree.id, store.descendants(tree.id, dad.id, 3)!)
+  expect(svg).toContain('aria-label="Descendants chart"')
+  expect(svg).toContain(`href="/t/${tree.id}/descendants/${kid.id}"`)
+  expect(svg).toContain('&amp; Mary E')
+  expect(svg).toContain('class="edge"')
 })
