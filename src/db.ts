@@ -403,6 +403,33 @@ export const lifespan = (p: Pick<Person, 'birth_date' | 'death_date' | 'living'>
   return `${b ?? '?'}–${d ?? (p.living ? '' : '?')}`
 }
 
+/** Name words, lower case and without accents: "José Núñez-Ruiz" -> jose, nunez, ruiz. */
+const nameWords = (...parts: (string | null | undefined)[]) =>
+  new Set(
+    parts
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 1),
+  )
+
+/**
+ * Could this account be this person? They must share a name: first, last or nickname, against
+ * the account's name or its email ("ettingerkaren@…" fits Karen Ettinger). An account with no
+ * name cannot be checked and fits. Claiming yourself is one click, so this is what stops an
+ * account becoming the aunt it just added.
+ */
+export function nameFits(user: Pick<User, 'name' | 'email'>, person: { given?: string | null; surname?: string | null; nickname?: string | null }): boolean {
+  if (!user.name?.trim()) return true
+  const theirs = nameWords(person.given, person.surname, person.nickname)
+  if (!theirs.size) return true
+  const mine = nameWords(user.name, user.email.split('@')[0])
+  return [...theirs].some((w) => mine.has(w) || [...mine].some((m) => m.length > 3 && w.length > 3 && (m.includes(w) || w.includes(m))))
+}
+
 export class Store {
   readonly db: Database
 
@@ -679,6 +706,28 @@ export class Store {
     this.db.query('DELETE FROM profiles WHERE tree_id = ? AND user_id = ?').run(treeId, userId)
     this.db.query('INSERT OR REPLACE INTO profiles (tree_id,person_id,user_id,created_at) VALUES (?,?,?,?)').run(treeId, personId, userId, this.now())
     return true
+  }
+
+  /**
+   * Undo claims nothing backs (0.21.0): the account has a name and shares none with the person,
+   * no invite bound to that person was used by it, and it holds no other copy of them. Those came
+   * from the "This is me" button on someone you had just added. Returns what was released.
+   */
+  releaseMisclaims(): { tree_id: string; person_id: string; user_id: string; person: string; account: string }[] {
+    const rows = this.db
+      .query<{ tree_id: string; person_id: string; user_id: string; origin_key: string | null; given: string; surname: string; nickname: string | null; name: string | null; email: string }, []>(
+        'SELECT pr.tree_id, pr.person_id, pr.user_id, p.origin_key, p.given, p.surname, p.nickname, u.name, u.email FROM profiles pr JOIN people p ON p.id = pr.person_id JOIN users u ON u.id = pr.user_id',
+      )
+      .all()
+    const out: ReturnType<Store['releaseMisclaims']> = []
+    for (const r of rows) {
+      if (nameFits(r, r)) continue
+      if (this.db.query('SELECT 1 FROM invites WHERE tree_id = ? AND person_id = ? AND used_by = ?').get(r.tree_id, r.person_id, r.user_id)) continue
+      if (r.origin_key && this.db.query('SELECT 1 FROM profiles pr JOIN people p ON p.id = pr.person_id WHERE p.origin_key = ? AND pr.user_id = ? AND pr.person_id <> ?').get(r.origin_key, r.user_id, r.person_id)) continue
+      this.db.query('DELETE FROM profiles WHERE tree_id = ? AND person_id = ? AND user_id = ?').run(r.tree_id, r.person_id, r.user_id)
+      out.push({ tree_id: r.tree_id, person_id: r.person_id, user_id: r.user_id, person: `${r.given} ${r.surname}`.trim(), account: r.email })
+    }
+    return out
   }
 
   releaseProfile(treeId: string, personId: string) {
