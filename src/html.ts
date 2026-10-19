@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.12.3'
+export const VERSION = '0.13.0'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -201,7 +201,7 @@ export function treePage(ctx: Ctx, tree: Tree, role: Role, data: { stats: Record
   const edit = canEdit(role)
   const list = data.people.length
     ? `<table class="people"><thead><tr><th>Name</th><th>Born</th><th>Died</th></tr></thead><tbody>${data.people
-        .map((p) => `<tr><td>${personLink(tree.id, p)}${p.kind === 'pet' ? ` <span class="tag">${esc(p.species ?? 'pet')}</span>` : ''}</td><td>${esc([p.birth_date, p.birth_place].filter(Boolean).join(', '))}</td><td>${esc([p.death_date, p.death_place].filter(Boolean).join(', '))}</td></tr>`)
+        .map((p) => `<tr><td>${personLink(tree.id, p)}${p.nickname ? ` <span class="muted small">“${esc(p.nickname)}”</span>` : ''}${p.kind === 'pet' ? ` <span class="tag">${esc(p.species ?? 'pet')}</span>` : ''}</td><td>${esc([p.birth_date, p.birth_place].filter(Boolean).join(', '))}</td><td>${esc([p.death_date, p.death_place].filter(Boolean).join(', '))}</td></tr>`)
         .join('')}</tbody></table>`
     : `<p class="empty">${data.query ? 'Nobody matches that.' : 'This tree is empty.'}</p>`
   const businesses = data.businesses?.length
@@ -231,6 +231,7 @@ export function personForm(ctx: Ctx, action: string, p: Partial<Person> | null, 
   const sex = p?.sex ?? 'U'
   return `<form method="post" action="${esc(action)}" class="pform">${csrfField(ctx)}${extra}
   <div class="grid2"><label>Given names<input name="given" value="${v('given')}" maxlength="200" autocomplete="off"></label><label>Surname<input name="surname" value="${v('surname')}" maxlength="200" autocomplete="off"></label></div>
+  <label>Nickname<input name="nickname" value="${v('nickname')}" maxlength="80" placeholder="what the family calls them: Tony, Nana, Big Al" autocomplete="off"></label>
   <div class="grid3"><label>Sex<select name="sex">${[['U', 'Unknown'], ['F', 'Female'], ['M', 'Male'], ['X', 'Other']].map(([k, l]) => `<option value="${k}"${sex === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
   <label class="check"><input type="checkbox" name="living" value="1"${p?.living ? ' checked' : ''}> Living</label></div>
   <div class="grid2"><label>Born<input name="birth_date" value="${v('birth_date')}" placeholder="12 MAR 1901, ABT 1890" maxlength="200"></label><label>Birthplace<input name="birth_place" value="${v('birth_place')}" maxlength="200"></label></div>
@@ -312,6 +313,7 @@ function bondForm(ctx: Ctx, tree: Tree, person: Person): string {
   <div class="row"><input name="existing" list="people-${tree.id}" placeholder="Start typing a name" autocomplete="off"></div>
   <p class="muted small">Or someone new:</p>
   <div class="grid2"><label>Given names<input name="given" maxlength="200"></label><label>Surname<input name="surname" maxlength="200"></label></div>
+  <label>Nickname<input name="nickname" maxlength="80" placeholder="Uncle Les"></label>
   <div class="grid3">${SEX_SELECT}<label>Born<input name="birth_date" maxlength="200"></label><label class="check"><input type="checkbox" name="living" value="1"> Living</label></div>
   <label>Note<input name="note" maxlength="500" placeholder="From age 4, after Mom passed"></label>
   <button>Add</button>
@@ -390,7 +392,7 @@ export function personPage(ctx: Ctx, tree: Tree, role: Role, v: PersonView): str
   return layout(
     ctx,
     fullName(p),
-    `<div class="person-head">${photo}<div><h1>${esc(fullName(p))}</h1><p class="muted">${esc(lifespan(p))}${pet ? ` · ${esc(p.species ?? 'pet')}` : p.sex !== 'U' ? ` · ${{ M: 'male', F: 'female', X: 'other' }[p.sex] ?? ''}` : ''}</p>
+    `<div class="person-head">${photo}<div><h1>${esc(fullName(p))}${p.nickname ? ` <span class="nick">“${esc(p.nickname)}”</span>` : ''}</h1><p class="muted">${esc(lifespan(p))}${pet ? ` · ${esc(p.species ?? 'pet')}` : p.sex !== 'U' ? ` · ${{ M: 'male', F: 'female', X: 'other' }[p.sex] ?? ''}` : ''}</p>
 ${facts.map(([k, val]) => `<p><b>${k}</b> ${esc(val)}</p>`).join('')}
 ${v.profile ? `<p class="small muted">${v.self ? 'This is you. Keep it up to date.' : `Managed by ${esc(v.profile.name ?? v.profile.email)}, in the family since ${new Date(v.profile.created_at).getFullYear()}.`}</p>` : (v.invite ?? '')}
 ${v.claimable ? `<form method="post" action="/t/${tree.id}/claim" class="inline" data-confirm="Claim ${esc(fullName(p))} as you? The owner can see who claimed it.">${csrfField(ctx)}<input type="hidden" name="person_id" value="${p.id}"><button class="btn">This is me</button></form>` : ''}

@@ -225,3 +225,4 @@ ul.families li { padding: 10px 0; border-bottom: 1px solid var(--line, #ddd); }
 label.check.pickrow { margin: 4px 0; }
 .pedigree .box.partner rect { stroke-width: 1; }
 .pedigree .nm.sm { font-size: 13px; font-weight: 500; }
+.nick { color: var(--muted); font-weight: 400; font-size: .7em; }

@@ -26,6 +26,7 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
   const person = {
     given: z.string().max(200).optional(),
     surname: z.string().max(200).optional(),
+    nickname: z.string().max(80).optional().describe('what the family calls them: "Tony"'),
     sex: z.enum(['M', 'F', 'X', 'U']).optional(),
     birth_date: z.string().max(200).optional().describe('free text, GEDCOM style: "12 MAR 1901", "ABT 1890"'),
     birth_place: z.string().max(200).optional(),

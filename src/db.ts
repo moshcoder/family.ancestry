@@ -50,6 +50,8 @@ export type Person = {
   tree_id: string
   given: string
   surname: string
+  /** What the family calls them: "Tony". GEDCOM NICK. */
+  nickname: string | null
   sex: Sex
   birth_date: string | null
   birth_place: string | null
@@ -109,7 +111,7 @@ export type PathStep = { person: Person; step: 'self' | 'parent' | 'child' | 'pa
 export const UNION_KINDS = ['married', 'engaged', 'partners', 'dating'] as const
 export type Descendant = { person: Person; unions: { partner: Person | null; children: Descendant[] }[] }
 
-export const PERSON_FIELDS = ['given', 'surname', 'sex', 'birth_date', 'birth_place', 'death_date', 'death_place', 'living', 'notes', 'species'] as const
+export const PERSON_FIELDS = ['given', 'surname', 'nickname', 'sex', 'birth_date', 'birth_place', 'death_date', 'death_place', 'living', 'notes', 'species'] as const
 
 /** How a child belongs to a family. GEDCOM's PEDI values, minus LDS sealing. */
 /** How a partnership ended. */
@@ -352,6 +354,7 @@ export function normalizePerson(input: Record<string, unknown>): PersonInput {
   const out: PersonInput = {}
   if ('given' in input) out.given = clean(input.given, 200) ?? ''
   if ('surname' in input) out.surname = clean(input.surname, 200) ?? ''
+  if ('nickname' in input) out.nickname = clean(input.nickname, 80)
   if ('sex' in input) {
     const sex = String(input.sex ?? 'U').toUpperCase().slice(0, 1)
     out.sex = (['M', 'F', 'X'].includes(sex) ? sex : 'U') as Sex
@@ -400,6 +403,7 @@ export class Store {
     const peopleCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('people')").all().map((c) => c.name)
     if (!peopleCols.includes('kind')) this.db.run("ALTER TABLE people ADD COLUMN kind TEXT NOT NULL DEFAULT 'person'")
     if (!peopleCols.includes('species')) this.db.run('ALTER TABLE people ADD COLUMN species TEXT')
+    if (!peopleCols.includes('nickname')) this.db.run('ALTER TABLE people ADD COLUMN nickname TEXT')
     const treeCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('trees')").all().map((c) => c.name)
     if (!treeCols.includes('plan_paid_at')) this.db.run('ALTER TABLE trees ADD COLUMN plan_paid_at INTEGER')
     // 0.5.0: photos of a business.
@@ -666,10 +670,10 @@ export class Store {
     const now = this.now()
     this.db
       .query(
-        `INSERT INTO people (id,tree_id,given,surname,sex,birth_date,birth_place,death_date,death_place,living,notes,kind,species,created_at,updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO people (id,tree_id,given,surname,nickname,sex,birth_date,birth_place,death_date,death_place,living,notes,kind,species,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
-      .run(id, treeId, p.given ?? '', p.surname ?? '', p.sex ?? 'U', p.birth_date ?? null, p.birth_place ?? null, p.death_date ?? null, p.death_place ?? null, p.living ?? 0, p.notes ?? null, kind, kind === 'pet' ? (p.species ?? null) : null, now, now)
+      .run(id, treeId, p.given ?? '', p.surname ?? '', p.nickname ?? null, p.sex ?? 'U', p.birth_date ?? null, p.birth_place ?? null, p.death_date ?? null, p.death_place ?? null, p.living ?? 0, p.notes ?? null, kind, kind === 'pet' ? (p.species ?? null) : null, now, now)
     if (kind === 'person' && !this.tree(treeId)?.home_person_id) this.updateTree(treeId, { home_person_id: id })
     return this.person(treeId, id)!
   }
@@ -683,8 +687,8 @@ export class Store {
     if (!current) return null
     const p = { ...current, ...normalizePerson(input) }
     this.db
-      .query('UPDATE people SET given = ?, surname = ?, sex = ?, birth_date = ?, birth_place = ?, death_date = ?, death_place = ?, living = ?, notes = ?, species = ?, updated_at = ? WHERE tree_id = ? AND id = ?')
-      .run(p.given, p.surname, p.sex, p.birth_date, p.birth_place, p.death_date, p.death_place, p.living, p.notes, current.kind === 'pet' ? p.species : null, this.now(), treeId, id)
+      .query('UPDATE people SET given = ?, surname = ?, nickname = ?, sex = ?, birth_date = ?, birth_place = ?, death_date = ?, death_place = ?, living = ?, notes = ?, species = ?, updated_at = ? WHERE tree_id = ? AND id = ?')
+      .run(p.given, p.surname, p.nickname ?? null, p.sex, p.birth_date, p.birth_place, p.death_date, p.death_place, p.living, p.notes, current.kind === 'pet' ? p.species : null, this.now(), treeId, id)
     return this.person(treeId, id)
   }
 
@@ -709,10 +713,10 @@ export class Store {
     const like = `%${words[0]!.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
     const rows = this.db
       .query<Person, [string, string]>(
-        "SELECT * FROM people WHERE tree_id = ? AND lower(given || ' ' || surname || ' ' || coalesce(birth_place,'') || ' ' || coalesce(death_place,'') || ' ' || coalesce(birth_date,'') || ' ' || coalesce(death_date,'')) LIKE ? ESCAPE '\\' ORDER BY surname, given",
+        "SELECT * FROM people WHERE tree_id = ? AND lower(given || ' ' || surname || ' ' || coalesce(nickname,'') || ' ' || coalesce(birth_place,'') || ' ' || coalesce(death_place,'') || ' ' || coalesce(birth_date,'') || ' ' || coalesce(death_date,'')) LIKE ? ESCAPE '\\' ORDER BY surname, given",
       )
       .all(treeId, like)
-    const hay = (p: Person) => [p.given, p.surname, p.birth_place, p.death_place, p.birth_date, p.death_date].filter(Boolean).join(' ').toLowerCase()
+    const hay = (p: Person) => [p.given, p.surname, p.nickname, p.birth_place, p.death_place, p.birth_date, p.death_date].filter(Boolean).join(' ').toLowerCase()
     return rows.filter((p) => words.every((w) => hay(p).includes(w))).slice(0, limit)
   }
 
