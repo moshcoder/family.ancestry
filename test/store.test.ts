@@ -18,6 +18,14 @@ describe('store', () => {
     expect(store.treesFor(user.id)[0]!.name).toBe('Test family')
   })
 
+  test('a linked second email signs in to the same account', () => {
+    const { store, user } = setup()
+    store.linkEmail(user.id, ' Anthony@Gmail.example ')
+    expect(store.findOrCreateUser('anthony@gmail.example').id).toBe(user.id)
+    expect(store.userByEmail('ANTHONY@gmail.example')?.id).toBe(user.id)
+    expect(store.findOrCreateUser('someone@else.example').id).not.toBe(user.id)
+  })
+
   test('the first person becomes the home person', () => {
     const { store, tree } = setup()
     const p = store.addPerson(tree.id, { given: 'Ada', surname: 'Lovelace' })
