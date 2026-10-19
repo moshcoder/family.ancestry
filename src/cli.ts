@@ -870,7 +870,7 @@ export async function runCli(argv: string[]): Promise<number> {
       case 'members': {
         const tree = await pickTree(client, f.tree)
         const [members, pending] = await Promise.all([client.members(tree.id), client.invites(tree.id).catch(() => [])])
-        print({ members, pending }, () => [...members.map((m) => `${m.role.padEnd(7)} ${m.name ?? m.email}${m.name ? ` <${m.email}>` : ''}${m.person_id ? `  as ${m.person_id}` : ''}`), ...pending.map((i) => `invited ${i.email ?? 'link'} (${i.role})`)].join('\n'))
+        print({ members, pending }, () => [...members.map((m) => `${m.role.padEnd(7)} ${m.name ?? m.email}${m.name ? ` <${m.email}>` : ''}${m.person_id ? `  as ${m.person_id}` : ''}`), ...pending.map((i) => `invited ${i.email ?? 'link'} (${i.role})${i.mail ? `  ${i.mail.tone === 'bad' ? '!! ' : ''}${i.mail.text}` : ''}`)].join('\n'))
         return 0
       }
       case 'contacts': {

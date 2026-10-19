@@ -13,7 +13,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { createBridgeClient } from '@profullstack/bridges'
 import { join } from 'node:path'
 import { BONDS, CHILD_RELATIONS, Store, UNION_KINDS, bondKind, canEdit, canManage, grantable, inviteRole, fullName, type Business, type InviteRole, newId, type Person, type Role, type Tree, type User } from './db.js'
-import { Auth, SESSION_COOKIE, consoleMailer, resendMailer, safeNext, validEmail, type Mailer } from './auth.js'
+import { Auth, SESSION_COOKIE, consoleMailer, resendMailer, resendStatus, safeNext, validEmail, type Mailer, type MailStatus } from './auth.js'
 import { exportGedcom, importGedcom, describeImport } from './gedcom.js'
 import { CONTACT_KEYS, readContact } from './contact.js'
 import { describeRelation } from './relate.js'
@@ -42,7 +42,7 @@ const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp
  * the Moshpit name for people who are not on Moshpit DNS. Links we email to someone
  * else (invites) use it, because we cannot know which internet they are on.
  */
-export type AppOptions = { store: Store; auth: Auth; site: string; publicSite?: string; publicDir?: string; net?: Network; plan?: PlanConfig; fetcher?: typeof fetch; pitWorld?: PitWorldSignIn | null; redirectHosts?: string[] }
+export type AppOptions = { store: Store; auth: Auth; site: string; publicSite?: string; publicDir?: string; net?: Network; plan?: PlanConfig; fetcher?: typeof fetch; pitWorld?: PitWorldSignIn | null; redirectHosts?: string[]; mailStatus?: ((id: string) => Promise<MailStatus | null>) | null }
 
 /** Sign in with pit.world: the one account for every *.pit.world site. The secret is HMAC-SHA256(PIT_BRIDGE_KEY, our relay host), which pit.world derives too. */
 export type PitWorldSignIn = { secret: string; base?: string; fetch?: typeof fetch }
@@ -91,7 +91,7 @@ function limiter(limit: number, windowMs: number) {
 /** "Jane Doe (1901–1980) #abc123" from the datalist -> abc123. */
 export const pickId = (value: unknown): string | null => String(value ?? '').match(/#([A-Za-z0-9_-]{6,})\s*$/)?.[1] ?? (/^[A-Za-z0-9_-]{6,}$/.test(String(value ?? '').trim()) ? String(value).trim() : null)
 
-export function createApp({ store, auth, site, publicSite = site, publicDir = join(import.meta.dir, '..', 'public'), net = new Network(store), plan = planFromEnv({}), fetcher = fetch, pitWorld = null, redirectHosts = [] }: AppOptions) {
+export function createApp({ store, auth, site, publicSite = site, publicDir = join(import.meta.dir, '..', 'public'), net = new Network(store), plan = planFromEnv({}), fetcher = fetch, pitWorld = null, redirectHosts = [], mailStatus = null }: AppOptions) {
   // A request relayed by pit.world says so in X-Forwarded-Host; a sign-in link for it must open there too.
   // Only the one configured address is believed, so a forged header can at worst pick that address.
   const publicHost = new URL(publicSite).host
@@ -892,8 +892,24 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   })
 
   // members + invites
-  const membersView = (c: Context, t: { tree: Tree; role: Role }, links: html.InviteLink[] = [], flash: string | null = null) =>
-    c.html(html.membersPage(ctx(c, flash ? { flash } : {}), t.tree, t.role, store.members(t.tree.id), links, { pending: canEdit(t.role) ? store.pendingInvites(t.tree.id) : [], profiles: store.profiles(t.tree.id), people: (id) => store.person(t.tree.id, id), max: pasteMax(t.tree), plan: hasPlan(plan, store, t.tree), listing: listingPanel(ctx(c), t.tree, t.role, listings.settings(t.tree.id), canEdit(t.role) ? listings.waiting(t.tree.id) : [], publicSite) }))
+  /**
+   * Ask the mail provider what became of invite emails still "sent" (on their way): a bounce
+   * then shows on the Members page instead of an invite that waits forever. Final answers stick.
+   */
+  const refreshInviteMail = async (treeId: string) => {
+    if (!mailStatus) return
+    const open = store.pendingInvites(treeId).filter((i) => i.mail_id && (!i.mail_status || ['sent', 'queued', 'delivery_delayed'].includes(i.mail_status)) && Date.now() - i.created_at > 15_000).slice(0, 20)
+    await Promise.all(
+      open.map(async (i) => {
+        const s = await mailStatus(i.mail_id!)
+        if (s && s.status !== i.mail_status) store.setInviteMail(i.id, { mail_status: s.status, mail_error: s.reason }, true)
+      }),
+    )
+  }
+  const membersView = async (c: Context, t: { tree: Tree; role: Role }, links: html.InviteLink[] = [], flash: string | null = null) => {
+    if (canEdit(t.role)) await refreshInviteMail(t.tree.id)
+    return c.html(html.membersPage(ctx(c, flash ? { flash } : {}), t.tree, t.role, store.members(t.tree.id), links, { pending: canEdit(t.role) ? store.pendingInvites(t.tree.id) : [], profiles: store.profiles(t.tree.id), people: (id) => store.person(t.tree.id, id), max: pasteMax(t.tree), plan: hasPlan(plan, store, t.tree), listing: listingPanel(ctx(c), t.tree, t.role, listings.settings(t.tree.id), canEdit(t.role) ? listings.waiting(t.tree.id) : [], publicSite) }))
+  }
   app.get('/t/:tree/members', (c) => {
     const t = treeFor(c)
     if (t.error) return t.error
@@ -920,7 +936,13 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     const links: html.InviteLink[] = []
     for (const i of invitees) links.push({ email: i.email, ...(await inviteToTree(t.user, t.tree.id, i.email, role, { personId: personId ?? matchPerson(t.tree.id, i.name), note, name: i.name })) })
     const sent = links.filter((l) => l.mailed).length
-    const flash = sent === links.length ? `Invite emailed to ${sent === 1 ? links[0]!.email : `${sent} people`}.` : `Emailed ${sent} of ${links.length}; that is a day's worth of invitations. The rest are links below.`
+    const failed = links.filter((l) => l.failed)
+    const held = links.length - sent - failed.length
+    const flash = [
+      sent === links.length ? `Invite emailed to ${sent === 1 ? links[0]!.email : `${sent} people`}.` : sent ? `Emailed ${sent} of ${links.length}.` : '',
+      failed.length ? `Could not email ${failed.map((l) => l.email).join(', ')}: ${failed[0]!.failed}. Their links are below to send yourself.` : '',
+      held ? `${held} more ${held === 1 ? 'is' : 'are'} over the day's invitation limit; their links are below.` : '',
+    ].filter(Boolean).join(' ')
     if (body.back === 'person' && personId) return c.redirect(`/t/${t.tree.id}/p/${personId}?ok=${encodeURIComponent(flash)}`)
     return membersView(c, t, links, flash)
   })
@@ -1227,10 +1249,11 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     const profiles = store.profiles(t.tree.id)
     return c.json({ members: store.members(t.tree.id).map((m) => ({ ...m, person_id: profiles.get(m.user_id) ?? null })) })
   })
-  api.get('/trees/:tree/invites', (c) => {
+  api.get('/trees/:tree/invites', async (c) => {
     const t = treeFor(c, 'edit')
     if (t.error) return t.error
-    return c.json({ invites: store.pendingInvites(t.tree.id) })
+    await refreshInviteMail(t.tree.id)
+    return c.json({ invites: store.pendingInvites(t.tree.id).map((i) => ({ ...i, mail: html.mailState(i) })) })
   })
   /** {emails: [...]} or {email}, role, person_id (invite them to be that person), note. Without an email: a link. */
   api.post('/trees/:tree/invites', async (c) => {
@@ -1266,7 +1289,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     site,
     ctx,
     form,
-    mail: (m) => auth.mail(m),
+    mail: async (m) => { await auth.mail(m) },
     limits: { invite: senderLimit, message: messageLimit },
     inviteToTree,
     treeFor,
@@ -1277,8 +1300,8 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   // A business's team: invited to the business, never to the tree.
   const team = (cx: html.Ctx, tree: Tree, role: Role, b: Business) => teamPanel(cx, tree, role, b, { members: teams.members(b.id), pending: canEdit(role) ? teams.pendingInvites(b.id) : [], waiting: canEdit(role) ? teams.waiting(b.id) : [], settings: teams.settings(b.id) })
   mountBusinesses(app, api, { store, net, site, ctx, form, treeFor, pickId, image: { types: IMAGE_TYPES, max: MAX_PHOTO }, team })
-  mountTeams(app, api, { store, teams, net, site: publicSite, ctx, form, treeFor, mail: (m) => auth.mail(m), ip, inviteLimit: senderLimit, askLimit })
-  mountListings(app, api, { store, listings, net, site: publicSite, ctx, form, treeFor, mail: (m) => auth.mail(m), ip, limit: askLimit, inviteToTree, more: (q) => businessDirectory(teams.directory(q)) })
+  mountTeams(app, api, { store, teams, net, site: publicSite, ctx, form, treeFor, mail: async (m) => { await auth.mail(m) }, ip, inviteLimit: senderLimit, askLimit })
+  mountListings(app, api, { store, listings, net, site: publicSite, ctx, form, treeFor, mail: async (m) => { await auth.mail(m) }, ip, limit: askLimit, inviteToTree, more: (q) => businessDirectory(teams.directory(q)) })
   mountAlbums(app, api, { store, site, ctx, form, treeFor, image: { types: IMAGE_TYPES, max: MAX_PHOTO } })
   app.route('/api/v1', api)
 
@@ -1332,15 +1355,23 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
    * allowance. The invitee goes into the sender's network as family, so the
    * people you bring into a tree are the first people in your network.
    */
-  async function inviteToTree(from: User, treeId: string, email: string, role: InviteRole, opts: { personId?: string | null; note?: string | null; name?: string | null } = {}): Promise<{ url: string; mailed: boolean }> {
+  async function inviteToTree(from: User, treeId: string, email: string, role: InviteRole, opts: { personId?: string | null; note?: string | null; name?: string | null } = {}): Promise<{ url: string; mailed: boolean; failed?: string }> {
     const tree = store.tree(treeId)!
     const person = opts.personId ? store.person(treeId, opts.personId) : null
-    const url = `${publicSite}/invite/${store.createInvite(treeId, from.id, role, email, { personId: person?.id ?? null, note: opts.note })}`
+    const token = store.createInvite(treeId, from.id, role, email, { personId: person?.id ?? null, note: opts.note })
+    const url = `${publicSite}/invite/${token}`
     net.ensureContact(from.id, email, { name: person ? fullName(person) : (opts.name ?? ''), circle: 'family', birthday: person?.birth_date ?? null }, { tree_id: treeId, person_id: person?.id ?? null })
-    const mailed = senderLimit(`invite:${from.id}`) && inviteLimit(`to:${email}`)
-    if (mailed) await sendInvite(email, tree.name, from, url, role, { person, note: opts.note ?? null })
-    return { url, mailed }
+    if (!(senderLimit(`invite:${from.id}`) && inviteLimit(`to:${email}`))) {
+      store.setInviteMail(token, { mail_status: 'held', mail_error: "over the day's invitation limit" })
+      return { url, mailed: false }
+    }
+    const r = await sendInvite(email, tree.name, from, url, role, { person, note: opts.note ?? null })
+    store.setInviteMail(token, r.error ? { mail_status: 'failed', mail_error: r.error } : { mail_status: 'sent', mail_id: r.id })
+    return r.error ? { url, mailed: false, failed: r.error } : { url, mailed: true }
   }
+
+  /** "The Ettinger Family" -> "The Ettinger Family tree"; "Ettinger" -> "the Ettinger family tree". */
+  const treeTitle = (name: string) => `${/^the\s/i.test(name) ? name : `the ${name}`}${/\btree$/i.test(name) ? '' : /\bfamil(y|ies)$/i.test(name) ? ' tree' : ' family tree'}`
 
   /** Tell someone who already has an account that they were made a member of a tree; no link to redeem, they just sign in. */
   async function sendAdded(email: string, treeId: string, from: User): Promise<boolean> {
@@ -1351,7 +1382,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     try {
       await auth.mail({
         to: email,
-        subject: `${name} added you to the ${tree.name} family tree`,
+        subject: `${name} added you to ${treeTitle(tree.name)}`,
         text: `${lead}\n\nOpen it: ${url}\n\nSign in with this email address to see it.`,
         html: `<p>${html.esc(lead).replace(html.esc(name), `<b>${html.esc(name)}</b>`)}</p><p><a href="${html.esc(url)}" style="display:inline-block;padding:10px 18px;background:#3d6b4f;color:#fff;border-radius:6px;text-decoration:none">Open the tree</a></p><p style="color:#666;font-size:13px">${html.esc(url)}<br>Sign in with this email address to see it.</p>`,
       })
@@ -1362,22 +1393,24 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     }
   }
 
-  async function sendInvite(email: string, treeName: string, from: User, url: string, role: string, opts: { person?: Person | null; note?: string | null } = {}) {
+  async function sendInvite(email: string, treeName: string, from: User, url: string, role: string, opts: { person?: Person | null; note?: string | null } = {}): Promise<{ id?: string | null; error?: string }> {
     const name = from.name ?? from.email
     const as = role === 'admin' ? 'an admin' : role === 'editor' ? 'an editor' : 'a viewer'
-    const subject = opts.person ? `${name} added you to the ${treeName} family tree` : `${name} invited you to the ${treeName} family tree`
+    const subject = opts.person ? `${name} added you to ${treeTitle(treeName)}` : `${name} invited you to ${treeTitle(treeName)}`
     const lead = opts.person
       ? `${name} added you to ${treeName} on family.ancestry as ${fullName(opts.person)}, and invited you to join the family: claim your profile and keep it up to date.`
       : `${name} invited you to ${treeName} on family.ancestry, as ${as}.`
     try {
-      await auth.mail({
+      const id = await auth.mail({
         to: email,
         subject,
         text: `${lead}${opts.note ? `\n\n"${opts.note}"` : ''}\n\nJoin: ${url}\n\nThe link works once and expires in 14 days.`,
         html: `<p>${html.esc(lead).replace(html.esc(name), `<b>${html.esc(name)}</b>`)}</p>${opts.note ? `<blockquote style="border-left:3px solid #ccc;margin:0;padding:4px 12px;color:#444">${html.esc(opts.note)}</blockquote>` : ''}<p><a href="${html.esc(url)}" style="display:inline-block;padding:10px 18px;background:#3d6b4f;color:#fff;border-radius:6px;text-decoration:none">${opts.person ? 'Join the family' : 'Join the tree'}</a></p><p style="color:#666;font-size:13px">${html.esc(url)}<br>The link works once and expires in 14 days.</p>`,
       })
+      return { id: id ?? null }
     } catch (error) {
-      console.error(`[invite] mail failed: ${(error as Error).message}`)
+      console.error(`[invite] mail to ${email} failed: ${(error as Error).message}`)
+      return { error: (error as Error).message }
     }
   }
 
@@ -1563,12 +1596,13 @@ export function serve() {
   const store = new Store(join(dataDir, 'family.db'))
   const mailer: Mailer = process.env.RESEND_API_KEY ? resendMailer(process.env.RESEND_API_KEY, process.env.MAIL_FROM ?? 'family.ancestry <hello@pit.world>') : consoleMailer
   const auth = new Auth(store, mailer, site)
+  const mailStatus = process.env.RESEND_API_KEY ? resendStatus(process.env.RESEND_API_KEY) : null
   // Ours lives at family.ancestry, relayed by pit.world; a self-hosted copy on an ordinary domain needs no relay.
   const publicSite = (process.env.ANCESTRY_PUBLIC_SITE ?? (new URL(site).hostname === 'family.ancestry' ? 'https://family.ancestry.pit.world' : site)).replace(/\/+$/, '')
   const pitWorld = process.env.PIT_BRIDGE_SECRET ? { secret: process.env.PIT_BRIDGE_SECRET, ...(process.env.PIT_WORLD_URL ? { base: process.env.PIT_WORLD_URL } : {}) } : null
   // Names that only redirect here. family.tree is ours too: ANCESTRY_REDIRECT_HOSTS="" turns it off.
   const redirectHosts = (process.env.ANCESTRY_REDIRECT_HOSTS ?? (new URL(site).hostname === 'family.ancestry' ? 'family.tree' : '')).split(/[\s,]+/).filter(Boolean)
-  const app = createApp({ store, auth, site, publicSite, plan: planFromEnv(), pitWorld, redirectHosts })
+  const app = createApp({ store, auth, site, publicSite, plan: planFromEnv(), pitWorld, redirectHosts, mailStatus })
   const port = Number(process.env.PORT ?? 8792)
   startRingRefresh()
   Bun.serve({ port, hostname: process.env.HOST ?? '127.0.0.1', fetch: app.fetch, maxRequestBodySize: 30 * 1024 * 1024 })

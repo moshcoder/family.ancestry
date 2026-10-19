@@ -154,7 +154,7 @@ describe('join the family', () => {
     expect(sent.headers.get('location')).toContain(`/t/${treeId}/p/${lilyId}?ok=`)
     const mail = w.mail.at(-1)!
     expect(mail.to).toBe('lily@example.com')
-    expect(mail.subject).toBe('Tony added you to the Ettinger family family tree')
+    expect(mail.subject).toBe('Tony added you to the Ettinger family tree')
     expect(mail.text).toContain('as Lily Ettinger')
     // She is in Tony's network already, as family, linked to her person.
     expect(w.net.contactByEmail(tony.id, 'lily@example.com')).toMatchObject({ circle: 'family', tree_id: treeId, person_id: lilyId, name: 'Lily Ettinger' })

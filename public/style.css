@@ -232,3 +232,5 @@ label.check.pickrow { margin: 4px 0; }
 .post .post-actions { margin: 6px 0; }
 .post .comments { list-style: none; padding: 0; margin: 8px 0; border-top: 1px solid var(--line); }
 .post .comments li { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.tag.mail-ok { color: var(--accent); border-color: var(--accent); }
+.tag.mail-bad { color: var(--danger); border-color: var(--danger); }

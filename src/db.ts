@@ -90,7 +90,9 @@ export type Source = { id: string; tree_id: string; title: string; author: strin
 export type Media = { id: string; tree_id: string; person_id: string | null; business_id?: string | null; album_id?: string | null; uploaded_by?: string | null; filename: string; mime: string; size: number; caption: string | null; created_at: number }
 /** A named set of photos in a tree: "Christmas 1985", "Grandma's 90th". */
 export type Album = { id: string; tree_id: string; title: string; description: string | null; created_by: string; cover_id: string | null; created_at: number }
-export type Invite = { id: string; tree_id: string; role: InviteRole; email: string | null; person_id: string | null; note: string | null; created_by: string; created_at: number; expires_at: number; used_by: string | null }
+export type Invite = { id: string; tree_id: string; role: InviteRole; email: string | null; person_id: string | null; note: string | null; created_by: string; created_at: number; expires_at: number; used_by: string | null; mail_id?: string | null; mail_status?: string | null; mail_error?: string | null }
+/** sent, delivered, bounced, complained, failed (we could not send), held (over the day's invite limit), and Resend's other events. */
+export type InviteMail = { mail_id?: string | null; mail_status: string; mail_error?: string | null }
 export type Association = { id: string; tree_id: string; person_id: string; other_id: string; kind: string; note: string | null; created_at: number }
 export type Payment = { ref: string; tree_id: string; user_id: string; amount_cents: number; currency: string; chain: string | null; status: string; created_at: number; updated_at: number }
 export type Business = {
@@ -407,6 +409,12 @@ export class Store {
     this.widenRoleCheck('invites', "CHECK (role IN ('editor','viewer'))", "CHECK (role IN ('admin','editor','viewer'))")
     if (!inviteCols.includes('person_id')) this.db.run('ALTER TABLE invites ADD COLUMN person_id TEXT')
     if (!inviteCols.includes('note')) this.db.run('ALTER TABLE invites ADD COLUMN note TEXT')
+    // 0.15.1: what became of the invite email, so a bounce shows instead of a silent "waiting".
+    if (!inviteCols.includes('mail_status')) {
+      this.db.run('ALTER TABLE invites ADD COLUMN mail_id TEXT')
+      this.db.run('ALTER TABLE invites ADD COLUMN mail_status TEXT')
+      this.db.run('ALTER TABLE invites ADD COLUMN mail_error TEXT')
+    }
     // 0.3.0: pets, and the one-time Family plan.
     const peopleCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('people')").all().map((c) => c.name)
     if (!peopleCols.includes('kind')) this.db.run("ALTER TABLE people ADD COLUMN kind TEXT NOT NULL DEFAULT 'person'")
@@ -607,7 +615,12 @@ export class Store {
 
   /** Invites not yet used or expired, newest first. `id` is the token's hash, safe to show. */
   pendingInvites(treeId: string): Invite[] {
-    return this.db.query<Invite, [string, number]>('SELECT token_hash AS id, tree_id, role, email, person_id, note, created_by, created_at, expires_at, used_by FROM invites WHERE tree_id = ? AND used_by IS NULL AND expires_at > ? ORDER BY created_at DESC').all(treeId, this.now())
+    return this.db.query<Invite, [string, number]>('SELECT token_hash AS id, tree_id, role, email, person_id, note, created_by, created_at, expires_at, used_by, mail_id, mail_status, mail_error FROM invites WHERE tree_id = ? AND used_by IS NULL AND expires_at > ? ORDER BY created_at DESC').all(treeId, this.now())
+  }
+
+  /** Record what happened to an invite's email. `invite` is the raw token, or with `byId` the token hash shown as an invite's id. */
+  setInviteMail(invite: string, mail: InviteMail, byId = false) {
+    this.db.query('UPDATE invites SET mail_id = coalesce(?, mail_id), mail_status = ?, mail_error = ? WHERE token_hash = ?').run(mail.mail_id ?? null, mail.mail_status, clean(mail.mail_error, 300), byId ? invite : sha256(invite))
   }
 
   revokeInvite(treeId: string, id: string) {

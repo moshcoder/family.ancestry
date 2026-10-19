@@ -29,7 +29,10 @@ const LINK_MINUTES = 20
 const CLI_CODE_MINUTES = 5
 
 export type Mail = { to: string; subject: string; text: string; html: string }
-export type Mailer = (mail: Mail) => Promise<void>
+/** Sends one message; resolves to the provider's message id when it has one. */
+export type Mailer = (mail: Mail) => Promise<string | null | void>
+/** What became of a sent message: delivered, bounced (with why), or still on its way. */
+export type MailStatus = { status: string; reason: string | null }
 
 export function resendMailer(apiKey: string, from: string, fetchImpl: typeof fetch = fetch): Mailer {
   return async ({ to, subject, text, html }) => {
@@ -39,7 +42,24 @@ export function resendMailer(apiKey: string, from: string, fetchImpl: typeof fet
       body: JSON.stringify({ from, to: [to], subject, text, html }),
       signal: AbortSignal.timeout(15_000),
     })
-    if (!res.ok) throw new Error(`mail provider answered ${res.status}`)
+    const body = (await res.json().catch(() => ({}))) as { id?: string; message?: string }
+    if (!res.ok) throw new Error(`mail provider answered ${res.status}${body.message ? `: ${body.message}` : ''}`)
+    return body.id ?? null
+  }
+}
+
+/** Resend's last word on a message, from its id. Null when it cannot say (network, unknown id). */
+export function resendStatus(apiKey: string, fetchImpl: typeof fetch = fetch): (id: string) => Promise<MailStatus | null> {
+  return async (id) => {
+    try {
+      const res = await fetchImpl(`https://api.resend.com/emails/${encodeURIComponent(id)}`, { headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(5_000) })
+      if (!res.ok) return null
+      const e = (await res.json()) as { last_event?: string; bounce?: { message?: string; diagnosticCode?: string[] } }
+      if (!e.last_event) return null
+      return { status: e.last_event, reason: e.bounce ? (e.bounce.diagnosticCode?.[0] ?? e.bounce.message ?? null) : null }
+    } catch {
+      return null
+    }
   }
 }
 
@@ -70,7 +90,7 @@ export class Auth {
   ) {}
 
   /** Send any mail through the configured mailer (invites use this). */
-  mail(mail: Mail): Promise<void> {
+  mail(mail: Mail): Promise<string | null | void> {
     return this.mailer(mail)
   }
 
