@@ -11,6 +11,11 @@ needs [one setting](https://pit.world/connect).
 - **Trees** you build together: editors add and fix, viewers look. Invite by email
   or by link: **paste a whole list** (a To: line, a spreadsheet column,
   `Aunt Rose <rose@example.com>`), 20 at a time, 500 on the Family plan.
+- **Family feed** (`/feed`): everyone has a feed to post to (text and a photo), and a home
+  feed of the people they subscribe to, with likes and comments. Post to everyone who knows
+  you or to one family. You can only subscribe to people you share a tree with or are
+  connected to: no public profiles, no follower counts. `ancestry feed`, `ancestry post`,
+  `ancestry subscribe all`; MCP `read_feed`, `post_to_feed`, `subscribe`.
 - **Families overlap.** Start a tree (or fill one) by ticking people you already have:
   anyone in your other trees or your network. They come over with their dates, events and
   photo; the partners, parents, children and bonds among the people you tick stay linked;

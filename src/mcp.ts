@@ -149,6 +149,17 @@ ${formatBusiness(b)}`)
   })
   server.tool('link_business_contact', "Link a business to one of the user's own Network contacts (contact_id from list_contacts), or create: true to add it to their network as a business contact. Private to the user.", { tree_id: z.string(), business_id: z.string(), contact_id: z.string().nullable().optional(), create: z.boolean().optional() }, async ({ tree_id, business_id, ...body }: any) => json(await client.linkBusinessContact(tree_id, business_id, body)))
 
+  server.tool('read_feed', "The user's family feed: their posts and those of the people they subscribe to, newest first, with likes and comments. With user_id, one person's posts.", { user_id: z.string().optional() }, async ({ user_id }: any) => json(user_id ? await client.feedOf(user_id) : await client.feed()))
+  server.tool('feed_people', 'Everyone the user knows (tree-mates and connections) and whether they subscribe to each one. Ids for subscribe and read_feed.', {}, async () => json(await client.feedPeople()))
+  server.tool(
+    'post_to_feed',
+    'Post to the family feed: everyone who knows the user, or one family (tree_id). Only post when the user asked to, with their words.',
+    { body: z.string().min(1).max(5000), tree_id: z.string().optional() },
+    async ({ body, tree_id }: any) => json(await client.post(body, tree_id)),
+  )
+  server.tool('subscribe', "Subscribe the user to someone they know (user_id from feed_people), or all: true for everyone they know (or everyone in tree_id).", { user_id: z.string().optional(), all: z.boolean().optional(), tree_id: z.string().optional() }, async ({ user_id, all, tree_id }: any) => json(all ? { subscribed: await client.subscribeAll(tree_id) } : await client.subscribe(user_id)))
+  server.tool('comment_on_post', 'Comment on a feed post. Only when the user asked to.', { post_id: z.string(), body: z.string().min(1).max(2000) }, async ({ post_id, body }: any) => json(await client.comment(post_id, body)))
+
   server.tool(
     'local_recommendations',
     'Local businesses recommended by people the user knows (family, neighbors, friends, tree-mates), best first, with who vouched and why. Search by what they do or a town.',

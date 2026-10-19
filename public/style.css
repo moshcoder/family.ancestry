@@ -226,3 +226,9 @@ label.check.pickrow { margin: 4px 0; }
 .pedigree .box.partner rect { stroke-width: 1; }
 .pedigree .nm.sm { font-size: 13px; font-weight: 500; }
 .nick { color: var(--muted); font-weight: 400; font-size: .7em; }
+.post .post-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.post .post-body { white-space: normal; margin: 8px 0; }
+.post .post-photo { display: block; max-width: 100%; max-height: 520px; border-radius: 8px; margin: 8px 0; }
+.post .post-actions { margin: 6px 0; }
+.post .comments { list-style: none; padding: 0; margin: 8px 0; border-top: 1px solid var(--line); }
+.post .comments li { padding: 6px 0; border-bottom: 1px solid var(--line); }

@@ -111,6 +111,7 @@ export async function resolveMoshpit(host: string, fetchImpl: typeof fetch = fet
   }
 }
 
+export type FeedPost = { id: string; author: { id: string; name: string }; body: string; audience: string; family: string | null; photo_url: string | null; created_at: number; likes: number; liked: boolean; comments: { id: string; author: { id: string; name: string }; body: string; created_at: number }[] }
 export type PersonSummary = { id: string; name: string; given: string; surname: string; nickname?: string | null; sex: string; birth_date: string | null; birth_place: string | null; death_date: string | null; death_place: string | null; living: number; notes: string | null; url: string }
 export type PersonDetail = PersonSummary & {
   parents: { family_id: string; relation: string; parents: { id: string; name: string }[]; siblings: { id: string; name: string }[] }[]
@@ -327,6 +328,36 @@ export class AncestryClient {
   }
   deletePhoto(tree: string, id: string) {
     return this.request<{ ok: boolean }>(`/api/v1/trees/${enc(tree)}/photos/${enc(id)}`, { method: 'DELETE' })
+  }
+
+  // ---- the family feed ------------------------------------------------------
+
+  feed(before?: number) {
+    return this.request<{ posts: FeedPost[] }>(`/api/v1/feed${before ? `?before=${before}` : ''}`).then((r) => r.posts)
+  }
+  feedOf(userId: string) {
+    return this.request<{ posts: FeedPost[] }>(`/api/v1/feed/u/${enc(userId)}`).then((r) => r.posts)
+  }
+  post(body: string, family?: string) {
+    return this.request<{ post: FeedPost }>('/api/v1/feed', { method: 'POST', json: { body, audience: family ?? 'everyone' } }).then((r) => r.post)
+  }
+  feedPeople() {
+    return this.request<{ people: { id: string; name: string; subscribed: boolean }[] }>('/api/v1/feed/people').then((r) => r.people)
+  }
+  subscribe(userId: string) {
+    return this.request<{ ok: boolean }>(`/api/v1/feed/u/${enc(userId)}/subscribe`, { method: 'POST', json: {} })
+  }
+  unsubscribe(userId: string) {
+    return this.request<{ ok: boolean }>(`/api/v1/feed/u/${enc(userId)}/unsubscribe`, { method: 'POST', json: {} })
+  }
+  subscribeAll(tree?: string) {
+    return this.request<{ subscribed: number }>('/api/v1/feed/subscribe-all', { method: 'POST', json: { tree } }).then((r) => r.subscribed)
+  }
+  comment(postId: string, body: string) {
+    return this.request<{ comment: { id: string } }>(`/api/v1/feed/p/${enc(postId)}/comment`, { method: 'POST', json: { body } }).then((r) => r.comment)
+  }
+  like(postId: string) {
+    return this.request<{ liked: boolean }>(`/api/v1/feed/p/${enc(postId)}/like`, { method: 'POST', json: {} }).then((r) => r.liked)
   }
 
   // ---- local recommendations ----------------------------------------------
