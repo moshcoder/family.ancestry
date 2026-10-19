@@ -202,14 +202,14 @@ export class AncestryClient {
     return this.request<{ trees: TreeSummary[] }>('/api/v1/trees').then((r) => r.trees)
   }
   createTree(name: string, description?: string, people: string[] = [], share = true) {
-    return this.request<{ tree: TreeSummary; added: number; shared: number }>('/api/v1/trees', { method: 'POST', json: { name, description, people, share } }).then((r) => ({ ...r.tree, added: r.added, shared: r.shared }))
+    return this.request<{ tree: TreeSummary; added: number; shared: number; emailed?: string[] }>('/api/v1/trees', { method: 'POST', json: { name, description, people, share } }).then((r) => ({ ...r.tree, added: r.added, shared: r.shared, emailed: r.emailed ?? [] }))
   }
   /** People you can bring into a tree: everyone in your other trees, and your network. Each has a `pick` value. */
   pickable(exceptTree?: string) {
     return this.request<{ trees: { id: string; name: string; people: { pick: string; name: string; birth_date: string | null; death_date: string | null; kind: string }[] }[]; contacts: { pick: string; name: string; circle: string; has_account: boolean }[] }>(`/api/v1/pickable${exceptTree ? `?except=${encodeURIComponent(exceptTree)}` : ''}`)
   }
   bringPeople(treeId: string, people: string[], share = true) {
-    return this.request<{ added: number; shared: number }>(`/api/v1/trees/${treeId}/bring`, { method: 'POST', json: { people, share } })
+    return this.request<{ added: number; shared: number; emailed?: string[] }>(`/api/v1/trees/${treeId}/bring`, { method: 'POST', json: { people, share } })
   }
   tree(id: string) {
     return this.request<{ tree: TreeSummary; role: string; stats: Record<string, number>; surnames: { surname: string; n: number }[] }>(`/api/v1/trees/${enc(id)}`)

@@ -399,11 +399,11 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
    * Copy picked people into a tree: `p:<tree>:<person>` from a tree you belong to, `c:<contact>` from your network.
    * A contact who has an account becomes that person here (and, with share, a viewer).
    */
-  const bringPeople = (treeId: string, userId: string, picks: string[], share: boolean): { added: number; shared: number } => {
+  const bringPeople = async (treeId: string, userId: string, picks: string[], share: boolean): Promise<{ added: number; shared: number; emailed: string[] }> => {
     const people = picks.flatMap((v) => (v.startsWith('p:') && v.split(':').length === 3 ? [{ tree: v.split(':')[1]!, person: v.split(':')[2]! }] : []))
     const done = store.copyPeople(treeId, userId, people, { share })
     let added = done.added.length
-    let shared = done.shared.length
+    const sharedWith = [...done.shared]
     for (const id of new Set(picks.filter((v) => v.startsWith('c:')).map((v) => v.slice(2)))) {
       const contact = net.contact(userId, id)
       if (!contact?.name) continue
@@ -416,18 +416,28 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
       if (!store.role(treeId, linked.id)) {
         if (!share) continue
         store.setMember(treeId, linked.id, 'viewer')
-        shared++
+        sharedWith.push(linked.id)
       }
       store.claimProfile(treeId, person.id, linked.id)
     }
-    return { added, shared }
+    // Everyone who can now see the tree hears about it, or being added is invisible to them.
+    const from = store.user(userId)!
+    const emailed: string[] = []
+    for (const id of new Set(sharedWith)) {
+      const to = store.user(id)
+      if (!to?.email || to.email.endsWith('@pit.invalid')) continue
+      if (!senderLimit(`invite:${from.id}`) || !inviteLimit(`to:${to.email}`)) continue
+      if (await sendAdded(to.email, treeId, from)) emailed.push(to.email)
+    }
+    return { added, shared: new Set(sharedWith).size, emailed }
   }
   const picksFrom = async (c: Context): Promise<string[]> => {
     const all = (await c.req.parseBody({ all: true }).catch(() => ({}))) as Record<string, unknown>
     const pick = all.pick
     return (Array.isArray(pick) ? pick : pick ? [pick] : []).map(String).slice(0, 2000)
   }
-  const broughtNote = (r: { added: number; shared: number }) => `Added ${r.added} ${r.added === 1 ? 'person' : 'people'}${r.shared ? `; ${r.shared} of them can now see this tree` : ''}.`
+  const broughtNote = (r: { added: number; shared: number; emailed: string[] }) =>
+    `Added ${r.added} ${r.added === 1 ? 'person' : 'people'}${r.shared ? `; ${r.shared} of them can now see this tree` : ''}${r.emailed.length ? ` (emailed ${r.emailed.join(', ')})` : r.shared ? ' (no email went out; invite them from Members if they need a nudge)' : ''}.`
 
   app.get('/trees', (c) => needUser(c) ?? c.html(html.treesPage(ctx(c), store.treesFor(c.get('user')!.id), teams.workplaces(c.get('user')!.id), pickable(c.get('user')!.id))))
   app.post('/trees', async (c) => {
@@ -436,7 +446,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     const tree = store.createTree(c.get('user')!.id, String(body.name ?? ''), body.description ? String(body.description) : null)
     const picks = await picksFrom(c)
     if (!picks.length) return c.redirect(`/t/${tree.id}`)
-    return c.redirect(`/t/${tree.id}?ok=${encodeURIComponent(broughtNote(bringPeople(tree.id, c.get('user')!.id, picks, Boolean(body.share))))}`)
+    return c.redirect(`/t/${tree.id}?ok=${encodeURIComponent(broughtNote(await bringPeople(tree.id, c.get('user')!.id, picks, Boolean(body.share))))}`)
   })
   app.post('/t/:tree/bring', async (c) => {
     const t = treeFor(c, 'edit')
@@ -444,7 +454,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     const body = await form(c)
     const picks = await picksFrom(c)
     if (!picks.length) return c.redirect(`/t/${t.tree.id}?error=${encodeURIComponent('Tick at least one person.')}`)
-    return c.redirect(`/t/${t.tree.id}?ok=${encodeURIComponent(broughtNote(bringPeople(t.tree.id, t.user.id, picks, Boolean(body.share))))}`)
+    return c.redirect(`/t/${t.tree.id}?ok=${encodeURIComponent(broughtNote(await bringPeople(t.tree.id, t.user.id, picks, Boolean(body.share))))}`)
   })
   app.post('/trees/import', async (c) => {
     if (needUser(c)) return needUser(c)!
@@ -980,7 +990,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     const body = await json(c)
     const tree = store.createTree(apiUser(c)!.id, String(body.name ?? 'Family tree'), body.description ?? null)
     const picks = Array.isArray(body.people) ? body.people.map(String) : []
-    const brought = picks.length ? bringPeople(tree.id, apiUser(c)!.id, picks, body.share !== false) : { added: 0, shared: 0 }
+    const brought = picks.length ? await bringPeople(tree.id, apiUser(c)!.id, picks, body.share !== false) : { added: 0, shared: 0, emailed: [] }
     return c.json({ tree: store.tree(tree.id), ...brought }, 201)
   })
   // Pick from `GET /api/v1/pickable`: values look like p:<tree>:<person> or c:<contact>.
@@ -993,7 +1003,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     if (t.error) return t.error
     const body = await json(c)
     const picks = Array.isArray(body.people) ? body.people.map(String) : []
-    return c.json(bringPeople(t.tree.id, apiUser(c)!.id, picks, body.share !== false))
+    return c.json(await bringPeople(t.tree.id, apiUser(c)!.id, picks, body.share !== false))
   })
   api.get('/trees/:tree', (c) => {
     const t = treeFor(c)
@@ -1275,6 +1285,26 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     const mailed = senderLimit(`invite:${from.id}`) && inviteLimit(`to:${email}`)
     if (mailed) await sendInvite(email, tree.name, from, url, role, { person, note: opts.note ?? null })
     return { url, mailed }
+  }
+
+  /** Tell someone who already has an account that they were made a member of a tree; no link to redeem, they just sign in. */
+  async function sendAdded(email: string, treeId: string, from: User): Promise<boolean> {
+    const tree = store.tree(treeId)!
+    const name = from.name ?? from.email
+    const url = `${publicSite}/t/${treeId}`
+    const lead = `${name} added you to ${tree.name} on family.ancestry, as a viewer.`
+    try {
+      await auth.mail({
+        to: email,
+        subject: `${name} added you to the ${tree.name} family tree`,
+        text: `${lead}\n\nOpen it: ${url}\n\nSign in with this email address to see it.`,
+        html: `<p>${html.esc(lead).replace(html.esc(name), `<b>${html.esc(name)}</b>`)}</p><p><a href="${html.esc(url)}" style="display:inline-block;padding:10px 18px;background:#3d6b4f;color:#fff;border-radius:6px;text-decoration:none">Open the tree</a></p><p style="color:#666;font-size:13px">${html.esc(url)}<br>Sign in with this email address to see it.</p>`,
+      })
+      return true
+    } catch (error) {
+      console.error(`[bring] mail failed: ${(error as Error).message}`)
+      return false
+    }
   }
 
   async function sendInvite(email: string, treeName: string, from: User, url: string, role: string, opts: { person?: Person | null; note?: string | null } = {}) {
