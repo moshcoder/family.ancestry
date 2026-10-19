@@ -6,9 +6,18 @@ import { createHash } from 'node:crypto'
 import { formatAddresses, formatLabeled, hasContact, readContact, socialUrl, type PersonContact } from './contact.js'
 import { readFileSync } from 'node:fs'
 import { pitFooter } from './pit-footer.js'
+import { ringFooter, ringFooterOptions, setRingFooterOptions } from './ring-footer.js'
 import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Circle, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
 export const VERSION = '0.16.2'
+
+// The footer's own links; the ring nav and copyright come from @profullstack/footer.
+setRingFooterOptions(
+  ringFooterOptions([
+    { label: 'About', href: '/about' },
+    { label: 'Code', href: 'https://github.com/moshcoder/family.ancestry' },
+  ]),
+)
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -66,10 +75,8 @@ ${adBanner('text_link')}
 ${ctx.flash ? `<p class="flash">${esc(ctx.flash)}</p>` : ''}${ctx.error ? `<p class="flash error">${esc(ctx.error)}</p>` : ''}
 ${body}
 </main>
-<footer class="foot">
-  <span>© family.ancestry · <a href="/about">About</a> · <a href="https://github.com/moshcoder/family.ancestry">Code</a> · MIT</span>
-  <a href="https://built.indie.pit.world/p/family-ancestry?ref=badge"><img src="https://built.indie.pit.world/badge/family-ancestry.svg" alt="family.ancestry on built.indie" width="200" height="44"></a>
-</footer>${statsScript()}
+<p class="foot-badge"><a href="https://built.indie.pit.world/p/family-ancestry?ref=badge"><img src="https://built.indie.pit.world/badge/family-ancestry.svg" alt="family.ancestry on built.indie" width="200" height="44"></a></p>
+${ringFooter()}${statsScript()}
 ${pitFooter()}
 </body>
 </html>`

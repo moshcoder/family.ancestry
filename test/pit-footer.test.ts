@@ -15,6 +15,11 @@ test('pit.world footer: nothing until read, then the last thing in <body>', asyn
   const page = layout({ user: null }, 'family.ancestry', '<p>hi</p>')
   expect(page.match(/data-pit-footer/g)?.length).toBe(1)
   expect(page).toMatch(/<\/footer>[\s\S]*data-pit-footer[\s\S]*<\/nav>\s*<\/body>/)
+  // The Profullstack ring footer is server-rendered (the verifier never runs script), before the global footer, with no ad in it.
+  const ring = page.indexOf('https://rssamplifier.com/ring/profullstack/next?from=https%3A%2F%2Ffamily.ancestry.pit.world%2F')
+  expect(ring).toBeGreaterThan(-1)
+  expect(ring).toBeLessThan(page.indexOf('data-pit-footer'))
+  expect(page.slice(page.indexOf('</main>'))).not.toContain('crawlproof.com/api/ads')
   // A failed refresh keeps the last good copy.
   const stop2 = startPitFooterRefresh('family.ancestry', (async () => { throw new Error('down') }) as unknown as typeof fetch)
   await new Promise((r) => setTimeout(r, 10))
