@@ -16,6 +16,14 @@ needs [one setting](https://pit.world/connect).
   you or to one family. You can only subscribe to people you share a tree with or are
   connected to: no public profiles, no follower counts. `ancestry feed`, `ancestry post`,
   `ancestry subscribe all`; MCP `read_feed`, `post_to_feed`, `subscribe`.
+- **Contact info on every person:** emails, phones, addresses, links and socials
+  ("instagram: @tony", "bluesky: tony.bsky.social", or a profile link), one per line with an
+  optional "cell:" / "home:" label. Anyone who claimed their own profile fills in their own,
+  even as a viewer. Phones and emails are tap-to-call / tap-to-mail, handles become profile
+  links, addresses get a map link. Only members of the tree see it; it follows the person into
+  your other trees and into your network when you add them; privacy exports leave it out.
+  GEDCOM `EMAIL`/`PHON`/`WWW`, `RESI`+`ADDR`, `_SOCIAL`. `ancestry edit <person> --phone
+  "cell: 408 555 0100" --social "instagram: @tony"`; MCP `update_person {phones, socials, …}`.
 - **Families overlap.** Start a tree (or fill one) by ticking people you already have:
   anyone in your other trees or your network. They come over with their dates, events and
   photo; the partners, parents, children and bonds among the people you tick stay linked;

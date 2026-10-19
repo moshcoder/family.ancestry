@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import { BONDS, CHILD_RELATIONS, Store, UNION_KINDS, bondKind, canEdit, canManage, grantable, inviteRole, fullName, type Business, type InviteRole, newId, type Person, type Role, type Tree, type User } from './db.js'
 import { Auth, SESSION_COOKIE, consoleMailer, resendMailer, safeNext, validEmail, type Mailer } from './auth.js'
 import { exportGedcom, importGedcom, describeImport } from './gedcom.js'
+import { CONTACT_KEYS, readContact } from './contact.js'
 import { describeRelation } from './relate.js'
 import { CHAIN_LABELS, SETTLED, hasPlan, isAdmin, planFromEnv, price, readWebhook, startCheckout, verifyWebhook, type PlanConfig } from './plan.js'
 import * as html from './html.js'
@@ -409,7 +410,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
       const contact = net.contact(userId, id)
       if (!contact?.name) continue
       const words = contact.name.trim().split(/\s+/)
-      const person = store.addPerson(treeId, { given: words.length > 1 ? words.slice(0, -1).join(' ') : words[0], surname: words.length > 1 ? words.at(-1) : '', birth_date: contact.birthday, living: 1 })
+      const person = store.addPerson(treeId, { given: words.length > 1 ? words.slice(0, -1).join(' ') : words[0], surname: words.length > 1 ? words.at(-1) : '', birth_date: contact.birthday, living: 1, emails: contact.emails, phones: contact.phones, addresses: contact.addresses, links: contact.links })
       added++
       if (!net.contactForPerson(userId, treeId, person.id)) net.linkContact(userId, contact.id, { tree_id: treeId, person_id: person.id })
       const linked = contact.linked_user_id ? store.user(contact.linked_user_id) : null
@@ -604,6 +605,15 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     if (!('living' in body)) body.living = '0'
     const { synced } = store.updatePersonEverywhere(t.tree.id, c.req.param('person'), body, c.get('user')?.id)
     return c.redirect(`/t/${t.tree.id}/p/${c.req.param('person')}?ok=${encodeURIComponent(synced ? `Saved, here and in ${synced} other ${synced === 1 ? 'tree' : 'trees'}` : 'Saved')}`)
+  })
+  /** Contact info alone (emails, phones, addresses, links, socials): the person or anyone who edits the tree. */
+  app.post('/t/:tree/p/:person/contact', async (c) => {
+    const t = personFor(c)
+    if (t.error) return t.error
+    const body = await form(c)
+    const fields = Object.fromEntries(CONTACT_KEYS.map((k) => [k, body[k] ?? '']))
+    const { synced } = store.updatePersonEverywhere(t.tree.id, c.req.param('person'), fields, c.get('user')?.id)
+    return c.redirect(`/t/${t.tree.id}/p/${c.req.param('person')}?ok=${encodeURIComponent(synced ? `Contact info saved, here and in ${synced} other ${synced === 1 ? 'tree' : 'trees'}` : 'Contact info saved')}`)
   })
   app.post('/t/:tree/p/:person/delete', (c) => {
     const t = treeFor(c, 'edit')
@@ -998,7 +1008,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   const json = async (c: Context): Promise<Record<string, any>> => ((await c.req.json().catch(() => ({}))) as Record<string, any>) ?? {}
   const personOut = (treeId: string, p: Person, full = false) => {
     const holder = store.profileUser(treeId, p.id)
-    const base = { ...p, name: fullName(p), url: `${site}/t/${treeId}/p/${p.id}`, profile: holder ? { user_id: holder.id, name: holder.name ?? holder.email } : null }
+    const base = { ...p, contact: readContact(p.contact), name: fullName(p), url: `${site}/t/${treeId}/p/${p.id}`, profile: holder ? { user_id: holder.id, name: holder.name ?? holder.email } : null }
     if (!full) return base
     return {
       ...base,

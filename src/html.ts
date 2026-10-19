@@ -3,10 +3,11 @@
  * link. public/app.js adds the passkey ceremony and a few conveniences on top.
  */
 import { createHash } from 'node:crypto'
+import { formatAddresses, formatLabeled, hasContact, readContact, socialUrl, type PersonContact } from './contact.js'
 import { readFileSync } from 'node:fs'
 import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.14.0'
+export const VERSION = '0.15.0'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -237,7 +238,43 @@ export function personForm(ctx: Ctx, action: string, p: Partial<Person> | null, 
   <div class="grid2"><label>Born<input name="birth_date" value="${v('birth_date')}" placeholder="12 MAR 1901, ABT 1890" maxlength="200"></label><label>Birthplace<input name="birth_place" value="${v('birth_place')}" maxlength="200"></label></div>
   <div class="grid2"><label>Died<input name="death_date" value="${v('death_date')}" maxlength="200"></label><label>Place of death<input name="death_place" value="${v('death_place')}" maxlength="200"></label></div>
   <label>Notes and stories<textarea name="notes" rows="3" maxlength="20000">${v('notes')}</textarea></label>
+  ${p?.id ? '' : `<fieldset class="contact-fields"><legend>Contact info <span class="muted small">optional; only people in this tree see it</span></legend>${contactFields(readContact(null))}</fieldset>`}
   <button>${esc(label)}</button></form>`
+}
+
+/** Emails, phones, addresses, links and socials: the same "label: value" lines as the network. */
+export function contactFields(c: PersonContact): string {
+  return `<div class="grid2"><label>Emails <span class="muted small">one per line, "work: a@b.com"</span><textarea name="emails" rows="2" autocomplete="off">${esc(formatLabeled(c.emails))}</textarea></label><label>Phones <span class="muted small">one per line, "cell: 408 555 0100"</span><textarea name="phones" rows="2" autocomplete="off">${esc(formatLabeled(c.phones))}</textarea></label></div>
+  <label>Addresses <span class="muted small">a blank line between addresses; "home:" before the first line labels it</span><textarea name="addresses" rows="3" autocomplete="off">${esc(formatAddresses(c.addresses))}</textarea></label>
+  <div class="grid2"><label>Social <span class="muted small">one per line, "instagram: @tony", "bluesky: tony.bsky.social", or a profile link</span><textarea name="socials" rows="2" autocomplete="off" placeholder="instagram: @tony&#10;facebook: tony.ettinger">${esc(formatLabeled(c.socials))}</textarea></label><label>Links <span class="muted small">one per line, "blog: https://…"</span><textarea name="links" rows="2" autocomplete="off" placeholder="https://">${esc(formatLabeled(c.links))}</textarea></label></div>`
+}
+
+const SOCIAL_NAMES: Record<string, string> = { x: 'X', tiktok: 'TikTok', youtube: 'YouTube', linkedin: 'LinkedIn', github: 'GitHub' }
+const socialName = (label: string | null) => (label ? (SOCIAL_NAMES[label] ?? label.charAt(0).toUpperCase() + label.slice(1)) : 'social')
+
+/** A person's contact card, and (for whoever may edit them) the form to fill it in, open while it is empty. */
+function contactSection(ctx: Ctx, tree: Tree, p: Person, own: boolean, self: boolean): string {
+  const c = readContact(p.contact)
+  const ext = (href: string, text: string) => `<a href="${esc(href)}" rel="noopener noreferrer" target="_blank">${esc(text)}</a>`
+  const rows = [
+    ...c.phones.map((x) => [x.label ?? 'phone', `<a href="tel:${esc(x.value.replace(/[^\d+]/g, ''))}">${esc(x.value)}</a>`]),
+    ...c.emails.map((x) => [x.label ?? 'email', `<a href="mailto:${esc(x.value)}">${esc(x.value)}</a>`]),
+    ...c.addresses.map((x) => [x.label ?? 'address', `${esc(x.lines).replace(/\n/g, '<br>')} <a class="small" href="https://www.openstreetmap.org/search?query=${encodeURIComponent(x.lines.replace(/\n/g, ', '))}" rel="noopener noreferrer" target="_blank">map</a>`]),
+    ...c.socials.map((x) => {
+      const url = socialUrl(x)
+      return [socialName(x.label), url ? ext(url, x.value.replace(/^https?:\/\/(www\.)?/, '')) : esc(x.value)]
+    }),
+    ...c.links.map((x) => [x.label ?? 'link', ext(x.value, x.value.replace(/^https?:\/\/(www\.)?/, ''))]),
+  ]
+  if (!rows.length && !own) return ''
+  const name = esc(p.given || fullName(p))
+  const form = own
+    ? `<form method="post" action="/t/${tree.id}/p/${p.id}/contact" class="pform">${csrfField(ctx)}${contactFields(c)}<button>Save contact info</button></form>`
+    : ''
+  return `<section class="contact-card"><h2>Contact</h2>
+${rows.length ? `<table class="facts">${rows.map(([k, val]) => `<tr><th>${esc(k!)}</th><td>${val}</td></tr>`).join('')}</table>` : `<p class="muted">${self ? 'Add how the family can reach you: phone, email, address, socials.' : `No contact info for ${name} yet.`}</p>`}
+${form ? (hasContact(c) ? `<details class="mini"><summary>Edit contact info</summary>${form}</details>` : form) : ''}
+${own ? '<p class="muted small">Only people in this family tree see this. Exports for people outside the family leave it out.</p>' : ''}</section>`
 }
 
 const UNION_LABEL: Record<string, string> = { married: 'married', engaged: 'engaged', partners: 'partners', dating: 'boyfriend / girlfriend' }
@@ -401,6 +438,8 @@ ${v.claimable ? `<form method="post" action="/t/${tree.id}/claim" class="inline"
 ${v.welcome && v.self && !p.photo_id ? `<form method="post" action="/t/${tree.id}/p/${p.id}/media" enctype="multipart/form-data" class="panel pform">${csrfField(ctx)}<h2>Add your photo</h2><p class="muted small">So the family knows it's you. JPEG, PNG, WebP or AVIF, under 8 MB.</p><input type="file" name="file" accept="image/*" capture="user" required><button>Upload</button></form>` : ''}
 ${v.network ?? ''}
 <div class="actions">${pet ? '' : `<a class="btn" href="/t/${tree.id}/pedigree/${p.id}">Pedigree</a>`}${pet ? '' : `<a class="btn" href="/t/${tree.id}/descendants/${p.id}">Descendants</a><a class="btn" href="/t/${tree.id}/relate?a=${tree.home_person_id ?? ''}&b=${p.id}">Related how?</a>`}${edit && !pet && tree.home_person_id !== p.id ? `<form method="post" action="/t/${tree.id}/home" class="inline">${csrfField(ctx)}<input type="hidden" name="person_id" value="${p.id}"><button class="btn">Make home person</button></form>` : ''}</div></div></div>
+
+${pet ? '' : contactSection(ctx, tree, p, own, Boolean(v.self))}
 
 ${pet ? '' : `<div class="cols">
 <section><h2>Parents</h2>${

@@ -112,7 +112,10 @@ export async function resolveMoshpit(host: string, fetchImpl: typeof fetch = fet
 }
 
 export type FeedPost = { id: string; author: { id: string; name: string }; body: string; audience: string; family: string | null; photo_url: string | null; created_at: number; likes: number; liked: boolean; comments: { id: string; author: { id: string; name: string }; body: string; created_at: number }[] }
-export type PersonSummary = { id: string; name: string; given: string; surname: string; nickname?: string | null; sex: string; birth_date: string | null; birth_place: string | null; death_date: string | null; death_place: string | null; living: number; notes: string | null; url: string }
+export type PersonSummary = { id: string; name: string; given: string; surname: string; nickname?: string | null; sex: string; birth_date: string | null; birth_place: string | null; death_date: string | null; death_place: string | null; living: number; notes: string | null; url: string; contact?: PersonCard }
+/** How to reach someone: what a person's contact card holds. */
+export type PersonCard = { emails: Labeled[]; phones: Labeled[]; addresses: { label: string | null; lines: string }[]; links: Labeled[]; socials: Labeled[] }
+type Labeled = { label: string | null; value: string }
 export type PersonDetail = PersonSummary & {
   parents: { family_id: string; relation: string; parents: { id: string; name: string }[]; siblings: { id: string; name: string }[] }[]
   unions: { family_id: string; kind: string; start_date: string | null; start_place: string | null; end_date: string | null; partner: { id: string; name: string } | null; children: { id: string; name: string }[] }[]

@@ -34,6 +34,12 @@ export function createMcpServer(client = new AncestryClient()): McpServer {
     death_place: z.string().max(200).optional(),
     living: z.boolean().optional(),
     notes: z.string().max(20000).optional(),
+    // Contact card: each list is replaced whole when given. Members of the tree see it; privacy exports drop it.
+    emails: z.array(z.string()).max(20).optional().describe('"home: a@b.com" or just the address'),
+    phones: z.array(z.string()).max(20).optional().describe('"cell: 408 555 0100"'),
+    addresses: z.array(z.object({ label: z.string().optional(), lines: z.string() })).max(10).optional(),
+    links: z.array(z.string().url()).max(20).optional(),
+    socials: z.array(z.string()).max(20).optional().describe('"instagram: @tony", "bluesky: tony.bsky.social", "mastodon: tony@mastodon.social", or a profile URL'),
   }
 
   server.tool('list_trees', 'List the family trees you can see, with your role in each and how many people they hold.', {}, async () => json(await client.trees()))
