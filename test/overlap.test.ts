@@ -48,7 +48,7 @@ test('a new tree starts from people already in another tree: links, events and a
   expect(decodeURIComponent(res.headers.get('location')!)).toContain('Added 2 people; 1 of them can now see this tree (emailed liz@example.com)')
   // Liz is told, or being added is invisible to her.
   expect(sent.map((m) => m.to)).toEqual(['liz@example.com'])
-  expect(sent[0]!.subject).toContain('added you to the The Toshikian Family family tree')
+  expect(sent[0]!.subject).toContain('added you to The Toshikian Family tree')
   expect(sent[0]!.text).toContain(`${SITE}/t/`)
   const people = store.people(treeId)
   expect(people.map((p) => p.given).sort()).toEqual(['Kathleen', 'Liz'])

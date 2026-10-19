@@ -7,7 +7,7 @@ import { formatAddresses, formatLabeled, hasContact, readContact, socialUrl, typ
 import { readFileSync } from 'node:fs'
 import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.15.0'
+export const VERSION = '0.15.1'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -627,7 +627,29 @@ ${canEdit(role) ? `<form method="post" action="/t/${tree.id}/sources" class="pan
   )
 }
 
-export type InviteLink = { email: string | null; url: string; mailed: boolean }
+/** What became of an invite's email, in words: a bounce must not look like someone who has not joined yet. */
+export function mailState(i: Pick<Invite, 'mail_status' | 'mail_error'>): { tone: 'ok' | 'bad' | 'wait'; text: string } | null {
+  const s = i.mail_status
+  if (!s) return null
+  if (['delivered', 'opened', 'clicked'].includes(s)) return { tone: 'ok', text: s === 'delivered' ? 'email delivered' : `email ${s}` }
+  if (s === 'bounced') {
+    const why = i.mail_error ?? ''
+    const missing = /mailbox (not found|unavailable)|user unknown|no such user|does not exist|unknown recipient|5\.1\.1|invalid recipient/i.test(why)
+    return { tone: 'bad', text: missing ? 'bounced: that address does not exist. Check the spelling, cancel and invite again' : `bounced${why ? `: ${why.replace(/^smtp;\s*/i, '')}` : ''}` }
+  }
+  if (s === 'complained') return { tone: 'bad', text: 'marked as spam by the recipient' }
+  if (s === 'suppressed') return { tone: 'bad', text: 'not sent: this address bounced before' }
+  if (s === 'failed') return { tone: 'bad', text: `could not send${i.mail_error ? `: ${i.mail_error}` : ''}. Copy the link and send it yourself` }
+  if (s === 'held') return { tone: 'bad', text: "not emailed: over the day's invitation limit" }
+  if (s === 'delivery_delayed') return { tone: 'wait', text: 'delivery delayed, still trying' }
+  return { tone: 'wait', text: 'email sent' }
+}
+const mailBadge = (i: Invite) => {
+  const m = mailState(i)
+  return m ? `<span class="tag mail-${m.tone}">${esc(m.text)}</span>` : ''
+}
+
+export type InviteLink = { email: string | null; url: string; mailed: boolean; failed?: string }
 
 export function membersPage(
   ctx: Ctx,
@@ -673,7 +695,7 @@ ${owner ? `<form method="post" action="/t/${tree.id}/invites" class="row">${csrf
 }
 ${
   edit && extra.pending.length
-    ? `<section class="panel"><h2>Waiting to join</h2><ul>${extra.pending.map((i) => `<li>${esc(i.email ?? 'link')}${asPerson(i.person_id)} <span class="muted small">${i.role}, ${days(i.expires_at)} days left</span> <form method="post" action="/t/${tree.id}/invites/${i.id}/revoke" class="inline">${csrfField(ctx)}<button class="x" title="Cancel invite">×</button></form></li>`).join('')}</ul></section>`
+    ? `<section class="panel"><h2>Waiting to join</h2><ul>${extra.pending.map((i) => `<li>${esc(i.email ?? 'link')}${asPerson(i.person_id)} <span class="muted small">${i.role}, ${days(i.expires_at)} days left</span>${i.email ? ` ${mailBadge(i)}` : ''} <form method="post" action="/t/${tree.id}/invites/${i.id}/revoke" class="inline">${csrfField(ctx)}<button class="x" title="Cancel invite">×</button></form></li>`).join('')}</ul></section>`
     : ''
 }
 ${extra.listing ?? ''}

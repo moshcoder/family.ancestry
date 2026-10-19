@@ -379,7 +379,7 @@ export class AncestryClient {
     return this.request<{ invites: { email: string | null; name?: string | null; person_id?: string | null; url: string; mailed: boolean }[] }>(`/api/v1/trees/${enc(tree)}/invites`, { method: 'POST', json: { emails, ...opts } }).then((r) => r.invites)
   }
   invites(tree: string) {
-    return this.request<{ invites: { id: string; email: string | null; role: string; person_id: string | null; expires_at: number }[] }>(`/api/v1/trees/${enc(tree)}/invites`).then((r) => r.invites)
+    return this.request<{ invites: { id: string; email: string | null; role: string; person_id: string | null; expires_at: number; mail_status?: string | null; mail?: { tone: string; text: string } | null }[] }>(`/api/v1/trees/${enc(tree)}/invites`).then((r) => r.invites)
   }
   // ---- a business's team: invited to the business, never to the tree ----
   team(tree: string, biz: string) {
