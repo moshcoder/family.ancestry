@@ -67,7 +67,8 @@ ${body}
 ${adBanner('text_link')}
 <footer class="foot">
   <span>family.ancestry ${VERSION} · open source (MIT) · <a href="https://github.com/moshcoder/family.ancestry">code</a> · <a href="/about">about</a> · <a href="/connect">reach it from anywhere</a></span>
-  <span>A <a href="https://pit.world">Moshpit</a> name. Your tree is private to the people you invite.</span>${footerAd()}
+  <span>A <a href="https://pit.world">Moshpit</a> name. Your tree is private to the people you invite.</span>
+  <span><a href="https://built.indie.pit.world/p/family-ancestry?ref=badge"><img src="https://built.indie.pit.world/badge/family-ancestry.svg" alt="family.ancestry on built.indie" width="200" height="44"></a></span>${footerAd()}
 </footer>${statsScript()}
 </body>
 </html>`
