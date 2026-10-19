@@ -232,10 +232,11 @@ connections 1 (your own circle for them decides). Blocks hide both ways.
 
 ## Ads
 
-Pages carry one [crawlproof](https://crawlproof.com) unit: a fluid text link in the
-footer everywhere, and a 300×250 on Local and Network. It is a cross-origin frame
-(`/api/ads/frame`), so the CSP gains one `frame-src` and nothing else: no ad script,
-no cookie. `CRAWLPROOF_AD_SLOT` sets the slot; `off` removes the units.
+Pages carry one [crawlproof](https://crawlproof.com) unit, never in or against the
+footer. Local and Network have a 300×250 cross-origin frame (`/api/ads/frame`) in
+their content; `CRAWLPROOF_AD_SLOT` sets its slot, `off` removes it. Every other page
+gets the ad network unit (filled by `ad.js`) at the top of the content;
+`CRAWLPROOF_FOOTER_SLOT` sets its slot, `off` removes it.
 
 ## Business teams
 

@@ -202,6 +202,7 @@ ${html.adBanner()}
   <datalist id="local-categories">${CATEGORIES.map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
   <button>Recommend</button>
 </form></details>`,
+    { ad: false },
   )
 }
 

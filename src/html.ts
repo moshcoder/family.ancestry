@@ -37,7 +37,7 @@ export function pitVerifyMeta(value = process.env.PIT_VERIFY): string {
   return value && /^[0-9a-f]{16,64}$/i.test(value) ? `\n<meta name="pit-verify" content="${value}">` : ''
 }
 
-export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [string, string][]; wide?: boolean; head?: string } = {}): string {
+export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [string, string][]; wide?: boolean; head?: string; ad?: boolean } = {}): string {
   const crumbs = opts.crumbs?.length ? `<nav class="crumbs">${opts.crumbs.map(([href, label]) => (href ? `<a href="${esc(href)}">${esc(label)}</a>` : `<span>${esc(label)}</span>`)).join('<span class="sep">/</span>')}</nav>` : ''
   return `<!doctype html>
 <html lang="en">
@@ -61,14 +61,13 @@ export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [
 </header>
 <main class="${opts.wide ? 'wide' : ''}">
 ${crumbs}
-${ctx.flash ? `<p class="flash">${esc(ctx.flash)}</p>` : ''}${ctx.error ? `<p class="flash error">${esc(ctx.error)}</p>` : ''}
+${ctx.flash ? `<p class="flash">${esc(ctx.flash)}</p>` : ''}${ctx.error ? `<p class="flash error">${esc(ctx.error)}</p>` : ''}${opts.ad === false ? '' : topAd()}
 ${body}
 </main>
-${adBanner('text_link')}
 <footer class="foot">
   <span>family.ancestry ${VERSION} · open source (MIT) · <a href="https://github.com/moshcoder/family.ancestry">code</a> · <a href="/about">about</a> · <a href="/connect">reach it from anywhere</a></span>
   <span>A <a href="https://pit.world">Moshpit</a> name. Your tree is private to the people you invite.</span>
-  <span><a href="https://built.indie.pit.world/p/family-ancestry?ref=badge"><img src="https://built.indie.pit.world/badge/family-ancestry.svg" alt="family.ancestry on built.indie" width="200" height="44"></a></span>${footerAd()}
+  <span><a href="https://built.indie.pit.world/p/family-ancestry?ref=badge"><img src="https://built.indie.pit.world/badge/family-ancestry.svg" alt="family.ancestry on built.indie" width="200" height="44"></a></span>
 </footer>${statsScript()}
 </body>
 </html>`
@@ -85,13 +84,15 @@ export const adBanner = (format: 'banner_300x250' | 'text_link' = 'banner_300x25
   AD_SLOT === 'off' ? '' : `<div class="ad-unit ad-${format}"><iframe src="https://crawlproof.com/api/ads/frame?slot=${encodeURIComponent(AD_SLOT)}&amp;format=${format}" title="Advertisement" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation" scrolling="no"></iframe></div>`
 
 /**
- * The footer's crawlproof ad network unit, filled by ad.js. Its creative is a srcdoc
- * frame that inherits our CSP, hence 'unsafe-inline' styles and https: images there.
- * CRAWLPROOF_FOOTER_SLOT overrides the slot; 'off' drops it.
+ * The crawlproof ad network unit, filled by ad.js, at the top of the page content
+ * (never in or against the footer). Pages that already carry an in-content unit
+ * (Local, Network) pass `ad: false` to layout. Its creative is a srcdoc frame that
+ * inherits our CSP, hence 'unsafe-inline' styles and https: images there.
+ * CRAWLPROOF_FOOTER_SLOT (name kept for existing app.env files) overrides the slot; 'off' drops it.
  */
-export const FOOTER_SLOT = process.env.CRAWLPROOF_FOOTER_SLOT ?? 'da845841-3551-4962-8ed6-2e6a65e5b0c7'
-export const footerAd = () =>
-  FOOTER_SLOT === 'off' ? '' : `\n  <aside class="foot-ad" data-ad-network="cMfVN1_KxJlc-bX8" data-cp-ad data-slot="${esc(FOOTER_SLOT)}" data-format="banner_300x250"></aside>\n  <script src="https://crawlproof.com/ad.js" async></script>`
+export const TOP_SLOT = process.env.CRAWLPROOF_FOOTER_SLOT ?? 'da845841-3551-4962-8ed6-2e6a65e5b0c7'
+export const topAd = () =>
+  TOP_SLOT === 'off' ? '' : `\n<aside class="top-ad" data-ad-network="cMfVN1_KxJlc-bX8" data-cp-ad data-slot="${esc(TOP_SLOT)}" data-format="banner_300x250"></aside>\n<script src="https://crawlproof.com/ad.js" async></script>`
 
 /**
  * crawlproof analytics: one async script, so CSP adds crawlproof.com to script-src

@@ -102,7 +102,10 @@ describe('local recommendations', () => {
     expect(res.headers.get('content-security-policy')).toContain('frame-src https://crawlproof.com')
     const net = await (await app.request(`${SITE}/network?circle=neighbors`, { headers: { cookie } })).text()
     expect(net).toContain('Neighbors')
-    expect(await (await app.request(`${SITE}/`)).text()).toContain('format=text_link')
+    // Local and Network carry their in-content unit, so no top unit is added there.
+    expect(page).not.toContain('data-cp-ad')
+    expect(net).not.toContain('data-cp-ad')
+    expect(await (await app.request(`${SITE}/`)).text()).toContain('class="top-ad"')
     const api = await app.request(`${SITE}/api/v1/local?q=sacramento`, { headers: { cookie } })
     expect((await api.json()).results[0].name).toBe('Joe Plumbing')
   })

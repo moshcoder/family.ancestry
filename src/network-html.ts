@@ -50,7 +50,7 @@ ${adBanner()}
 <details class="panel"${total ? '' : ' open'}><summary>Add a friend</summary>${contactForm(ctx, '/network/contacts', null, 'Add to my network', data.circle ?? 'friends', { connect: true })}</details>
 <details class="panel"><summary>Import contacts</summary><form method="post" action="/network/import" enctype="multipart/form-data" class="pform">${csrfField(ctx)}<p class="muted small">A .vcf file from your phone, Google Contacts, Outlook or Apple Contacts. People already here (same email) are skipped.</p><div class="grid2"><label>File<input type="file" name="file" accept=".vcf,text/vcard,text/x-vcard" required></label><label>Put them in<select name="circle">${CIRCLES.map((c) => `<option value="${c}">${CIRCLE_LABEL[c]}</option>`).join('')}</select></label></div><button>Import</button></form></details>
 ${principles}`,
-    { crumbs: [['', 'Network']] },
+    { crumbs: [['', 'Network']], ad: false },
   )
 }
 

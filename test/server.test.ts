@@ -51,7 +51,10 @@ describe('server', () => {
     const home = await h.req('/')
     const body = await home.text()
     expect(body).toContain('<script data-site="d6df6a46-dfb8-4a55-a60c-5b7fd5a6975c" src="https://crawlproof.com/stats.js" async></script>')
-    expect(body).toMatch(/<footer class="foot">[\s\S]*<aside class="foot-ad" data-ad-network="cMfVN1_KxJlc-bX8" data-cp-ad data-slot="da845841-3551-4962-8ed6-2e6a65e5b0c7" data-format="banner_300x250"><\/aside>\s*<script src="https:\/\/crawlproof.com\/ad.js" async><\/script>[\s\S]*<\/footer>/)
+    // The ad network unit sits at the top of the content, never in or by the footer.
+    expect(body).toMatch(/<main[^>]*>[\s\S]*<aside class="top-ad" data-ad-network="cMfVN1_KxJlc-bX8" data-cp-ad data-slot="da845841-3551-4962-8ed6-2e6a65e5b0c7" data-format="banner_300x250"><\/aside>\s*<script src="https:\/\/crawlproof.com\/ad.js" async><\/script>[\s\S]*<\/main>/)
+    expect(body.slice(body.indexOf('</main>'))).not.toContain('data-cp-ad')
+    expect(body).not.toContain('format=text_link')
     const csp = home.headers.get('content-security-policy')!
     expect(csp).toContain("style-src 'self' 'unsafe-inline';")
     expect(csp).toContain("script-src 'self' https://crawlproof.com;")
