@@ -7,7 +7,7 @@ import { formatAddresses, formatLabeled, hasContact, readContact, socialUrl, typ
 import { readFileSync } from 'node:fs'
 import { BONDS, UNION_KINDS, canManage, grantable, fullName, lifespan, type Business, type Circle, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.16.0'
+export const VERSION = '0.16.1'
 
 export const esc = (value: unknown) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -436,7 +436,7 @@ function circleSection(ctx: Ctx, tree: Tree, p: Person, circle: Circle): string 
   const first = p.nickname || p.given.split(' ')[0] || fullName(p)
   const box = (o: Person, checked: boolean) => `<input type="checkbox" name="pick" value="p:${tree.id}:${o.id}"${checked ? ' checked' : ''} aria-label="Bring ${esc(fullName(o))}">`
   const groups = circle.groups
-    .map((g) => `<div class="circle-group"><h3>${esc(g.label)} <span class="muted small">${g.people.length}</span></h3><ul class="plain">${g.people.map((r) => `<li><label class="pick">${box(r.person, CLOSE.has(g.label))}</label> ${personLink(tree.id, r.person)}${r.tag ? ` <span class="tag">${esc(r.tag)}</span>` : ''}${r.person.kind === 'pet' && r.person.species ? ` <span class="muted small">${esc(r.person.species)}</span>` : lifespan(r.person) ? ` <span class="muted small">${esc(lifespan(r.person))}</span>` : ''}</li>`).join('')}</ul></div>`)
+    .map((g) => `<div class="circle-group"><h3>${esc(g.label)} <span class="muted small">${g.people.length}</span></h3><ul class="plain">${g.people.map((r) => `<li><label class="pick">${box(r.person, CLOSE.has(g.label))}</label> ${personLink(tree.id, r.person)}${r.tag ? ` <span class="tag">${esc(r.tag)}</span>` : ''}${r.person.kind === 'pet' && r.person.species ? ` <span class="muted small">${esc(r.person.species)}</span>` : ''}</li>`).join('')}</ul></div>`)
     .join('')
   const biz = circle.businesses.length
     ? `<div class="circle-group"><h3>Businesses <span class="muted small">${circle.businesses.length}</span></h3><ul class="plain">${circle.businesses.map((b) => `<li><a class="pl biz" href="/t/${tree.id}/b/${b.business.id}">${esc(b.business.name)}</a> <span class="tag">${esc(b.role)}</span></li>`).join('')}</ul></div>`
