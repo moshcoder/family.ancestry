@@ -303,3 +303,9 @@ label.check.pickrow { margin: 4px 0; }
 .famous-cta h2 { margin: 0 0 6px; font-size: 1.15rem; }
 .famous-cta .btn { background: var(--accent); color: var(--accent-ink); }
 .pager { display: flex; gap: 16px; align-items: center; justify-content: center; margin: 18px 0; }
+/* socials: posts made elsewhere */
+.sposts { list-style: none; padding: 0; margin: 0; }
+.sposts li { padding: 10px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.sposts .tag, .stable .tag { font-size: .75rem; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+.stable { width: 100%; border-collapse: collapse; margin: 12px 0; display: block; overflow-x: auto; }
+.stable th, .stable td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }

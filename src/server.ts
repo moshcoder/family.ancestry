@@ -29,7 +29,8 @@ import { mountBusinesses, personBusinesses, personBusinessesOut } from './busine
 import { mountAlbums } from './album.js'
 import { listingPanel, Listings, mountListings } from './listing.js'
 import { businessDirectory, mountTeams, teamPanel, Teams } from './team.js'
-import { mountProfiles, Profiles, settingsPanel as profilePanel } from './profile.js'
+import { mountProfiles, Profiles, type Profile, settingsPanel as profilePanel } from './profile.js'
+import { mountSocials, profileSection as socialSection, Socials } from './social.js'
 import { changesTree, lifeEventForm, lifeKey, recordLifeEvent, timeline as lifeTimeline } from './life.js'
 import { addonsPanel, inviteFriendBox, personNetworkBox, profileInvite } from './network-html.js'
 import { Famous, mountFamous } from './famous.js'
@@ -120,6 +121,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   const listings = new Listings(store)
   const teams = new Teams(store)
   const profiles = new Profiles(store)
+  const socials = new Socials(store)
   const feed = new Feed(store, net)
   /**
    * The posts panel on a person page. It is yours to post on when you claimed it, or when it
@@ -1376,21 +1378,24 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     site: publicSite,
     ctx,
     form,
-    // The feed's rules, nothing looser: strangers see no posts; family and connections see what was shared with them.
-    posts: (c, p) => {
-      const me = c.get('user') as User | null
-      const owner = store.user(p.user_id)
-      if (!owner) return ''
-      const sameName = (u: User | null | undefined) => Boolean(u?.name && owner.name && u.name.trim().toLowerCase() === owner.name.trim().toLowerCase())
-      if (!me) return `<section class="panel" id="posts"><h2>Posts</h2><p class="muted small">${html.esc(p.name)} shares posts with family and friends only. <a href="/signin?next=${encodeURIComponent(`/profile/${p.slug}`)}">Sign in</a> to see what they share with you.</p></section>`
-      // One person, two accounts: the owner's, and any account with the same name in a tree with them.
-      const authors = [owner.id, ...store.treesFor(owner.id).flatMap((t) => store.members(t.id).map((m) => m.user_id)).filter((id) => id !== owner.id && sameName(store.user(id)))]
-      const mine = me.id === owner.id || (authors.includes(me.id) && sameName(me))
-      const items = [...new Set(authors)].flatMap((a) => feed.of(me.id, a, { limit: 10 })).sort((a, b) => b.created_at - a.created_at).slice(0, 10)
-      if (!mine && !items.length) return feed.knows(me.id, owner.id) ? '' : `<section class="panel" id="posts"><h2>Posts</h2><p class="muted small">${html.esc(p.name)} shares posts with family and friends only.</p></section>`
-      return personPosts(ctx(c), me, { tree: null, families: store.treesFor(me.id).map((x) => store.tree(x.id)!), items, canPost: mine, back: `/profile/${p.slug}` })
-    },
+    // Feed posts first, then the public posts the owner made elsewhere (already public, so shown to anyone).
+    posts: (c, p) => familyPosts(c, p) + socialSection(p.name, socials.posts(p.user_id, { limit: 10, publicOnly: true }), socials.accounts(p.user_id), (c.get('user') as User | null)?.id === p.user_id),
   })
+  mountSocials(app, api, { socials, ctx, form, profileSlug: (id) => profiles.mine(id)?.slug ?? null })
+  /** The feed's rules, nothing looser: strangers see no posts; family and connections see what was shared with them. */
+  function familyPosts(c: Context, p: Profile): string {
+    const me = c.get('user') as User | null
+    const owner = store.user(p.user_id)
+    if (!owner) return ''
+    const sameName = (u: User | null | undefined) => Boolean(u?.name && owner.name && u.name.trim().toLowerCase() === owner.name.trim().toLowerCase())
+    if (!me) return `<section class="panel" id="posts"><h2>Posts</h2><p class="muted small">${html.esc(p.name)} shares posts with family and friends only. <a href="/signin?next=${encodeURIComponent(`/profile/${p.slug}`)}">Sign in</a> to see what they share with you.</p></section>`
+    // One person, two accounts: the owner's, and any account with the same name in a tree with them.
+    const authors = [owner.id, ...store.treesFor(owner.id).flatMap((t) => store.members(t.id).map((m) => m.user_id)).filter((id) => id !== owner.id && sameName(store.user(id)))]
+    const mine = me.id === owner.id || (authors.includes(me.id) && sameName(me))
+    const items = [...new Set(authors)].flatMap((a) => feed.of(me.id, a, { limit: 10 })).sort((a, b) => b.created_at - a.created_at).slice(0, 10)
+    if (!mine && !items.length) return feed.knows(me.id, owner.id) ? '' : `<section class="panel" id="posts"><h2>Posts</h2><p class="muted small">${html.esc(p.name)} shares posts with family and friends only.</p></section>`
+    return personPosts(ctx(c), me, { tree: null, families: store.treesFor(me.id).map((x) => store.tree(x.id)!), items, canPost: mine, back: `/profile/${p.slug}` })
+  }
   mountAlbums(app, api, { store, site, ctx, form, treeFor, image: { types: IMAGE_TYPES, max: MAX_PHOTO } })
   // Public pages with canonical links on the relay host, the one search engines can reach.
   mountFamous(app, api, { famous, ctx, site: publicSite, ...(daemonStatus ? { status: daemonStatus } : {}) })
