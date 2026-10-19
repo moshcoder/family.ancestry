@@ -14,7 +14,7 @@ import { RING_PLACEHOLDER, ringBar, startRingRefresh, visitorOnMoshpit } from '.
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { createBridgeClient } from '@profullstack/bridges'
 import { join } from 'node:path'
-import { BONDS, CHILD_RELATIONS, Store, UNION_KINDS, unionStatus, bondKind, canEdit, canManage, grantable, inviteRole, fullName, type Business, type InviteRole, newId, type Person, type Role, type Tree, type User } from './db.js'
+import { BONDS, CHILD_RELATIONS, nameFits, Store, UNION_KINDS, unionStatus, bondKind, canEdit, canManage, grantable, inviteRole, fullName, type Business, type InviteRole, newId, type Person, type Role, type Tree, type User } from './db.js'
 import { Auth, SESSION_COOKIE, consoleMailer, resendMailer, resendStatus, safeNext, validEmail, verifyResendWebhook, type Mailer, type MailStatus } from './auth.js'
 import { exportGedcom, importGedcom, describeImport } from './gedcom.js'
 import { CONTACT_KEYS, readContact } from './contact.js'
@@ -590,7 +590,8 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
         posts: postsFor(c, t.tree, person, profile, t.user),
         self: profile?.id === t.user.id,
         // A member with no profile yet, looking at a living person nobody has claimed: "this is me".
-        claimable: !profile && person.kind === 'person' && !person.death_date && !person.death_place && !store.profilePerson(t.tree.id, t.user.id),
+        // ...and only if it could be them: a name in common (or no name on the account to check).
+        claimable: !profile && person.kind === 'person' && !person.death_date && !person.death_place && !store.profilePerson(t.tree.id, t.user.id) && nameFits(t.user, person),
         welcome: c.req.query('welcome') === '1',
         invite: invitable ? profileInvite(ctx(c), t.tree, person, { justAdded: c.req.query('added') === '1', roles: grantable(t.role) }) : '',
         // Anyone in the tree may keep a living relative in their own network; not themselves, not a pet.
@@ -733,7 +734,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     if (t.error) return t.error
     const mine = store.profilePerson(t.tree.id, t.user.id)
     if (mine) return c.redirect(`/t/${t.tree.id}/p/${mine}`)
-    return c.html(html.claimPage(ctx(c), t.tree, store.unclaimed(t.tree.id), { name: t.user.name ?? '', mismatch: c.req.query('mismatch') === '1' }))
+    return c.html(html.claimPage(ctx(c), t.tree, store.unclaimed(t.tree.id).filter((p) => nameFits(t.user, p)), { name: t.user.name ?? '', mismatch: c.req.query('mismatch') === '1' }))
   })
   app.post('/t/:tree/claim', async (c) => {
     const t = treeFor(c)
@@ -1414,11 +1415,14 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     if (store.profilePerson(treeId, user.id)) throw new Error('You already have a profile in this tree.')
     const chosen = pickId(body.person_id)
     if (chosen) {
-      if (!store.unclaimed(treeId).some((p) => p.id === chosen)) throw new Error('That profile is taken, or is not someone living.')
+      const person = store.unclaimed(treeId).find((p) => p.id === chosen)
+      if (!person) throw new Error('That profile is taken, or is not someone living.')
+      if (!nameFits(user, person)) throw new Error(`${fullName(person)} has a different name from your account (${user.name}). If it really is you, change your name in Settings first.`)
       store.claimProfile(treeId, chosen, user.id)
       return chosen
     }
     if (!String(body.given ?? '').trim()) throw new Error('Pick yourself from the list, or give your name to add yourself.')
+    if (!nameFits(user, body)) throw new Error(`That is not your name (${user.name}). To add someone else, use Add person on the tree.`)
     return store.tx(() => {
       const me = store.addPerson(treeId, { ...body, living: 1 })
       store.claimProfile(treeId, me.id, user.id)
@@ -1678,6 +1682,7 @@ export function serve() {
   const dataDir = process.env.ANCESTRY_DATA_DIR ?? join(process.env.HOME ?? '.', '.local', 'share', 'family-ancestry')
   const site = (process.env.ANCESTRY_SITE ?? 'https://family.ancestry').replace(/\/+$/, '')
   const store = new Store(join(dataDir, 'family.db'))
+  for (const r of store.releaseMisclaims()) console.log(`[claims] released ${r.account} from ${r.person} (${r.tree_id}/${r.person_id}): no shared name, no invite`)
   const mailer: Mailer = process.env.RESEND_API_KEY ? resendMailer(process.env.RESEND_API_KEY, process.env.MAIL_FROM ?? 'family.ancestry <hello@pit.world>') : consoleMailer
   const auth = new Auth(store, mailer, site)
   // With a webhook, Resend pushes each email's fate and the key can be send-only (it cannot read
