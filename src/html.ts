@@ -47,7 +47,7 @@ export function pitVerifyMeta(value = process.env.PIT_VERIFY): string {
   return value && /^[0-9a-f]{16,64}$/i.test(value) ? `\n<meta name="pit-verify" content="${value}">` : ''
 }
 
-export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [string, string][]; wide?: boolean; head?: string; description?: string } = {}): string {
+export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [string, string][]; wide?: boolean; head?: string; description?: string; noAd?: boolean } = {}): string {
   const crumbs = opts.crumbs?.length ? `<nav class="crumbs">${opts.crumbs.map(([href, label]) => (href ? `<a href="${esc(href)}">${esc(label)}</a>` : `<span>${esc(label)}</span>`)).join('<span class="sep">/</span>')}</nav>` : ''
   return `<!doctype html>
 <html lang="en">
@@ -71,7 +71,7 @@ export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [
 </header>
 <main class="${opts.wide ? 'wide' : ''}">
 ${crumbs}
-${adBanner('text_link')}
+${opts.noAd ? '' : adBanner()}
 ${ctx.flash ? `<p class="flash">${esc(ctx.flash)}</p>` : ''}${ctx.error ? `<p class="flash error">${esc(ctx.error)}</p>` : ''}
 ${body}
 </main>
@@ -85,12 +85,12 @@ ${pitFooter()}
 /**
  * A crawlproof ad, as a cross-origin frame: our CSP needs one frame-src entry and
  * nothing else (no script, no cookie). Impressions are metered when it is served,
- * so a page renders one unit per spot, never a hidden spare. text_link is the only
- * fluid format; banner_300x250 is the widest that fits a phone.
+ * so a page renders one unit per spot, never a hidden spare. One low-profile
+ * text_link line per page, at the top of the content (layout); never on the home page.
  */
 export const AD_SLOT = process.env.CRAWLPROOF_AD_SLOT ?? 'cb4310c4-7001-46ca-b625-159ee73df46b'
-export const adBanner = (format: 'banner_300x250' | 'text_link' = 'banner_300x250') =>
-  AD_SLOT === 'off' ? '' : `<div class="ad-unit ad-${format}"><iframe src="https://crawlproof.com/api/ads/frame?slot=${encodeURIComponent(AD_SLOT)}&amp;format=${format}" title="Advertisement" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation" scrolling="no"></iframe></div>`
+export const adBanner = () =>
+  AD_SLOT === 'off' ? '' : `<div class="ad-unit"><iframe src="https://crawlproof.com/api/ads/frame?slot=${encodeURIComponent(AD_SLOT)}&amp;format=text_link" title="Advertisement" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation" scrolling="no"></iframe></div>`
 
 /**
  * crawlproof analytics: one async script, so CSP adds crawlproof.com to script-src
@@ -122,7 +122,8 @@ export function homePage(ctx: Ctx): string {
   <div><h3>Found, not seen</h3><p>List your family so relatives can <a href="/families">find you</a> and ask for an invite. They see the name and a note from you, never the tree.</p></div>
   <div><h3>Everywhere you are</h3><p>Install it as an app, or use the desktop app, the <code>ancestry</code> CLI, the terminal UI, or let your AI assistant read it over MCP.</p></div>
 </section>`,
-    { head: pitVerifyMeta() },
+    // No ad on the home page.
+    { head: pitVerifyMeta(), noAd: true },
   )
 }
 

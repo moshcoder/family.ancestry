@@ -102,7 +102,9 @@ describe('local recommendations', () => {
     expect(res.headers.get('content-security-policy')).toContain('frame-src https://crawlproof.com')
     const net = await (await app.request(`${SITE}/network?circle=neighbors`, { headers: { cookie } })).text()
     expect(net).toContain('Neighbors')
-    expect(await (await app.request(`${SITE}/`)).text()).toContain('format=text_link')
+    expect(page).toContain('format=text_link')
+    // No ad on the home page.
+    expect(await (await app.request(`${SITE}/`)).text()).not.toContain('crawlproof.com/api/ads')
     const api = await app.request(`${SITE}/api/v1/local?q=sacramento`, { headers: { cookie } })
     expect((await api.json()).results[0].name).toBe('Joe Plumbing')
   })

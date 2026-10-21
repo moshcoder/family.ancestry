@@ -51,10 +51,12 @@ describe('server', () => {
     const home = await h.req('/')
     const body = await home.text()
     expect(body).toContain('<script data-site="d6df6a46-dfb8-4a55-a60c-5b7fd5a6975c" src="https://crawlproof.com/stats.js" async></script>')
-    // No ad in or pressed against the footer: the one unit sits at the top of the content.
+    // No ad on the home page; inner pages carry one unit at the top of the content, never against the footer.
     expect(body).not.toContain('data-cp-ad')
-    expect(body).not.toMatch(/ad-unit[^<]*<iframe[^>]*><\/iframe><\/div>\s*<footer/)
-    expect(body).toMatch(/<main[^>]*>[\s\S]*class="ad-unit ad-text_link"[\s\S]*<\/main>/)
+    expect(body).not.toContain('class="ad-unit"')
+    const inner = await (await h.req('/famous')).text()
+    expect(inner).not.toMatch(/ad-unit[^<]*<iframe[^>]*><\/iframe><\/div>\s*<footer/)
+    expect(inner).toMatch(/<main[^>]*>[\s\S]*class="ad-unit"[\s\S]*format=text_link[\s\S]*<\/main>/)
     const csp = home.headers.get('content-security-policy')!
     expect(csp).toContain("style-src 'self' 'unsafe-inline';")
     expect(csp).toContain("script-src 'self' https://crawlproof.com;")
