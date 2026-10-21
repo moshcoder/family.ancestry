@@ -5,7 +5,7 @@
  *                                RESEND_API_KEY + MAIL_FROM for sign-in links
  *                                ADMIN_EMAILS (their trees are on the Family plan, free)
  *                                COINPAY_API_KEY, COINPAY_BUSINESS_ID, COINPAY_WEBHOOK_SECRET,
- *                                FAMILY_PLAN_USD (49) for the one-time Family plan
+ *                                FAMILY_PLAN_USD (49) for the one-time Family plan (CoinPay checkout session)
  */
 import { Hono, type Context } from 'hono'
 import { startPitFooterRefresh } from './pit-footer.js'
@@ -14,12 +14,12 @@ import { RING_PLACEHOLDER, ringBar, startRingRefresh, visitorOnMoshpit } from '.
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { createBridgeClient } from '@profullstack/bridges'
 import { join } from 'node:path'
-import { BONDS, CHILD_RELATIONS, nameFits, Store, UNION_KINDS, unionStatus, bondKind, canEdit, canManage, grantable, inviteRole, fullName, type Business, type InviteRole, newId, type Person, type Role, type Tree, type User } from './db.js'
+import { BONDS, CHILD_RELATIONS, nameFits, Store, UNION_KINDS, unionStatus, bondKind, canEdit, canManage, emailVerified, grantable, inviteRole, fullName, type Business, type InviteRole, newId, type Person, type Role, type Tree, type User } from './db.js'
 import { Auth, SESSION_COOKIE, consoleMailer, resendMailer, resendStatus, safeNext, validEmail, verifyResendWebhook, type Mailer, type MailStatus } from './auth.js'
 import { exportGedcom, importGedcom, describeImport } from './gedcom.js'
 import { CONTACT_KEYS, readContact } from './contact.js'
 import { describeRelation } from './relate.js'
-import { CHAIN_LABELS, SETTLED, hasPlan, isAdmin, planFromEnv, price, readWebhook, startCheckout, verifyWebhook, type PlanConfig } from './plan.js'
+import { hasPlan, isAdmin, planFromEnv, price, readWebhook, startCheckout, verifyWebhook, type PlanConfig } from './plan.js'
 import * as html from './html.js'
 import { Network } from './network.js'
 import { mountNetwork } from './network-routes.js'
@@ -190,7 +190,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     c.header('referrer-policy', 'same-origin')
     c.header('x-frame-options', 'DENY')
     if ((c.res.headers.get('content-type') ?? '').includes('text/html')) {
-      c.header('content-security-policy', "default-src 'self'; frame-src https://crawlproof.com; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self' https://crawlproof.com; connect-src 'self' https://crawlproof.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self' http://127.0.0.1:* http://localhost:*")
+      c.header('content-security-policy', "default-src 'self'; frame-src https://crawlproof.com; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self' https://crawlproof.com; connect-src 'self' https://crawlproof.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://coinpayportal.com http://127.0.0.1:* http://localhost:*")
       c.header('cache-control', 'no-store')
     }
   })
@@ -784,14 +784,14 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   app.get('/t/:tree/plan', (c) => {
     const t = treeFor(c)
     if (t.error) return t.error
-    return c.html(html.planPage(ctx(c), t.tree, t.role, { active: hasPlan(plan, store, t.tree), admin: isAdmin(plan, store.user(t.tree.owner_id)), price: price(plan), chains: plan.coinpay ? plan.chains.map((id) => ({ id, label: CHAIN_LABELS[id] ?? id })) : [], payments: store.paymentsFor(t.tree.id), returned: c.req.query('paid') === '1' }))
+    return c.html(html.planPage(ctx(c), t.tree, t.role, { active: hasPlan(plan, store, t.tree), admin: isAdmin(plan, store.user(t.tree.owner_id)), price: price(plan), payable: Boolean(plan.coinpay), askEmail: !emailVerified(t.user), payments: store.paymentsFor(t.tree.id), returned: c.req.query('paid') === '1' }))
   })
   app.post('/t/:tree/plan/checkout', async (c) => {
     const t = treeFor(c)
     if (t.error) return t.error
     if (hasPlan(plan, store, t.tree)) return c.redirect(`/t/${t.tree.id}/plan`)
     try {
-      const { checkoutUrl } = await startCheckout(plan, store, { tree: t.tree, user: t.user, chain: String((await form(c)).chain ?? ''), successUrl: `${linkBase(c)}/t/${t.tree.id}/plan?paid=1`, cancelUrl: `${linkBase(c)}/t/${t.tree.id}/plan` }, fetcher)
+      const { checkoutUrl } = await startCheckout(plan, store, { tree: t.tree, user: t.user, email: (await form(c)).email, property: publicHost, successUrl: `${linkBase(c)}/t/${t.tree.id}/plan?paid=1`, cancelUrl: `${linkBase(c)}/t/${t.tree.id}/plan` }, fetcher)
       return c.redirect(checkoutUrl)
     } catch (error) {
       console.error(`[plan] checkout failed: ${(error as Error).message}`)
@@ -833,11 +833,13 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     } catch {
       return c.json({ error: 'bad json' }, 400)
     }
-    const { ref, status } = readWebhook(payload)
+    const { sessionId, paymentId, status, paid, type } = readWebhook(payload)
     // Only payments we started count; the tree comes from our row, never from the payload.
-    const known = ref ? store.payment(String(ref)) : null
+    // Rows from before checkout sessions are keyed by the CoinPay payment id.
+    const known = (sessionId ? store.paymentBySession(sessionId) : null) ?? (paymentId ? store.payment(paymentId) : null)
     if (!known) return c.json({ ok: true, ignored: 'unknown payment' })
-    const settled = store.settlePayment(known.ref, status, payload, SETTLED.has(status))
+    const settled = store.settlePayment(known.ref, status, payload, paid)
+    console.log(`[plan] ${type || 'webhook'} ${sessionId ?? paymentId} ${status}${paid ? ' -> paid' : ''}`)
     return c.json({ ok: true, status: settled?.status, paid: Boolean(store.tree(known.tree_id)?.plan_paid_at) })
   })
   app.post('/t/:tree/f/:family', async (c) => {
@@ -1284,7 +1286,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   api.get('/trees/:tree/plan', (c) => {
     const t = treeFor(c)
     if (t.error) return t.error
-    return c.json({ active: hasPlan(plan, store, t.tree), paid_at: t.tree.plan_paid_at, price: price(plan), chains: plan.coinpay ? plan.chains : [], url: `${site}/t/${t.tree.id}/plan` })
+    return c.json({ active: hasPlan(plan, store, t.tree), paid_at: t.tree.plan_paid_at, price: price(plan), payable: Boolean(plan.coinpay), url: `${site}/t/${t.tree.id}/plan` })
   })
   api.post('/trees/:tree/plan/checkout', async (c) => {
     const t = treeFor(c)
@@ -1292,7 +1294,8 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     if (hasPlan(plan, store, t.tree)) return c.json({ active: true })
     try {
       const body = await json(c)
-      return c.json(await startCheckout(plan, store, { tree: t.tree, user: t.user, chain: String(body.chain ?? plan.chains[0] ?? ''), successUrl: `${publicSite}/t/${t.tree.id}/plan?paid=1`, cancelUrl: `${publicSite}/t/${t.tree.id}/plan` }, fetcher), 201)
+      const r = await startCheckout(plan, store, { tree: t.tree, user: t.user, email: body.email, property: publicHost, successUrl: `${publicSite}/t/${t.tree.id}/plan?paid=1`, cancelUrl: `${publicSite}/t/${t.tree.id}/plan` }, fetcher)
+      return c.json({ ...r, url: r.checkoutUrl }, 201)
     } catch (error) {
       return bad(c, error)
     }

@@ -94,7 +94,7 @@ export type Invite = { id: string; tree_id: string; role: InviteRole; email: str
 /** sent, delivered, bounced, complained, failed (we could not send), held (over the day's invite limit), and Resend's other events. */
 export type InviteMail = { mail_id?: string | null; mail_status: string; mail_error?: string | null }
 export type Association = { id: string; tree_id: string; person_id: string; other_id: string; kind: string; note: string | null; created_at: number }
-export type Payment = { ref: string; tree_id: string; user_id: string; amount_cents: number; currency: string; chain: string | null; status: string; created_at: number; updated_at: number }
+export type Payment = { ref: string; tree_id: string; user_id: string; amount_cents: number; currency: string; chain: string | null; checkout_session_id: string | null; status: string; created_at: number; updated_at: number }
 export type Business = {
   id: string
   tree_id: string
@@ -465,6 +465,10 @@ export class Store {
     this.db.run('CREATE INDEX IF NOT EXISTS people_origin ON people(origin_key)')
     const treeCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('trees')").all().map((c) => c.name)
     if (!treeCols.includes('plan_paid_at')) this.db.run('ALTER TABLE trees ADD COLUMN plan_paid_at INTEGER')
+    // 0.24.0: the Family plan is paid through a CoinPay checkout session; the webhook finds the row by it.
+    const paymentCols = this.db.query<{ name: string }, []>('PRAGMA table_info(payments)').all().map((r) => r.name)
+    if (!paymentCols.includes('checkout_session_id')) this.db.run('ALTER TABLE payments ADD COLUMN checkout_session_id TEXT')
+    this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS payments_session ON payments(checkout_session_id) WHERE checkout_session_id IS NOT NULL')
     // 0.5.0: photos of a business.
     const mediaCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('media')").all().map((c) => c.name)
     if (!mediaCols.includes('business_id')) this.db.run('ALTER TABLE media ADD COLUMN business_id TEXT REFERENCES businesses(id) ON DELETE SET NULL')
@@ -1433,27 +1437,37 @@ export class Store {
     this.db.query('UPDATE trees SET plan_paid_at = coalesce(plan_paid_at, ?) WHERE id = ?').run(this.now(), treeId)
   }
 
-  recordPayment(p: { ref: string; tree_id: string; user_id: string; amount_cents: number; currency: string; chain: string | null; raw: unknown }) {
+  recordPayment(p: { ref: string; tree_id: string; user_id: string; amount_cents: number; currency: string; chain: string | null; checkout_session_id?: string | null; raw: unknown }) {
     this.db
-      .query('INSERT OR IGNORE INTO payments (ref,tree_id,user_id,amount_cents,currency,chain,status,raw,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
-      .run(p.ref, p.tree_id, p.user_id, p.amount_cents, p.currency, p.chain, 'pending', JSON.stringify(p.raw ?? null), this.now(), this.now())
+      .query('INSERT OR IGNORE INTO payments (ref,tree_id,user_id,amount_cents,currency,chain,checkout_session_id,status,raw,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .run(p.ref, p.tree_id, p.user_id, p.amount_cents, p.currency, p.chain, p.checkout_session_id ?? null, 'pending', JSON.stringify(p.raw ?? null), this.now(), this.now())
   }
 
   payment(ref: string): Payment | null {
-    return this.db.query<Payment, [string]>('SELECT ref,tree_id,user_id,amount_cents,currency,chain,status,created_at,updated_at FROM payments WHERE ref = ?').get(ref) ?? null
+    return this.db.query<Payment, [string]>('SELECT ref,tree_id,user_id,amount_cents,currency,chain,checkout_session_id,status,created_at,updated_at FROM payments WHERE ref = ?').get(ref) ?? null
+  }
+
+  paymentBySession(sessionId: string): Payment | null {
+    return this.db.query<Payment, [string]>('SELECT ref,tree_id,user_id,amount_cents,currency,chain,checkout_session_id,status,created_at,updated_at FROM payments WHERE checkout_session_id = ?').get(sessionId) ?? null
   }
 
   paymentsFor(treeId: string): Payment[] {
-    return this.db.query<Payment, [string]>('SELECT ref,tree_id,user_id,amount_cents,currency,chain,status,created_at,updated_at FROM payments WHERE tree_id = ? ORDER BY created_at DESC').all(treeId)
+    return this.db.query<Payment, [string]>('SELECT ref,tree_id,user_id,amount_cents,currency,chain,checkout_session_id,status,created_at,updated_at FROM payments WHERE tree_id = ? ORDER BY created_at DESC').all(treeId)
   }
 
-  /** Record a webhook's status. Settling marks the tree paid, in the same transaction. Unknown refs are ignored. */
+  /**
+   * Record a webhook's status. Settling marks the tree paid, in the same transaction; a row once
+   * paid stays paid (a session can send confirmed and then forwarded, or a late expired).
+   */
   settlePayment(ref: string, status: string, raw: unknown, settled: boolean): Payment | null {
     return this.tx(() => {
-      this.db.query('UPDATE payments SET status = ?, raw = ?, updated_at = ? WHERE ref = ?').run(status || 'unknown', JSON.stringify(raw ?? null), this.now(), ref)
-      const p = this.payment(ref)
-      if (p && settled) this.markPaid(p.tree_id)
-      return p
+      const before = this.payment(ref)
+      if (!before) return null
+      if (before.status !== 'paid' || settled) {
+        this.db.query('UPDATE payments SET status = ?, raw = ?, updated_at = ? WHERE ref = ?').run(settled ? 'paid' : status || 'unknown', JSON.stringify(raw ?? null), this.now(), ref)
+      }
+      if (settled) this.markPaid(before.tree_id)
+      return this.payment(ref)
     })
   }
 

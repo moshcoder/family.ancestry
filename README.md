@@ -95,7 +95,7 @@ ancestry add --given Sam --sibling-of Lily --sibling half --via Robert
 ancestry add --given Rose --grandparent-of Lily --raised   # parents unknown: an "Unknown" parent goes between
 ancestry bond Lily godparent "Aunt Karen"
 ancestry pet Lily Rex --species Dog       # Family plan
-ancestry plan                             # ancestry plan buy --chain USDC_POL
+ancestry plan                             # ancestry plan buy: a CoinPay link, any coin or PayPal
 ancestry claim "Lily Ettinger"            # this is me
 ancestry business add "Ettinger Plumbing" --category Plumbing --founded 1952 --place Sacramento --founder Karl
 ancestry business role "Ettinger Plumbing" Robert owner --title "Master plumber" --from 1971 --to 1990
@@ -146,7 +146,7 @@ as you: it sees the trees you see, and changes only the ones you can edit.
 | `POST /api/v1/trees/:tree/people` | add (`{given, surname, ..., relative_of?, as?: parent\|partner\|child\|sibling\|grandparent, relation?, sibling?: full\|half\|adopted\|foster\|step, via?, raised?, existing_id?}`) |
 | `POST /api/v1/trees/:tree/people/:id/bonds`, `DELETE .../bonds/:bond` | a bond (`{kind: raised_by\|guardian\|godparent\|caregiver\|chosen_family, other_id or person fields, note?}`) |
 | `POST /api/v1/trees/:tree/pets` | a pet (`{owner_id(s), given, species?}`); 402 without the Family plan |
-| `GET /api/v1/trees/:tree/plan`, `POST .../plan/checkout` | the Family plan; start a payment (`{chain}`) |
+| `GET /api/v1/trees/:tree/plan`, `POST .../plan/checkout` | the Family plan; start a CoinPay checkout session (`{email?}`; email only when the account has none), answers `{url, sessionId}` |
 | `POST /api/v1/trees/:tree/claim` | this is me (`{person_id}`) or add me (person fields) |
 | `GET/PATCH/DELETE /api/v1/trees/:tree/people/:id` | one person, with parents, siblings (and their kind), partners, children, bonds, pets, events, sources, photos |
 | `POST /api/v1/trees/:tree/people/:id/events` | add a life event |
@@ -179,17 +179,18 @@ as you: it sees the trees you see, and changes only the ones you can edit.
 
 ## Family plan
 
-One payment per tree, once, for good: **$49** (`FAMILY_PLAN_USD`), in crypto through
-CoinPay. It covers the whole family: pets, pasting up to 500 invites at a time, and no
+One payment per tree, once, for good: **$49** (`FAMILY_PLAN_USD`), through a CoinPay
+hosted checkout: the buyer picks any coin the business takes, or PayPal. It covers the whole family: pets, pasting up to 500 invites at a time, and no
 daily invitation limit for anyone in the tree (a 2,000/day ceiling only stops runaway
 scripts). Everything else stays free. Trees owned by an `ADMIN_EMAILS` account are on
 the plan without paying.
 
 The server needs `COINPAY_API_KEY`, `COINPAY_BUSINESS_ID` and `COINPAY_WEBHOOK_SECRET`,
-with the business's webhook pointed at `/webhooks/coinpay`. A payment is written down
-before the buyer leaves; the signed webhook settles it, and only a payment we started
-can mark a tree paid. `COINPAY_CHAINS` limits checkout to chains the business holds
-wallets for.
+with the business's webhook pointed at `/webhooks/coinpay`. Each purchase is a checkout
+session (customer email, `account_id` = user id, `property` = the site's host, metadata
+`tree_id`, `user_id`, `product: family_plan`, `payment_ref`), written down by its session id
+before the buyer leaves. The signed webhook (`payment.confirmed` or `payment.forwarded`, a
+PayPal capture included) settles it, once; only a session we started can mark a tree paid.
 
 ## Businesses
 

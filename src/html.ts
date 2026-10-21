@@ -9,7 +9,7 @@ import { pitFooter } from './pit-footer.js'
 import { ringFooter, ringFooterOptions, setRingFooterOptions } from './ring-footer.js'
 import { BONDS, UNION_KINDS, UNION_ENDS, canManage, grantable, fullName, lifespan, type Business, type Circle, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.23.1'
+export const VERSION = '0.24.0'
 
 // The footer's own links; the ring nav and copyright come from @profullstack/footer.
 setRingFooterOptions(
@@ -802,12 +802,12 @@ ${rest.length ? `<details class="panel"${likely.length ? '' : ' open'}><summary>
   )
 }
 
-export function planPage(ctx: Ctx, tree: Tree, role: Role, v: { active: boolean; admin: boolean; price: string; chains: { id: string; label: string }[]; payments: Payment[]; returned: boolean }): string {
+export function planPage(ctx: Ctx, tree: Tree, role: Role, v: { active: boolean; admin: boolean; price: string; payable: boolean; askEmail: boolean; payments: Payment[]; returned: boolean }): string {
   const pending = v.payments.find((p) => p.status === 'pending')
   const status = v.active
     ? `<p class="panel"><b>${esc(tree.name)} is on the Family plan.</b> ${v.admin && !tree.plan_paid_at ? 'Included with your admin account.' : tree.plan_paid_at ? `Paid ${new Date(tree.plan_paid_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}. Nothing more to pay, ever.` : ''}</p>`
     : v.returned || pending
-      ? `<p class="panel">Waiting for the payment to confirm on its chain. This page will say so once it has; a few minutes is normal, an hour for Bitcoin.</p>`
+      ? `<p class="panel">Waiting for the payment to confirm. This page will say so once it has: PayPal is quick, coins take a few minutes, Bitcoin up to an hour.</p>`
       : ''
   return layout(
     ctx,
@@ -823,8 +823,8 @@ ${status}
 ${
   v.active
     ? ''
-    : v.chains.length
-      ? `<form method="post" action="/t/${tree.id}/plan/checkout" class="panel pform">${csrfField(ctx)}<label>Pay with<select name="chain">${v.chains.map((c) => `<option value="${esc(c.id)}">${esc(c.label)}</option>`).join('')}</select></label><button>Pay ${esc(v.price)}</button><p class="muted small">Crypto, through CoinPay. ${role === 'owner' ? '' : 'Anyone in the family can pay; it covers the whole tree.'}</p></form>`
+    : v.payable
+      ? `<form method="post" action="/t/${tree.id}/plan/checkout" class="panel pform">${csrfField(ctx)}${v.askEmail ? '<label>Email for the receipt<input name="email" type="email" required autocomplete="email"></label>' : ''}<button>Pay ${esc(v.price)}</button><p class="muted small">Through CoinPay: pick any coin they take, or PayPal, on the next page. ${role === 'owner' ? '' : 'Anyone in the family can pay; it covers the whole tree.'}</p></form>`
       : '<p class="muted">Payments are not set up on this server yet.</p>'
 }`,
     { crumbs: [['/trees', 'Trees'], [`/t/${tree.id}`, tree.name], ['', 'Family plan']] },

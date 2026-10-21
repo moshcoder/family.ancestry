@@ -40,7 +40,7 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
   ancestry status <person> <partner> <married|engaged|partners|dating|separated|divorced|widowed>
                                     their relationship status: "status David Karen married"
   ancestry pet <owner> <name> [--species Dog] [--born DATE]   (Family plan)
-  ancestry plan [buy --chain USDC_POL]     the one-time Family plan for this tree
+  ancestry plan [buy [--email you@x]]     the one-time Family plan for this tree (coin or PayPal)
   ancestry claim [person]           say which person you are (or add yourself)
   ancestry businesses [search]      family businesses (search matches names, trades, towns, people)
   ancestry business <name|id>       one business and its people
@@ -762,12 +762,12 @@ export async function runCli(argv: string[]): Promise<number> {
       case 'plan': {
         const tree = await pickTree(client, f.tree)
         if (rest[0] === 'buy') {
-          const r = await client.planCheckout(tree.id, str(f.chain))
-          print(r, () => ('active' in r && r.active ? `${tree.name} is already on the Family plan.` : `Pay here: ${(r as any).checkoutUrl}`))
+          const r = await client.planCheckout(tree.id, str(f.email))
+          print(r, () => ('active' in r && r.active ? `${tree.name} is already on the Family plan.` : `Pay here (any coin or PayPal): ${(r as any).url}`))
           return 0
         }
         const plan = await client.plan(tree.id)
-        print(plan, () => (plan.active ? `${tree.name} is on the Family plan: pets, and invite everyone you want.` : `${tree.name} is on the free plan. The Family plan is ${plan.price} once: ancestry plan buy --chain ${plan.chains[0] ?? 'USDC_POL'}\n  or ${plan.url}`))
+        print(plan, () => (plan.active ? `${tree.name} is on the Family plan: pets, and invite everyone you want.` : `${tree.name} is on the free plan. The Family plan is ${plan.price} once: ancestry plan buy\n  or ${plan.url}`))
         return 0
       }
       case 'feed': {
