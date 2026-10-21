@@ -24,10 +24,11 @@ function world(env: Record<string, string> = {}) {
   const store = new Store(':memory:')
   const mail: Mail[] = []
   const auth = new Auth(store, async (m) => void mail.push(m), SITE)
-  const calls: { url: string; body: any }[] = []
+  const calls: { url: string; body: any; auth: string | null }[] = []
   const fetcher = (async (url: string, init: RequestInit) => {
-    calls.push({ url, body: JSON.parse(String(init.body)) })
-    return new Response(JSON.stringify({ success: true, payment: { id: `pay_${calls.length}` } }), { status: 200 })
+    calls.push({ url, body: JSON.parse(String(init.body)), auth: new Headers(init.headers).get('authorization') })
+    const id = `cs_${calls.length}`
+    return new Response(JSON.stringify({ success: true, id, url: `https://coinpay.test/checkout/${id}`, status: 'open', methods: ['USDC_POL', 'BTC', 'PAYPAL'], expires_at: null }), { status: 201 })
   }) as unknown as typeof fetch
   const plan = planFromEnv(env)
   const app = createApp({ store, auth, site: SITE, net: new Network(store), plan, fetcher })
@@ -38,7 +39,7 @@ function world(env: Record<string, string> = {}) {
       post: (path: string, fields: Record<string, string> = {}) => app.request(`${SITE}${path}`, { method: 'POST', headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ _csrf: CSRF, ...fields }) }),
     }
   }
-  return { store, mail, app, as, calls, plan, user: (email: string) => store.findOrCreateUser(email) }
+  return { store, mail, app, as, calls, plan, auth, user: (email: string) => store.findOrCreateUser(email) }
 }
 
 describe('siblings', () => {
@@ -233,33 +234,108 @@ describe('Family plan payment', () => {
   const env = { COINPAY_API_KEY: 'cp_live_x', COINPAY_BUSINESS_ID: 'biz', COINPAY_WEBHOOK_SECRET: 'whsec', COINPAY_API_URL: 'https://coinpay.test/api', FAMILY_PLAN_USD: '49' }
   const sign = (body: string, secret = 'whsec', t = Math.floor(Date.now() / 1000)) => `t=${t},v1=${createHmac('sha256', secret).update(`${t}.${body}`).digest('hex')}`
 
-  test('checkout, then a signed settled webhook marks the tree paid once', async () => {
+  const hook = (w: ReturnType<typeof world>, payload: unknown, secret = 'whsec') => {
+    const body = JSON.stringify(payload)
+    return w.app.request(`${SITE}/webhooks/coinpay`, { method: 'POST', body, headers: { 'content-type': 'application/json', 'x-coinpay-signature': sign(body, secret) } })
+  }
+  const event = (type: string, data: Record<string, unknown>) => ({ id: `evt_${type}`, type, business_id: 'biz', data: { payment_id: 'pay_9', amount_usd: 49, ...data } })
+
+  test('checkout opens a CoinPay session for the signed-in buyer, no chain picked', async () => {
     const w = world(env)
     const u = w.user('payer@example.com')
     const tree = w.store.createTree(u.id, 'Fam')
-    const res = await w.as(u).post(`/t/${tree.id}/plan/checkout`, { chain: 'USDC_POL' })
-    expect(res.headers.get('location')).toBe('https://coinpay.test/pay/pay_1')
-    expect(w.calls[0]!.url).toBe('https://coinpay.test/api/payments/create')
-    expect(w.calls[0]!.body).toMatchObject({ business_id: 'biz', amount: 49, blockchain: 'USDC_POL', metadata: { tree_id: tree.id } })
+    const page = await (await w.as(u).get(`/t/${tree.id}/plan`)).text()
+    expect(page).not.toContain('name="chain"')
+    expect(page).not.toContain('name="email"')
+    const res = await w.as(u).post(`/t/${tree.id}/plan/checkout`)
+    expect(res.headers.get('location')).toBe('https://coinpay.test/checkout/cs_1')
+    expect(w.calls[0]!.url).toBe('https://coinpay.test/api/checkout/sessions')
+    expect(w.calls[0]!.auth).toBe('Bearer cp_live_x')
+    const sent = w.calls[0]!.body
+    expect(sent).toMatchObject({ amount: 49, currency: 'USD', customer_email: 'payer@example.com', account_id: u.id, property: 'family.test', success_url: `${SITE}/t/${tree.id}/plan?paid=1`, cancel_url: `${SITE}/t/${tree.id}/plan`, metadata: { tree_id: tree.id, user_id: u.id, product: 'family_plan' } })
+    expect(sent.blockchain).toBeUndefined()
+    expect(sent.payment_method).toBeUndefined()
+    const row = w.store.paymentBySession('cs_1')!
+    expect(row).toMatchObject({ tree_id: tree.id, user_id: u.id, status: 'pending', amount_cents: 4900 })
+    expect(sent.metadata.payment_ref).toBe(row.ref)
+  })
 
-    const pending = JSON.stringify({ type: 'payment.pending', data: { payment_id: 'pay_1', status: 'pending' } })
-    await w.app.request(`${SITE}/webhooks/coinpay`, { method: 'POST', body: pending, headers: { 'content-type': 'application/json', 'coinpay-signature': sign(pending) } })
+  test('an account without an email is asked for one; the API answers the url', async () => {
+    const w = world(env)
+    const u = w.user('did123@pit.invalid')
+    const tree = w.store.createTree(u.id, 'Fam')
+    expect(await (await w.as(u).get(`/t/${tree.id}/plan`)).text()).toContain('name="email"')
+    const none = await w.as(u).post(`/t/${tree.id}/plan/checkout`)
+    expect(none.headers.get('location')).toContain('email')
+    expect(w.calls).toHaveLength(0)
+    await w.as(u).post(`/t/${tree.id}/plan/checkout`, { email: 'Me@Example.com' })
+    expect(w.calls[0]!.body.customer_email).toBe('me@example.com')
+
+    const api = (body: unknown) => w.app.request(`${SITE}/api/v1/trees/${tree.id}/plan/checkout`, { method: 'POST', headers: { authorization: `Bearer ${w.auth.createToken(u.id, 'test')}`, 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    expect((await api({})).status).toBe(400)
+    const ok = await api({ email: 'me@example.com' })
+    expect(ok.status).toBe(201)
+    expect(await ok.json()).toMatchObject({ url: 'https://coinpay.test/checkout/cs_2', sessionId: 'cs_2' })
+    const info = await (await w.app.request(`${SITE}/api/v1/trees/${tree.id}/plan`, { headers: { authorization: `Bearer ${w.auth.createToken(u.id, 'test')}` } })).json()
+    expect(info).toMatchObject({ active: false, payable: true })
+    expect(info.chains).toBeUndefined()
+
+  })
+
+  test('the webhook settles by session id: nested, PayPal completed, forwarded, once', async () => {
+    const w = world(env)
+    const u = w.user('payer@example.com')
+    const tree = w.store.createTree(u.id, 'Fam')
+    await w.as(u).post(`/t/${tree.id}/plan/checkout`)
+
+    // Not paid: pending, expired.
+    expect(await (await hook(w, event('payment.pending', { status: 'pending', checkout_session_id: 'cs_1' }))).json()).toMatchObject({ ok: true, paid: false })
+    expect(await (await hook(w, event('payment.expired', { status: 'expired', checkout_session_id: 'cs_1' }))).json()).toMatchObject({ ok: true, paid: false })
     expect(w.store.tree(tree.id)!.plan_paid_at).toBeNull()
 
-    const forged = JSON.stringify({ type: 'payment.confirmed', data: { payment_id: 'pay_1', status: 'confirmed' } })
-    const bad = await w.app.request(`${SITE}/webhooks/coinpay`, { method: 'POST', body: forged, headers: { 'content-type': 'application/json', 'coinpay-signature': sign(forged, 'wrong') } })
-    expect(bad.status).toBe(401)
+    // A bad signature is refused and grants nothing.
+    const forged = event('payment.confirmed', { status: 'confirmed', checkout_session_id: 'cs_1' })
+    expect((await hook(w, forged, 'wrong')).status).toBe(401)
     expect(w.store.tree(tree.id)!.plan_paid_at).toBeNull()
 
-    const ok = await w.app.request(`${SITE}/webhooks/coinpay`, { method: 'POST', body: forged, headers: { 'content-type': 'application/json', 'coinpay-signature': sign(forged) } })
-    expect(await ok.json()).toMatchObject({ ok: true, paid: true })
+    // A PayPal capture: payment.confirmed with status completed.
+    const paypal = await hook(w, event('payment.confirmed', { status: 'completed', rail: 'paypal', checkout_session_id: 'cs_1', metadata: { tree_id: tree.id } }))
+    expect(await paypal.json()).toMatchObject({ ok: true, paid: true, status: 'paid' })
+    const paidAt = w.store.tree(tree.id)!.plan_paid_at
+    expect(paidAt).toBeNumber()
+
+    // Forwarded after confirmed, and a replay: still paid once, same time.
+    expect(await (await hook(w, event('payment.forwarded', { status: 'forwarded', checkout_session_id: 'cs_1' }))).json()).toMatchObject({ paid: true, status: 'paid' })
+    expect(await (await hook(w, event('payment.expired', { status: 'expired', checkout_session_id: 'cs_1' }))).json()).toMatchObject({ paid: true, status: 'paid' })
+    expect(w.store.tree(tree.id)!.plan_paid_at).toBe(paidAt)
+    expect(w.store.paymentsFor(tree.id)).toHaveLength(1)
+  })
+
+  test('forwarded alone counts as paid (a lost confirmed is recovered)', async () => {
+    const w = world(env)
+    const u = w.user('payer@example.com')
+    const tree = w.store.createTree(u.id, 'Fam')
+    await w.as(u).post(`/t/${tree.id}/plan/checkout`)
+    expect(await (await hook(w, event('payment.forwarded', { status: 'forwarded', checkout_session_id: 'cs_1' }))).json()).toMatchObject({ paid: true })
     expect(w.store.tree(tree.id)!.plan_paid_at).toBeNumber()
+  })
 
-    // A payment we never started settles nothing, whatever its metadata says.
+  test('a session we never started settles nothing, whatever its metadata says', async () => {
+    const w = world(env)
+    const u = w.user('payer@example.com')
     const other = w.store.createTree(u.id, 'Other')
-    const stray = JSON.stringify({ data: { payment_id: 'pay_x', status: 'confirmed', metadata: { tree_id: other.id } } })
-    await w.app.request(`${SITE}/webhooks/coinpay`, { method: 'POST', body: stray, headers: { 'content-type': 'application/json', 'coinpay-signature': sign(stray) } })
+    const res = await hook(w, event('payment.confirmed', { status: 'confirmed', checkout_session_id: 'cs_x', metadata: { tree_id: other.id, product: 'family_plan' } }))
+    expect(await res.json()).toMatchObject({ ignored: 'unknown payment' })
     expect(w.store.tree(other.id)!.plan_paid_at).toBeNull()
+  })
+
+  test('older rows keyed by the CoinPay payment id still settle', async () => {
+    const w = world(env)
+    const u = w.user('payer@example.com')
+    const tree = w.store.createTree(u.id, 'Fam')
+    w.store.recordPayment({ ref: 'pay_old', tree_id: tree.id, user_id: u.id, amount_cents: 4900, currency: 'USD', chain: 'USDC_POL', raw: null })
+    await hook(w, event('payment.confirmed', { payment_id: 'pay_old', status: 'confirmed' }))
+    expect(w.store.tree(tree.id)!.plan_paid_at).toBeNumber()
   })
 
   test('signatures expire', () => {

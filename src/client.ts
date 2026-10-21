@@ -272,10 +272,11 @@ export class AncestryClient {
     return this.request<{ pet: PersonDetail }>(`/api/v1/trees/${enc(tree)}/pets`, { method: 'POST', json: fields }).then((r) => r.pet)
   }
   plan(tree: string) {
-    return this.request<{ active: boolean; paid_at: number | null; price: string; chains: string[]; url: string }>(`/api/v1/trees/${enc(tree)}/plan`)
+    return this.request<{ active: boolean; paid_at: number | null; price: string; payable: boolean; url: string }>(`/api/v1/trees/${enc(tree)}/plan`)
   }
-  planCheckout(tree: string, chain?: string) {
-    return this.request<{ checkoutUrl: string; ref: string } | { active: true }>(`/api/v1/trees/${enc(tree)}/plan/checkout`, { method: 'POST', json: { chain } })
+  /** Starts a CoinPay checkout session; the buyer picks a coin or PayPal at `url`. */
+  planCheckout(tree: string, email?: string) {
+    return this.request<{ checkoutUrl: string; url: string; ref: string; sessionId: string } | { active: true }>(`/api/v1/trees/${enc(tree)}/plan/checkout`, { method: 'POST', json: email ? { email } : {} })
   }
   claim(tree: string, body: Record<string, unknown>) {
     return this.request<{ person: PersonDetail }>(`/api/v1/trees/${enc(tree)}/claim`, { method: 'POST', json: body }).then((r) => r.person)
