@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto'
 import { formatAddresses, formatLabeled, hasContact, readContact, socialUrl, type PersonContact } from './contact.js'
 import { readFileSync } from 'node:fs'
+import { COLUMNS as PROFILE_COLUMNS, renderProfileFields } from '@profullstack/profile'
 import { pitFooter } from './pit-footer.js'
 import { ringFooter, ringFooterOptions, setRingFooterOptions } from './ring-footer.js'
 import { BONDS, UNION_KINDS, UNION_ENDS, canManage, grantable, fullName, lifespan, type Business, type Circle, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
@@ -126,13 +127,16 @@ export function homePage(ctx: Ctx): string {
   )
 }
 
+/** The shared profile fields (@profullstack/profile) beside the form's own email box. */
+export const PROFILE_FIELDS = PROFILE_COLUMNS.filter((f) => f !== 'email')
+
 export function signInForm(ctx: Ctx, next: string | null = null): string {
   return `<form class="signin" method="post" action="/auth/link">
   ${csrfField(ctx)}
   ${next ? `<input type="hidden" name="next" value="${esc(next)}">` : ''}
   <label for="email">Email</label>
   <div class="row"><input id="email" name="email" type="email" autocomplete="email webauthn" required placeholder="you@example.com"><button>Email me a link</button></div>
-  <p class="muted small">No password. New here? The same link makes your account. <button type="button" class="link" data-passkey-signin hidden>Sign in with a passkey</button></p>
+  <p class="muted small">No password. New here? <a href="/signup${next ? `?next=${encodeURIComponent(next)}` : ''}">Create an account</a>. <button type="button" class="link" data-passkey-signin hidden>Sign in with a passkey</button></p>
 </form>
 <p class="pitworld"><a class="btn" href="/auth/pitworld${next ? `?next=${encodeURIComponent(next)}` : ''}">Sign in with pit.world</a> <span class="muted small">One account for every pit.world site, signed in with CoinPay.</span></p>`
 }
@@ -165,6 +169,24 @@ export function addOrNewPage(ctx: Ctx, email: string, token: string): string {
 
 export function signInPage(ctx: Ctx, next: string | null): string {
   return layout(ctx, 'Sign in', `<h1>Sign in or sign up</h1>${signInForm(ctx, next)}`)
+}
+
+/** Creating an account: the email box plus the shared profile fields. Plain sign-in never asks for them. */
+export function signUpPage(ctx: Ctx, next: string | null, values: Record<string, unknown> = {}, errors: Record<string, string> = {}): string {
+  return layout(ctx, 'Create your account', `<h1>Create your account</h1>
+<form class="signin signup" method="post" action="/auth/link">
+  ${csrfField(ctx)}
+  <input type="hidden" name="mode" value="signup">
+  ${next ? `<input type="hidden" name="next" value="${esc(next)}">` : ''}
+  <label for="email">Email</label>
+  <input id="email" name="email" type="email" autocomplete="email" required placeholder="you@example.com" value="${esc(String(values.email ?? ''))}">
+  ${errors.email ? `<p class="pfs-profile__error" role="alert">${esc(errors.email)}</p>` : ''}
+  ${renderProfileFields({ fields: PROFILE_FIELDS, values: values as Record<string, string>, errors })}
+  <p><button>Email me a link</button></p>
+  <p class="muted small">No password: we email you a link that makes your account. Already have one? <a href="/signin${next ? `?next=${encodeURIComponent(next)}` : ''}">Sign in</a>.</p>
+</form>
+<script src="/vendor-profile.js" defer></script>
+<p class="pitworld"><a class="btn" href="/auth/pitworld${next ? `?next=${encodeURIComponent(next)}` : ''}">Sign in with pit.world</a> <span class="muted small">One account for every pit.world site, signed in with CoinPay.</span></p>`)
 }
 
 export function checkEmailPage(ctx: Ctx): string {
@@ -845,13 +867,14 @@ ${ctx.user ? `<form method="post" action="/invite/${esc(token)}">${csrfField(ctx
   )
 }
 
-export function settingsPage(ctx: Ctx, data: { passkeys: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; tokens: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; newToken?: string | null; profile?: string; addons?: string; emails?: string[]; pitWorld?: { linked: boolean } | null }): string {
+export function settingsPage(ctx: Ctx, data: { passkeys: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; tokens: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; newToken?: string | null; profile?: string; addons?: string; emails?: string[]; pitWorld?: { linked: boolean } | null; details?: object | null; detailsErrors?: Record<string, string> }): string {
   const when = (t: number | null) => (t ? new Date(t).toISOString().slice(0, 10) : 'never')
   return layout(
     ctx,
     'Settings',
     `<h1>Settings</h1>
 <form method="post" action="/settings/name" class="panel pform">${csrfField(ctx)}<h2>Your name</h2><label>Shown to other members of your trees<input name="name" value="${esc(ctx.user?.name ?? '')}" maxlength="120"></label><p class="muted small">Signed in as ${esc(ctx.user?.email.endsWith('@pit.invalid') ? 'your pit.world account' : ctx.user?.email)}</p><button>Save</button></form>
+<form method="post" action="/settings/details" class="panel pform" id="details">${csrfField(ctx)}<h2>Your details</h2><p class="muted small">Private to your account, never shown on your trees or profile.</p>${renderProfileFields({ fields: PROFILE_FIELDS, values: (data.details ?? {}) as Record<string, string | null>, errors: data.detailsErrors, idPrefix: 'details-' })}<button>Save details</button></form>
 <section class="panel"><h2>Sign-in emails</h2><p class="muted small">Every address here signs in to this one account. Add the others you use so a sign-in link to any of them opens your trees, not a new, empty account.</p>
 <ul>${ctx.user?.email.endsWith('@pit.invalid') ? '' : `<li>${esc(ctx.user?.email)} <span class="muted small">main</span></li>`}${(data.emails ?? []).map((e) => `<li>${esc(e)} <form method="post" action="/settings/emails/remove" class="inline">${csrfField(ctx)}<input type="hidden" name="email" value="${esc(e)}"><button class="x" title="Stop signing in with ${esc(e)}">×</button></form></li>`).join('')}</ul>
 <form method="post" action="/settings/emails" class="row">${csrfField(ctx)}<input name="email" type="email" placeholder="another@example.com" required maxlength="254"><button>Add an email</button></form></section>

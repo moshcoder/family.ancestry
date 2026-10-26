@@ -303,3 +303,9 @@ label.check.pickrow { margin: 4px 0; }
 .sposts .tag, .stable .tag { font-size: .75rem; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
 .stable { width: 100%; border-collapse: collapse; margin: 12px 0; display: block; overflow-x: auto; }
 .stable th, .stable td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+
+/* The shared profile fields (@profullstack/profile renderProfileFields), read like the email box beside them. */
+.pfs-profile { border: 0; margin: 0; padding: 0; min-width: 0; }
+.pfs-profile__optional { color: var(--muted); font-weight: 400; }
+.pfs-profile__error { color: var(--danger, #b3261e); font-size: .85rem; margin: .25rem 0 0; }
+.pfs-profile__row { margin: 0 0 10px; } .pfs-profile__row label { margin: 0 0 3px; }
