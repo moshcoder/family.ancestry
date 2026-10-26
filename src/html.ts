@@ -75,7 +75,6 @@ ${opts.noAd ? '' : adBanner()}
 ${ctx.flash ? `<p class="flash">${esc(ctx.flash)}</p>` : ''}${ctx.error ? `<p class="flash error">${esc(ctx.error)}</p>` : ''}
 ${body}
 </main>
-<p class="foot-badge"><a href="https://built.indie.pit.world/p/family-ancestry?ref=badge"><img src="https://built.indie.pit.world/badge/family-ancestry.svg" alt="family.ancestry on built.indie" width="200" height="44"></a></p>
 ${ringFooter()}${statsScript()}
 ${pitFooter()}
 </body>
