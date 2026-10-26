@@ -271,8 +271,19 @@ export class AncestryClient {
   addPet(tree: string, fields: Record<string, unknown>) {
     return this.request<{ pet: PersonDetail }>(`/api/v1/trees/${enc(tree)}/pets`, { method: 'POST', json: fields }).then((r) => r.pet)
   }
+  /** Redeem a credit code (Family plan days); `tree` says which family gets them. */
+  redeem(code: string, tree?: string) {
+    return this.request<{ ok: true; message: string; days: number; applied: { tree_id: string; days: number; until: string } | null; plan_days: number }>('/api/v1/redeem', { method: 'POST', json: tree ? { code, tree } : { code } })
+  }
+  /** Your invite links (three each) and your open affiliate link. */
+  inviteLinks() {
+    return this.request<{ quota: { total: number; used: number; left: number }; invites: { id: string; note: string; createdAt: number; expiresAt: number | null; usedAt: number | null }[]; affiliate_link: string }>('/api/v1/invites')
+  }
+  createInviteLink(note?: string) {
+    return this.request<{ link: string; code: string; expires_at: string | null; left: number }>('/api/v1/invites', { method: 'POST', json: note ? { note } : {} })
+  }
   plan(tree: string) {
-    return this.request<{ active: boolean; paid_at: number | null; price: string; payable: boolean; url: string }>(`/api/v1/trees/${enc(tree)}/plan`)
+    return this.request<{ active: boolean; paid_at: number | null; until?: number | null; price: string; payable: boolean; url: string }>(`/api/v1/trees/${enc(tree)}/plan`)
   }
   /** Starts a CoinPay checkout session; the buyer picks a coin or PayPal at `url`. */
   planCheckout(tree: string, email?: string) {

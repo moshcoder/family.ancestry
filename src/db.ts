@@ -44,7 +44,7 @@ export const inviteRole = (asker: Role | null | undefined, wanted: unknown): Inv
 export const emailVerified = (user: Pick<User, 'email'> | null | undefined) => Boolean(user?.email) && !user!.email.endsWith('@pit.invalid')
 
 export type User = { id: string; email: string; name: string | null; created_at: number }
-export type Tree = { id: string; name: string; description: string | null; owner_id: string; home_person_id: string | null; created_at: number; plan_paid_at: number | null }
+export type Tree = { id: string; name: string; description: string | null; owner_id: string; home_person_id: string | null; created_at: number; plan_paid_at: number | null; /** Family plan days from credit codes and invites run until here (ms); null = none. */ plan_until?: number | null }
 export type Sex = 'M' | 'F' | 'X' | 'U'
 export type Person = {
   id: string
@@ -465,6 +465,8 @@ export class Store {
     this.db.run('CREATE INDEX IF NOT EXISTS people_origin ON people(origin_key)')
     const treeCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('trees')").all().map((c) => c.name)
     if (!treeCols.includes('plan_paid_at')) this.db.run('ALTER TABLE trees ADD COLUMN plan_paid_at INTEGER')
+    // 0.25.0: plan days (credit codes, invites) put the tree on the Family plan until a date.
+    if (!treeCols.includes('plan_until')) this.db.run('ALTER TABLE trees ADD COLUMN plan_until INTEGER')
     // 0.24.0: the Family plan is paid through a CoinPay checkout session; the webhook finds the row by it.
     const paymentCols = this.db.query<{ name: string }, []>('PRAGMA table_info(payments)').all().map((r) => r.name)
     if (!paymentCols.includes('checkout_session_id')) this.db.run('ALTER TABLE payments ADD COLUMN checkout_session_id TEXT')
@@ -1439,6 +1441,16 @@ export class Store {
     this.db.query('UPDATE trees SET plan_paid_at = coalesce(plan_paid_at, ?) WHERE id = ?').run(this.now(), treeId)
   }
 
+  /**
+   * Days on the Family plan, from a credit code or an invite: the same plan, until a date.
+   * Days added while it runs go on the end; a lapsed tree starts from now.
+   */
+  extendPlan(treeId: string, days: number): number | null {
+    const now = this.now()
+    this.db.query('UPDATE trees SET plan_until = max(coalesce(plan_until, 0), ?) + ? WHERE id = ?').run(now, Math.round(days * 86_400_000), treeId)
+    return this.tree(treeId)?.plan_until ?? null
+  }
+
   recordPayment(p: { ref: string; tree_id: string; user_id: string; amount_cents: number; currency: string; chain: string | null; checkout_session_id?: string | null; raw: unknown }) {
     this.db
       .query('INSERT OR IGNORE INTO payments (ref,tree_id,user_id,amount_cents,currency,chain,checkout_session_id,status,raw,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
@@ -1475,7 +1487,7 @@ export class Store {
 
   /** Whether this user is a member of any tree on the Family plan. */
   inPaidTree(userId: string): boolean {
-    return Boolean(this.db.query<{ n: number }, [string]>('SELECT 1 AS n FROM members m JOIN trees t ON t.id = m.tree_id WHERE m.user_id = ? AND t.plan_paid_at IS NOT NULL LIMIT 1').get(userId))
+    return Boolean(this.db.query<{ n: number }, [string, number]>('SELECT 1 AS n FROM members m JOIN trees t ON t.id = m.tree_id WHERE m.user_id = ? AND (t.plan_paid_at IS NOT NULL OR t.plan_until > ?) LIMIT 1').get(userId, this.now()))
   }
 
   // ---- events, sources, media -------------------------------------------

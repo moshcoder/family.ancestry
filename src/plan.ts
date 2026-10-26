@@ -41,9 +41,10 @@ export function planFromEnv(env: Record<string, string | undefined> = process.en
 
 export const isAdmin = (cfg: PlanConfig, user: Pick<User, 'email'> | null | undefined) => Boolean(user && cfg.admins.has(user.email.toLowerCase()))
 
-/** Paid once, or owned by an admin. */
-export function hasPlan(cfg: PlanConfig, store: Store, tree: Tree): boolean {
+/** Paid once, on plan days (credit codes, invites) that have not run out, or owned by an admin. */
+export function hasPlan(cfg: PlanConfig, store: Store, tree: Tree, now = Date.now()): boolean {
   if (tree.plan_paid_at) return true
+  if (tree.plan_until && tree.plan_until > now) return true
   return isAdmin(cfg, store.user(tree.owner_id))
 }
 

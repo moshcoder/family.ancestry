@@ -185,6 +185,9 @@ ${formatBusiness(b)}`)
     async (body: any) => json(await client.recommendBusiness(body)),
   )
 
+  server.tool('redeem_code', "Redeem a credit code the user was given (CR-XXXX-...): days of the Family plan. tree_id says which family gets them; without it they go to the user's only family, or wait in Settings.", { code: z.string().min(4).max(64), tree_id: z.string().optional() }, async ({ code, tree_id }: any) => json(await client.redeem(code, tree_id)))
+  server.tool('list_invite_links', "The user's invite links (three each; when someone new joins through one, both get Family plan days) and their open ?ref= link.", {}, async () => json(await client.inviteLinks()))
+  server.tool('create_invite_link', 'Make one of the user\'s scarce invite links (works once). Only when the user asked for one.', { note: z.string().max(80).optional() }, async ({ note }: any) => json(await client.createInviteLink(note)))
   server.tool('family_plan', "Whether a tree is on the one-time Family plan (pets, invite everyone), its price, and where to pay.", { tree_id: z.string() }, async ({ tree_id }: any) => json(await client.plan(tree_id)))
 
   server.tool(

@@ -1,6 +1,6 @@
 {
   "name": "familyancestry",
-  "version": "0.24.1",
+  "version": "0.25.0",
   "description": "family.ancestry: private family trees for your family. GEDCOM import/export, pedigree and descendant charts, photos, sources, invites, plus a private family-and-friends network with an inbox. Web app (PWA), API, CLI, TUI, MCP server and desktop app.",
   "license": "MIT",
   "type": "module",
@@ -31,11 +31,13 @@
   "keywords": ["genealogy", "family tree", "ancestry", "gedcom", "moshpit", "mcp", "cli", "tui", "pwa"],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "@profullstack/affiliates": "0.1.0",
     "@profullstack/bridges": "0.2.0",
     "@profullstack/coinpay-onboard": "0.2.0",
     "@profullstack/footer": "latest",
     "@profullstack/hqtui": "^0.11.1",
     "@profullstack/profile": "0.1.6",
+    "@profullstack/redeem-credits": "0.1.0",
     "@profullstack/scraper-daemon": "0.2.1",
     "@simplewebauthn/server": "^14.0.3",
     "bullmq": "6.4.2",
