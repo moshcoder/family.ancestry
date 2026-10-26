@@ -37,6 +37,8 @@ import { Famous, mountFamous } from './famous.js'
 import { buildDaemon } from './daemon.js'
 import { mountProfileRoutes, PROFILE_ENHANCE_SCRIPT, saveSignupProfile, validateProfile } from '@profullstack/profile'
 import { openUserProfiles, realEmail } from './user-profile.js'
+import { RewardError, Rewards } from './rewards.js'
+import { codePanel, invitedPage, invitesPage } from './rewards-html.js'
 
 type Env = { Variables: { user: User | null; csrf: string; via: 'session' | 'token' | null } }
 
@@ -127,6 +129,8 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   const userProfiles = openUserProfiles(store.db)
   const socials = new Socials(store)
   const feed = new Feed(store, net)
+  // Credit codes (plan days) and invites (rewards.ts).
+  const rewards = new Rewards(store, plan)
   /**
    * The posts panel on a person page. It is yours to post on when you claimed it, or when it
    * carries your account's name (one person, two accounts: only one of them can claim it).
@@ -239,6 +243,80 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     return { tree, role: role as Role, user }
   }
 
+  // ---- invites, affiliate links and credit codes ---------------------------
+
+  const INVITE_COOKIE = 'fa_invite'
+  const REF_COOKIE = 'fa_ref'
+  /** Anyone arriving with ?ref=<affiliate code> is remembered until they sign up (first touch wins). */
+  app.use('*', async (c, next) => {
+    const ref = c.req.query('ref')
+    if (ref && /^[A-Za-z0-9-]{4,40}$/.test(ref) && !getCookie(c, REF_COOKIE)) setCookie(c, REF_COOKIE, ref, { path: '/', httpOnly: true, sameSite: 'Lax', secure: secure(c), maxAge: 30 * 86400 })
+    await next()
+  })
+  /** A brand-new account: spend the invite it came through (both get plan days) and record the affiliate. */
+  const welcome = async (c: Context, user: User) => {
+    const invite = getCookie(c, INVITE_COOKIE)
+    if (invite) {
+      await rewards.acceptInvite(invite, user).catch((error) => console.error(`[invites] accept failed: ${(error as Error).message}`))
+      deleteCookie(c, INVITE_COOKIE, { path: '/' })
+    }
+    const ref = getCookie(c, REF_COOKIE)
+    if (ref) {
+      await rewards.affiliates.attribute(ref, user.id).catch(() => null)
+      deleteCookie(c, REF_COOKIE, { path: '/' })
+    }
+  }
+  app.get('/i/:code', (c) => {
+    const code = c.req.param('code')
+    if (!/^[A-Za-z0-9-]{6,40}$/.test(code)) return c.html(html.messagePage(ctx(c), 'Not an invite', 'That invite link is not right.'), 404)
+    if (!c.get('user')) setCookie(c, INVITE_COOKIE, code, { path: '/', httpOnly: true, sameSite: 'Lax', secure: secure(c), maxAge: 7 * 86400 })
+    return c.html(invitedPage(ctx(c)))
+  })
+  const affiliateLink = async (userId: string) => `${publicSite}/?ref=${await rewards.affiliates.affiliateCode(userId)}`
+  const invitesView = async (c: Context, extra: { link?: string; error?: string } = {}, status: 200 | 400 = 200) => {
+    const me = c.get('user')!
+    return c.html(invitesPage(ctx(c), { quota: await rewards.affiliates.quota(me.id), invites: await rewards.affiliates.invites(me.id), affiliate: await affiliateLink(me.id), ...extra }), status)
+  }
+  const inviteError = (error: unknown) => ((error as Error).message === 'no invites left' ? 'You have used all your invite links.' : (error as Error).message)
+  app.get('/invites', async (c) => needUser(c) ?? (await invitesView(c)))
+  app.post('/invites', async (c) => {
+    if (needUser(c)) return needUser(c)!
+    try {
+      const invite = await rewards.affiliates.createInvite(c.get('user')!.id, String((await form(c)).note ?? '').slice(0, 80))
+      return invitesView(c, { link: `${publicSite}/i/${invite.code}` })
+    } catch (error) {
+      return invitesView(c, { error: inviteError(error) }, 400)
+    }
+  })
+  const codeLimit = limiter(10, 15 * 60_000)
+  /** Back to where the form was (Settings or a tree's plan page). */
+  const backTo = (value: unknown) => (typeof value === 'string' && /^\/(settings|t\/[A-Za-z0-9_-]+\/plan)$/.test(value) ? value : '/settings')
+  app.post('/settings/redeem', async (c) => {
+    if (needUser(c)) return needUser(c)!
+    const body = await form(c)
+    const back = backTo(body.back)
+    if (!codeLimit(`redeem:${c.get('user')!.id}`)) return c.redirect(`${back}?error=${encodeURIComponent('Too many tries. Wait a few minutes.')}#code`)
+    try {
+      const r = await rewards.redeem(c.get('user')!, String(body.code ?? ''), body.tree ? String(body.tree) : null)
+      return c.redirect(`${back}?ok=${encodeURIComponent(r.message)}#code`)
+    } catch (error) {
+      if (!(error instanceof RewardError)) throw error
+      return c.redirect(`${back}?error=${encodeURIComponent(error.message)}#code`)
+    }
+  })
+  app.post('/settings/plan-days', async (c) => {
+    if (needUser(c)) return needUser(c)!
+    const body = await form(c)
+    const back = backTo(body.back)
+    try {
+      const a = await rewards.apply(c.get('user')!, String(body.tree ?? ''))
+      return c.redirect(`${back}?ok=${encodeURIComponent(`${a.tree.name} is on the Family plan until ${new Date(a.until).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' })}.`)}#code`)
+    } catch (error) {
+      if (!(error instanceof RewardError)) throw error
+      return c.redirect(`${back}?error=${encodeURIComponent(error.message)}#code`)
+    }
+  })
+
   // ---- static + health --------------------------------------------------
 
   app.get('/health', (c) => c.json({ ok: true, version: html.VERSION }))
@@ -318,9 +396,11 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     // Signed in, and the address has no account: never quietly swap you into a new, empty one. Ask.
     if (me && !store.userByEmail(link.email)) return c.html(html.addOrNewPage(ctx(c), link.email, token))
     auth.takeLink(token)
+    const isNew = !store.userByEmail(link.email)
     const user = store.findOrCreateUser(link.email)
     signIn(c, user)
     await saveSignup(user, link)
+    if (isNew) await welcome(c, user)
     return c.redirect(link.next ?? '/trees')
   })
   app.post('/auth/verify', async (c) => {
@@ -330,9 +410,11 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     if (!link || link.link_to) return expiredLink(c)
     auth.takeLink(token)
     if (body.choice === 'add' && c.get('user')) return attached(c, link.email)
+    const isNew = !store.userByEmail(link.email)
     const user = store.findOrCreateUser(link.email)
     signIn(c, user)
     await saveSignup(user, link)
+    if (isNew) await welcome(c, user)
     return c.redirect(link.next ?? '/trees')
   })
 
@@ -376,14 +458,16 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     setCookie(c, 'fa_pw_pending', store.holdIdentity('pitworld', sub, result.user.name ?? null), { path: '/', httpOnly: true, sameSite: 'Lax', secure: secure(c), maxAge: 30 * 60 })
     return c.html(html.pitWorldChoicePage(ctx(c), result.user.name ?? null, safeNext(result.returnTo)))
   })
-  app.post('/auth/pitworld/new', (c) => {
+  app.post('/auth/pitworld/new', async (c) => {
     const token = getCookie(c, 'fa_pw_pending')
     const held = store.heldIdentity(token)
     if (!token || !held) return c.redirect('/signin')
     store.dropHeldIdentity(token)
     deleteCookie(c, 'fa_pw_pending', { path: '/' })
-    const user = store.userByIdentity(held.provider, held.subject) ?? store.createBridgedUser(held.provider, held.subject, held.name)
+    const existing = store.userByIdentity(held.provider, held.subject)
+    const user = existing ?? store.createBridgedUser(held.provider, held.subject, held.name)
     signIn(c, user)
+    if (!existing) await welcome(c, user)
     return c.redirect('/trees')
   })
   app.post('/settings/pitworld/unlink', (c) => {
@@ -520,6 +604,8 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     if (needUser(c)) return needUser(c)!
     const body = await form(c)
     const tree = store.createTree(c.get('user')!.id, String(body.name ?? ''), body.description ? String(body.description) : null)
+    // Plan days from an invite or a code, waiting for a family: the first one gets them.
+    await rewards.autoApply(c.get('user')!)
     const picks = await picksFrom(c)
     if (!picks.length) return c.redirect(`/t/${tree.id}`)
     return c.redirect(`/t/${tree.id}?ok=${encodeURIComponent(broughtNote(await bringPeople(tree.id, c.get('user')!.id, picks, Boolean(body.share))))}`)
@@ -804,15 +890,17 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     }
   })
   // The Family plan: pay once per tree.
-  app.get('/t/:tree/plan', (c) => {
+  app.get('/t/:tree/plan', async (c) => {
     const t = treeFor(c)
     if (t.error) return t.error
-    return c.html(html.planPage(ctx(c), t.tree, t.role, { active: hasPlan(plan, store, t.tree), admin: isAdmin(plan, store.user(t.tree.owner_id)), price: price(plan), payable: Boolean(plan.coinpay), askEmail: !emailVerified(t.user), payments: store.paymentsFor(t.tree.id), returned: c.req.query('paid') === '1' }))
+    const status = rewards.status(t.tree)
+    const codes = status.forever ? '' : codePanel(ctx(c), { days: await rewards.days(t.user.id), targets: rewards.targets(t.user.id), tree: t.tree, back: `/t/${t.tree.id}/plan` })
+    return c.html(html.planPage(ctx(c), t.tree, t.role, { active: status.active, admin: isAdmin(plan, store.user(t.tree.owner_id)), price: price(plan), payable: Boolean(plan.coinpay), askEmail: !emailVerified(t.user), payments: store.paymentsFor(t.tree.id), returned: c.req.query('paid') === '1', until: status.until, codes }))
   })
   app.post('/t/:tree/plan/checkout', async (c) => {
     const t = treeFor(c)
     if (t.error) return t.error
-    if (hasPlan(plan, store, t.tree)) return c.redirect(`/t/${t.tree.id}/plan`)
+    if (rewards.status(t.tree).forever) return c.redirect(`/t/${t.tree.id}/plan`)
     try {
       const { checkoutUrl } = await startCheckout(plan, store, { tree: t.tree, user: t.user, email: (await form(c)).email, property: publicHost, successUrl: `${linkBase(c)}/t/${t.tree.id}/plan?paid=1`, cancelUrl: `${linkBase(c)}/t/${t.tree.id}/plan` }, fetcher)
       return c.redirect(checkoutUrl)
@@ -1106,7 +1194,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   })
 
   // settings
-  const settings = async (c: Context, newToken: string | null = null, details?: { values: object; errors: Record<string, string> }) => c.html(html.settingsPage(ctx(c), { details: details?.values ?? (await (await userProfiles.ready).get(c.get('user')!.id)), detailsErrors: details?.errors, passkeys: auth.passkeys(c.get('user')!.id), tokens: auth.tokens(c.get('user')!.id), newToken, profile: profilePanel(profiles.mine(c.get('user')!.id), publicSite), addons: addonsPanel(), emails: store.linkedEmails(c.get('user')!.id), pitWorld: pitClient ? { linked: store.identities(c.get('user')!.id).some((i) => i.provider === 'pitworld') } : null }))
+  const settings = async (c: Context, newToken: string | null = null, details?: { values: object; errors: Record<string, string> }) => c.html(html.settingsPage(ctx(c), { details: details?.values ?? (await (await userProfiles.ready).get(c.get('user')!.id)), detailsErrors: details?.errors, passkeys: auth.passkeys(c.get('user')!.id), tokens: auth.tokens(c.get('user')!.id), newToken, profile: profilePanel(profiles.mine(c.get('user')!.id), publicSite), addons: addonsPanel(), emails: store.linkedEmails(c.get('user')!.id), pitWorld: pitClient ? { linked: store.identities(c.get('user')!.id).some((i) => i.provider === 'pitworld') } : null, codes: codePanel(ctx(c), { days: await rewards.days(c.get('user')!.id), targets: rewards.targets(c.get('user')!.id), back: '/settings' }) }))
   app.get('/settings', async (c) => needUser(c) ?? (await settings(c)))
   app.post('/settings/emails', async (c) => {
     if (needUser(c)) return needUser(c)!
@@ -1194,11 +1282,46 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     if (!apiUser(c)) return c.json({ error: 'sign in first: send Authorization: Bearer <token> (ancestry login makes one)' }, 401)
     await next()
   })
-  api.get('/me', (c) => c.json({ user: apiUser(c), trees: store.treesFor(apiUser(c)!.id) }))
+  api.get('/me', async (c) => c.json({ user: apiUser(c), trees: store.treesFor(apiUser(c)!.id), plan_days: await rewards.days(apiUser(c)!.id) }))
+  /** {code, tree?}: redeem a credit code; plan days go onto `tree`, or the only family there is. */
+  api.post('/redeem', async (c) => {
+    if (!codeLimit(`redeem:${apiUser(c)!.id}`)) return c.json({ error: 'Too many tries. Wait a few minutes.' }, 429)
+    const body = await json(c)
+    try {
+      const r = await rewards.redeem(apiUser(c)!, String(body.code ?? ''), body.tree ? String(body.tree) : null)
+      return c.json({ ok: true, message: r.message, days: r.days, applied: r.applied ? { tree_id: r.applied.tree.id, days: r.applied.days, until: new Date(r.applied.until).toISOString() } : null, plan_days: await rewards.days(apiUser(c)!.id) })
+    } catch (error) {
+      if (!(error instanceof RewardError)) throw error
+      return c.json({ error: error.message }, 400)
+    }
+  })
+  /** {tree}: put every waiting plan day on that family. */
+  api.post('/plan-days', async (c) => {
+    try {
+      const a = await rewards.apply(apiUser(c)!, String((await json(c)).tree ?? ''))
+      return c.json({ ok: true, tree_id: a.tree.id, days: a.days, until: new Date(a.until).toISOString() })
+    } catch (error) {
+      if (!(error instanceof RewardError)) throw error
+      return c.json({ error: error.message }, 400)
+    }
+  })
+  api.get('/invites', async (c) => {
+    const id = apiUser(c)!.id
+    return c.json({ quota: await rewards.affiliates.quota(id), invites: await rewards.affiliates.invites(id), affiliate_link: await affiliateLink(id) })
+  })
+  api.post('/invites', async (c) => {
+    try {
+      const invite = await rewards.affiliates.createInvite(apiUser(c)!.id, String((await json(c)).note ?? '').slice(0, 80))
+      return c.json({ link: `${publicSite}/i/${invite.code}`, code: invite.code, expires_at: invite.expiresAt ? new Date(invite.expiresAt).toISOString() : null, left: (await rewards.affiliates.quota(apiUser(c)!.id)).left }, 201)
+    } catch (error) {
+      return c.json({ error: inviteError(error) }, 400)
+    }
+  })
   api.get('/trees', (c) => c.json({ trees: store.treesFor(apiUser(c)!.id) }))
   api.post('/trees', async (c) => {
     const body = await json(c)
     const tree = store.createTree(apiUser(c)!.id, String(body.name ?? 'Family tree'), body.description ?? null)
+    await rewards.autoApply(apiUser(c)!)
     const picks = Array.isArray(body.people) ? body.people.map(String) : []
     const brought = picks.length ? await bringPeople(tree.id, apiUser(c)!.id, picks, body.share !== false) : { added: 0, shared: 0, emailed: [] }
     return c.json({ tree: store.tree(tree.id), ...brought }, 201)
@@ -1326,12 +1449,13 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   api.get('/trees/:tree/plan', (c) => {
     const t = treeFor(c)
     if (t.error) return t.error
-    return c.json({ active: hasPlan(plan, store, t.tree), paid_at: t.tree.plan_paid_at, price: price(plan), payable: Boolean(plan.coinpay), url: `${site}/t/${t.tree.id}/plan` })
+    const status = rewards.status(t.tree)
+    return c.json({ active: status.active, paid_at: t.tree.plan_paid_at, until: status.until, price: price(plan), payable: Boolean(plan.coinpay), url: `${site}/t/${t.tree.id}/plan` })
   })
   api.post('/trees/:tree/plan/checkout', async (c) => {
     const t = treeFor(c)
     if (t.error) return t.error
-    if (hasPlan(plan, store, t.tree)) return c.json({ active: true })
+    if (rewards.status(t.tree).forever) return c.json({ active: true })
     try {
       const body = await json(c)
       const r = await startCheckout(plan, store, { tree: t.tree, user: t.user, email: body.email, property: publicHost, successUrl: `${publicSite}/t/${t.tree.id}/plan?paid=1`, cancelUrl: `${publicSite}/t/${t.tree.id}/plan` }, fetcher)

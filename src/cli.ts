@@ -41,6 +41,8 @@ const HELP = `ancestry ${VERSION}: private family trees, from the terminal
                                     their relationship status: "status David Karen married"
   ancestry pet <owner> <name> [--species Dog] [--born DATE]   (Family plan)
   ancestry plan [buy [--email you@x]]     the one-time Family plan for this tree (coin or PayPal)
+  ancestry redeem <code> [--tree T]       redeem a credit code: Family plan days for one of your families
+  ancestry invites [new [--note TEXT]]    your invite links (3 each; you both get plan days) + your ?ref= link
   ancestry claim [person]           say which person you are (or add yourself)
   ancestry businesses [search]      family businesses (search matches names, trades, towns, people)
   ancestry business <name|id>       one business and its people
@@ -768,6 +770,23 @@ export async function runCli(argv: string[]): Promise<number> {
         }
         const plan = await client.plan(tree.id)
         print(plan, () => (plan.active ? `${tree.name} is on the Family plan: pets, and invite everyone you want.` : `${tree.name} is on the free plan. The Family plan is ${plan.price} once: ancestry plan buy\n  or ${plan.url}`))
+        return 0
+      }
+      case 'redeem': {
+        if (!rest[0]) throw new Error('usage: ancestry redeem <code> [--tree T]')
+        const tree = f.tree ? (await pickTree(client, f.tree)).id : undefined
+        const r = await client.redeem(rest.join(' '), tree)
+        print(r, () => r.message)
+        return 0
+      }
+      case 'invites': {
+        if (rest[0] === 'new') {
+          const r = await client.createInviteLink(str(f.note))
+          print(r, () => `${r.link}\n  works once; ${r.left} left`)
+          return 0
+        }
+        const r = await client.inviteLinks()
+        print(r, () => [`${r.quota.left} of ${r.quota.total} invite links left (ancestry invites new)`, ...r.invites.map((i) => `  ${i.note || 'invite'}: ${i.usedAt ? 'used' : i.expiresAt && i.expiresAt < Date.now() ? 'expired' : 'open'}`), `Your link for everyone else: ${r.affiliate_link}`].join('\n'))
         return 0
       }
       case 'feed': {

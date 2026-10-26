@@ -10,7 +10,7 @@ import { pitFooter } from './pit-footer.js'
 import { ringFooter, ringFooterOptions, setRingFooterOptions } from './ring-footer.js'
 import { BONDS, UNION_KINDS, UNION_ENDS, canManage, grantable, fullName, lifespan, type Business, type Circle, type Descendant, type Event, type Family, type Invite, type Media, type Payment, type Person, type Role, type Sibling, type Source, type Tree, type User, canEdit } from './db.js'
 
-export const VERSION = '0.24.1'
+export const VERSION = '0.25.0'
 
 // The footer's own links; the ring nav and copyright come from @profullstack/footer.
 setRingFooterOptions(
@@ -823,10 +823,10 @@ ${rest.length ? `<details class="panel"${likely.length ? '' : ' open'}><summary>
   )
 }
 
-export function planPage(ctx: Ctx, tree: Tree, role: Role, v: { active: boolean; admin: boolean; price: string; payable: boolean; askEmail: boolean; payments: Payment[]; returned: boolean }): string {
+export function planPage(ctx: Ctx, tree: Tree, role: Role, v: { active: boolean; admin: boolean; price: string; payable: boolean; askEmail: boolean; payments: Payment[]; returned: boolean; until?: number | null; codes?: string }): string {
   const pending = v.payments.find((p) => p.status === 'pending')
   const status = v.active
-    ? `<p class="panel"><b>${esc(tree.name)} is on the Family plan.</b> ${v.admin && !tree.plan_paid_at ? 'Included with your admin account.' : tree.plan_paid_at ? `Paid ${new Date(tree.plan_paid_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}. Nothing more to pay, ever.` : ''}</p>`
+    ? `<p class="panel"><b>${esc(tree.name)} is on the Family plan.</b> ${v.admin && !tree.plan_paid_at ? 'Included with your admin account.' : tree.plan_paid_at ? `Paid ${new Date(tree.plan_paid_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}. Nothing more to pay, ever.` : v.until ? `On plan days until ${new Date(v.until).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' })}. Pay once to keep it for good.` : ''}</p>`
     : v.returned || pending
       ? `<p class="panel">Waiting for the payment to confirm. This page will say so once it has: PayPal is quick, coins take a few minutes, Bitcoin up to an hour.</p>`
       : ''
@@ -842,12 +842,13 @@ ${status}
 <li>Everything else stays free for everyone: the tree, siblings, adoptions, step-families, photos, GEDCOM, the network.</li>
 </ul>
 ${
-  v.active
+  v.active && !v.until
     ? ''
     : v.payable
       ? `<form method="post" action="/t/${tree.id}/plan/checkout" class="panel pform">${csrfField(ctx)}${v.askEmail ? '<label>Email for the receipt<input name="email" type="email" required autocomplete="email"></label>' : ''}<button>Pay ${esc(v.price)}</button><p class="muted small">Through CoinPay: pick any coin they take, or PayPal, on the next page. ${role === 'owner' ? '' : 'Anyone in the family can pay; it covers the whole tree.'}</p></form>`
       : '<p class="muted">Payments are not set up on this server yet.</p>'
-}`,
+}
+${v.codes ?? ''}`,
     { crumbs: [['/trees', 'Trees'], [`/t/${tree.id}`, tree.name], ['', 'Family plan']] },
   )
 }
@@ -867,7 +868,7 @@ ${ctx.user ? `<form method="post" action="/invite/${esc(token)}">${csrfField(ctx
   )
 }
 
-export function settingsPage(ctx: Ctx, data: { passkeys: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; tokens: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; newToken?: string | null; profile?: string; addons?: string; emails?: string[]; pitWorld?: { linked: boolean } | null; details?: object | null; detailsErrors?: Record<string, string> }): string {
+export function settingsPage(ctx: Ctx, data: { passkeys: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; tokens: { id: string; label: string | null; created_at: number; last_used_at: number | null }[]; newToken?: string | null; profile?: string; addons?: string; emails?: string[]; pitWorld?: { linked: boolean } | null; details?: object | null; detailsErrors?: Record<string, string>; codes?: string }): string {
   const when = (t: number | null) => (t ? new Date(t).toISOString().slice(0, 10) : 'never')
   return layout(
     ctx,
@@ -878,6 +879,7 @@ export function settingsPage(ctx: Ctx, data: { passkeys: { id: string; label: st
 <section class="panel"><h2>Sign-in emails</h2><p class="muted small">Every address here signs in to this one account. Add the others you use so a sign-in link to any of them opens your trees, not a new, empty account.</p>
 <ul>${ctx.user?.email.endsWith('@pit.invalid') ? '' : `<li>${esc(ctx.user?.email)} <span class="muted small">main</span></li>`}${(data.emails ?? []).map((e) => `<li>${esc(e)} <form method="post" action="/settings/emails/remove" class="inline">${csrfField(ctx)}<input type="hidden" name="email" value="${esc(e)}"><button class="x" title="Stop signing in with ${esc(e)}">×</button></form></li>`).join('')}</ul>
 <form method="post" action="/settings/emails" class="row">${csrfField(ctx)}<input name="email" type="email" placeholder="another@example.com" required maxlength="254"><button>Add an email</button></form></section>
+${data.codes ?? ''}
 ${data.profile ?? ''}
 <section class="panel"><h2>Passkeys</h2><p class="muted small">Sign in with your fingerprint, face or device PIN instead of waiting for an email.</p>
 ${data.passkeys.length ? `<ul>${data.passkeys.map((k) => `<li>${esc(k.label ?? 'Passkey')} <span class="muted small">added ${when(k.created_at)}, last used ${when(k.last_used_at)}</span> <form method="post" action="/settings/passkeys/${encodeURIComponent(k.id)}/delete" class="inline">${csrfField(ctx)}<button class="x">×</button></form></li>`).join('')}</ul>` : ''}
@@ -924,6 +926,7 @@ export function aboutPage(ctx: Ctx): string {
 <li><b>AI assistants:</b> <code>claude mcp add ancestry -- ancestry mcp</code> lets your assistant search and add to the trees you share with it.</li>
 <li><b>API:</b> JSON under <code>/api/v1</code> with a bearer token; see the README.</li>
 </ul>
+<h2>Have a code?</h2><p>A credit code is days of the Family plan: redeem it in <a href="/settings#code">Settings</a> or on a tree's plan page. You also get three <a href="/invites">invite links</a>; when someone new joins through yours, you both get a week of the Family plan.</p>
 <h2>Bring your tree</h2><p>Every genealogy site exports GEDCOM. Import it on the Trees page; export yours any time from a tree's page, optionally with living people hidden.</p>
 <p class="muted">Source: <a href="https://github.com/moshcoder/family.ancestry">github.com/moshcoder/family.ancestry</a> (MIT).</p>`,
   )

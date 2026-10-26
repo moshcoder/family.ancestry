@@ -146,6 +146,8 @@ as you: it sees the trees you see, and changes only the ones you can edit.
 | `POST /api/v1/trees/:tree/people` | add (`{given, surname, ..., relative_of?, as?: parent\|partner\|child\|sibling\|grandparent, relation?, sibling?: full\|half\|adopted\|foster\|step, via?, raised?, existing_id?}`) |
 | `POST /api/v1/trees/:tree/people/:id/bonds`, `DELETE .../bonds/:bond` | a bond (`{kind: raised_by\|guardian\|godparent\|caregiver\|chosen_family, other_id or person fields, note?}`) |
 | `POST /api/v1/trees/:tree/pets` | a pet (`{owner_id(s), given, species?}`); 402 without the Family plan |
+| `POST /api/v1/redeem`, `POST /api/v1/plan-days` | redeem a credit code (`{code, tree?}`); put waiting plan days on a family (`{tree}`) |
+| `GET /api/v1/invites`, `POST /api/v1/invites` | your invite links (3 each), your `?ref=` link; make one (`{note?}`) |
 | `GET /api/v1/trees/:tree/plan`, `POST .../plan/checkout` | the Family plan; start a CoinPay checkout session (`{email?}`; email only when the account has none), answers `{url, sessionId}` |
 | `POST /api/v1/trees/:tree/claim` | this is me (`{person_id}`) or add me (person fields) |
 | `GET/PATCH/DELETE /api/v1/trees/:tree/people/:id` | one person, with parents, siblings (and their kind), partners, children, bonds, pets, events, sources, photos |
@@ -191,6 +193,28 @@ session (customer email, `account_id` = user id, `property` = the site's host, m
 `tree_id`, `user_id`, `product: family_plan`, `payment_ref`), written down by its session id
 before the buyer leaves. The signed webhook (`payment.confirmed` or `payment.forwarded`, a
 PayPal capture included) settles it, once; only a session we started can mark a tree paid.
+
+## Credit codes and invites
+
+- **Have a code?** A credit code (`CR-XXXX-XXXX-XXXX-XXXX`, from `@profullstack/redeem-credits`,
+  unit `plan_days`) is days of the Family plan. Redeem it in Settings, on a tree's plan page,
+  `POST /api/v1/redeem {code, tree?}`, `ancestry redeem <code> [--tree T]` or the MCP tool
+  `redeem_code`. The days go onto the family you pick (or your only one) through the same
+  tree row the payment writes: `trees.plan_until`, read by `hasPlan`. Days added while it runs
+  go on the end. With no family yet they wait on your balance, and your first tree takes them.
+  A tree paid for good is never offered. Errors: not valid, expired, used, already redeemed, withdrawn.
+- **Invites** (`@profullstack/affiliates`): three links each at `/invites` (`GET/POST /api/v1/invites`,
+  `ancestry invites [new]`). `/i/<code>` remembers the invite for 7 days; when a **new** account
+  is made through it (magic link or pit.world), both people get 7 Family plan days. Each link works once.
+- **Affiliate link:** `?ref=<code>` on any page is remembered for 30 days (first touch) and
+  recorded when a new account is made. Shown on `/invites`.
+- **Minting** (on the server, against the app's SQLite file):
+
+```sh
+cd /opt/family.ancestry
+/root/.bun/bin/bun $(readlink -f node_modules/.bin/redeem-credits) mint \
+  --db /root/.local/share/family-ancestry/family.db --unit plan_days --amount 30 --label "for Sam"
+```
 
 ## Businesses
 
