@@ -484,6 +484,8 @@ export class Store {
     // Adding a sign-in email (0.23.0): the link says which account the address joins.
     const linkCols = this.db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('magic_links')").all().map((c) => c.name)
     if (!linkCols.includes('link_to')) this.db.run('ALTER TABLE magic_links ADD COLUMN link_to TEXT')
+    // The signup form's profile fields (@profullstack/profile) ride on the link until it is spent.
+    if (!linkCols.includes('profile')) this.db.run('ALTER TABLE magic_links ADD COLUMN profile TEXT')
   }
 
   tx<T>(fn: () => T): T {

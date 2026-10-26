@@ -30,7 +30,7 @@ const LINK_MINUTES = 20
 const CLI_CODE_MINUTES = 5
 
 /** A sign-in link, or (with `link_to`) a confirm link that adds its address to that account. */
-export type MagicLink = { email: string; next: string | null; link_to: string | null }
+export type MagicLink = { email: string; next: string | null; link_to: string | null; /** The signup form's validated profile fields, as JSON. */ profile?: string | null }
 
 export type Mail = { to: string; subject: string; text: string; html: string }
 /** Sends one message; resolves to the provider's message id when it has one. */
@@ -126,13 +126,14 @@ export class Auth {
   /** Always resolves; the caller answers the same thing whatever happens, so nobody learns who has an account. */
   /** `base` is where the link should open: the proxy address when the visitor asked from there (see server.ts). */
   /** `joining` makes it a confirm link that adds the address to that account instead of a sign-in link. */
-  async sendLink(emailInput: string, next: string | null = null, base: string = this.site, joining: User | null = null): Promise<boolean> {
+  /** `profile` is the signup form's validated fields, saved once the link is spent. */
+  async sendLink(emailInput: string, next: string | null = null, base: string = this.site, joining: User | null = null, profile: object | null = null): Promise<boolean> {
     const email = validEmail(emailInput)
     if (!email) return false
     const recent = this.store.db.query<{ n: number }, [string, number]>('SELECT COUNT(*) AS n FROM magic_links WHERE email = ? AND created_at > ?').get(email, this.now() - 15 * 60_000)?.n ?? 0
     if (recent >= 5) return true
     const token = newId(24)
-    this.store.db.query('INSERT INTO magic_links (token_hash,email,next,created_at,expires_at,link_to) VALUES (?,?,?,?,?,?)').run(sha256(token), email, safeNext(next), this.now(), this.now() + LINK_MINUTES * 60_000, joining?.id ?? null)
+    this.store.db.query('INSERT INTO magic_links (token_hash,email,next,created_at,expires_at,link_to,profile) VALUES (?,?,?,?,?,?,?)').run(sha256(token), email, safeNext(next), this.now(), this.now() + LINK_MINUTES * 60_000, joining?.id ?? null, profile && !joining ? JSON.stringify(profile) : null)
     const url = `${base}/auth/verify?token=${token}`
     if (joining) {
       const who = joining.email.endsWith('@pit.invalid') ? (joining.name ?? 'a pit.world account') : joining.email
@@ -163,8 +164,8 @@ export class Auth {
 
   /** A link that still works, left unused: what it is for decides what opening it does. */
   peekLink(token: string): MagicLink | null {
-    const row = this.store.db.query<MagicLink & { expires_at: number }, [string]>('SELECT email, next, link_to, expires_at FROM magic_links WHERE token_hash = ?').get(sha256(String(token)))
-    return row && row.expires_at >= this.now() ? { email: row.email, next: row.next, link_to: row.link_to } : null
+    const row = this.store.db.query<MagicLink & { expires_at: number }, [string]>('SELECT email, next, link_to, expires_at, profile FROM magic_links WHERE token_hash = ?').get(sha256(String(token)))
+    return row && row.expires_at >= this.now() ? { email: row.email, next: row.next, link_to: row.link_to, profile: row.profile ?? null } : null
   }
 
   /** Use a link up: one use, then it is gone. */

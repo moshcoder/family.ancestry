@@ -35,6 +35,8 @@ import { changesTree, lifeEventForm, lifeKey, recordLifeEvent, timeline as lifeT
 import { addonsPanel, inviteFriendBox, personNetworkBox, profileInvite } from './network-html.js'
 import { Famous, mountFamous } from './famous.js'
 import { buildDaemon } from './daemon.js'
+import { mountProfileRoutes, PROFILE_ENHANCE_SCRIPT, saveSignupProfile, validateProfile } from '@profullstack/profile'
+import { openUserProfiles, realEmail } from './user-profile.js'
 
 type Env = { Variables: { user: User | null; csrf: string; via: 'session' | 'token' | null } }
 
@@ -121,6 +123,8 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   const listings = new Listings(store)
   const teams = new Teams(store)
   const profiles = new Profiles(store)
+  // The shared profile fields (user-profile.ts); user_profiles is created as the app starts.
+  const userProfiles = openUserProfiles(store.db)
   const socials = new Socials(store)
   const feed = new Feed(store, net)
   /**
@@ -266,14 +270,29 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   app.get('/about', (c) => c.html(html.aboutPage(ctx(c))))
   app.get('/connect', (c) => c.html(html.connectPage(ctx(c), site)))
   app.get('/signin', (c) => c.html(html.signInPage(ctx(c), safeNext(c.req.query('next')))))
-  app.get('/signup', (c) => c.html(html.signInPage(ctx(c), safeNext(c.req.query('next')))))
+  app.get('/signup', (c) => c.html(html.signUpPage(ctx(c), safeNext(c.req.query('next')))))
+  // The signup form's company-from-work-email helper, as a file: the policy allows no inline script.
+  app.get('/vendor-profile.js', (c) => c.body(PROFILE_ENHANCE_SCRIPT, 200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'public, max-age=86400' }))
+  /** The signup form's fields, once the account exists. A failure never costs the sign-in: Settings asks again. */
+  const saveSignup = async (user: User, link: { profile?: string | null }) => {
+    if (!link.profile) return
+    await saveSignupProfile(await userProfiles.ready, user.id, JSON.parse(link.profile), { email: realEmail(user.email) }).catch((error) => console.error(`[auth] signup profile save failed: ${(error as Error).message}`))
+  }
 
   app.post('/auth/link', async (c) => {
     const body = await form(c)
     const email = validEmail(body.email)
-    if (!email) return c.html(html.signInPage(ctx(c, { error: 'That does not look like an email address.' }), safeNext(body.next)), 400)
+    const signup = body.mode === 'signup'
+    if (!email) return c.html(signup ? html.signUpPage(ctx(c, { error: 'That does not look like an email address.' }), safeNext(body.next), body) : html.signInPage(ctx(c, { error: 'That does not look like an email address.' }), safeNext(body.next)), 400)
+    // Creating an account: the profile fields are checked before any link exists, and ride on it.
+    let profile: object | null = null
+    if (signup) {
+      const check = validateProfile(body)
+      if (!check.ok) return c.html(html.signUpPage(ctx(c, { error: 'Some fields need fixing.' }), safeNext(body.next), body, check.errors), 400)
+      profile = check.profile
+    }
     // Same answer whether the address is new, known, or rate-limited.
-    if (linkLimit(`ip:${ip(c)}`) && linkLimit(`email:${email}`)) await auth.sendLink(email, safeNext(body.next), linkBase(c))
+    if (linkLimit(`ip:${ip(c)}`) && linkLimit(`email:${email}`)) await auth.sendLink(email, safeNext(body.next), linkBase(c), null, profile)
     return c.html(html.checkEmailPage(ctx(c)))
   })
 
@@ -284,7 +303,7 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     if (outcome === 'taken') return c.redirect(`/settings?error=${encodeURIComponent(`${email} already signs in to another family.ancestry account. Sign in with it and delete that account's trees, or ask us to merge the two.`)}`)
     return c.redirect(`/settings?ok=${encodeURIComponent(outcome === 'added' ? `${email} now signs in to this account.` : `${email} already signs in to this account.`)}`)
   }
-  app.get('/auth/verify', (c) => {
+  app.get('/auth/verify', async (c) => {
     const token = c.req.query('token') ?? ''
     const link = auth.peekLink(token)
     if (!link) return expiredLink(c)
@@ -299,7 +318,9 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     // Signed in, and the address has no account: never quietly swap you into a new, empty one. Ask.
     if (me && !store.userByEmail(link.email)) return c.html(html.addOrNewPage(ctx(c), link.email, token))
     auth.takeLink(token)
-    signIn(c, store.findOrCreateUser(link.email))
+    const user = store.findOrCreateUser(link.email)
+    signIn(c, user)
+    await saveSignup(user, link)
     return c.redirect(link.next ?? '/trees')
   })
   app.post('/auth/verify', async (c) => {
@@ -309,7 +330,9 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     if (!link || link.link_to) return expiredLink(c)
     auth.takeLink(token)
     if (body.choice === 'add' && c.get('user')) return attached(c, link.email)
-    signIn(c, store.findOrCreateUser(link.email))
+    const user = store.findOrCreateUser(link.email)
+    signIn(c, user)
+    await saveSignup(user, link)
     return c.redirect(link.next ?? '/trees')
   })
 
@@ -1083,8 +1106,8 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
   })
 
   // settings
-  const settings = (c: Context, newToken: string | null = null) => c.html(html.settingsPage(ctx(c), { passkeys: auth.passkeys(c.get('user')!.id), tokens: auth.tokens(c.get('user')!.id), newToken, profile: profilePanel(profiles.mine(c.get('user')!.id), publicSite), addons: addonsPanel(), emails: store.linkedEmails(c.get('user')!.id), pitWorld: pitClient ? { linked: store.identities(c.get('user')!.id).some((i) => i.provider === 'pitworld') } : null }))
-  app.get('/settings', (c) => needUser(c) ?? settings(c))
+  const settings = async (c: Context, newToken: string | null = null, details?: { values: object; errors: Record<string, string> }) => c.html(html.settingsPage(ctx(c), { details: details?.values ?? (await (await userProfiles.ready).get(c.get('user')!.id)), detailsErrors: details?.errors, passkeys: auth.passkeys(c.get('user')!.id), tokens: auth.tokens(c.get('user')!.id), newToken, profile: profilePanel(profiles.mine(c.get('user')!.id), publicSite), addons: addonsPanel(), emails: store.linkedEmails(c.get('user')!.id), pitWorld: pitClient ? { linked: store.identities(c.get('user')!.id).some((i) => i.provider === 'pitworld') } : null }))
+  app.get('/settings', async (c) => needUser(c) ?? (await settings(c)))
   app.post('/settings/emails', async (c) => {
     if (needUser(c)) return needUser(c)!
     const me = c.get('user')!
@@ -1098,6 +1121,23 @@ export function createApp({ store, auth, site, publicSite = site, publicDir = jo
     if (needUser(c)) return needUser(c)!
     store.unlinkEmail(c.get('user')!.id, String((await form(c)).email ?? ''))
     return c.redirect('/settings?ok=Removed')
+  })
+  // The shared profile (@profullstack/profile): this form, and GET/PUT/PATCH /api/v1/me/profile for a session or token.
+  app.post('/settings/details', async (c) => {
+    if (needUser(c)) return needUser(c)!
+    const me = c.get('user')!
+    const body = await form(c)
+    const check = validateProfile({ ...body, email: realEmail(me.email) }, { required: ['first_name', 'last_name'] })
+    if (!check.ok) return settings(c, null, { values: body, errors: check.errors })
+    await (await userProfiles.ready).save(me.id, check.profile)
+    return c.redirect('/settings?ok=Details%20saved#details')
+  })
+  mountProfileRoutes(app, {
+    store: userProfiles.store,
+    getUser: (_req: Request, c: Context) => {
+      const me = c.get('user') as User | null
+      return me ? { id: me.id, email: realEmail(me.email) } : null
+    },
   })
   app.post('/settings/name', async (c) => {
     if (needUser(c)) return needUser(c)!
