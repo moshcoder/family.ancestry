@@ -108,7 +108,7 @@ export function directoryPage(ctx: Ctx, trees: Listed[], q: string, more = ''): 
     'Find your family',
     `<h1>Find your family</h1>
 <p class="muted">Families who chose to be found. Every tree here is private: you see its name and a note from the family, never the people in it. Ask, and the family decides whether to invite you.</p>
-<form class="search" method="get" action="/families"><input name="q" value="${esc(q)}" placeholder="A surname, a town, a family name" aria-label="Search families"><button>Search</button></form>
+<form class="search" method="get" action="/families" toolname="search_families" tooldescription="Search publicly listed families by surname, town or family name (listings reveal nothing from inside a tree)." toolautosubmit><input name="q" value="${esc(q)}" placeholder="A surname, a town, a family name" aria-label="Search families"><button>Search</button></form>
 ${trees.length ? `<ul class="families">${trees.map((t) => `<li><a href="/families/${t.id}"><b>${esc(t.name)}</b></a>${t.listing ? `<br><span class="muted small">${esc(t.listing)}</span>` : ''}</li>`).join('')}</ul>` : `<p class="empty">${q ? 'No listed family matches that.' : 'No families listed yet.'}</p>`}${more}`,
     { crumbs: [['', 'Families']] },
   )

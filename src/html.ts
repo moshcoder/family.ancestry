@@ -58,6 +58,7 @@ export function layout(ctx: Ctx, title: string, body: string, opts: { crumbs?: [
 <title>${esc(title)}${title === 'family.ancestry' ? '' : ' · family.ancestry'}</title>
 <meta name="description" content="${esc(opts.description ?? 'Private family trees for your family: GEDCOM import and export, pedigree charts, photos, sources, invites. Open source.')}">
 <meta name="theme-color" content="#2f5d43">${opts.head ?? ''}
+<script type="module" data-webmcp src="https://cdn.jsdelivr.net/npm/@profullstack/webmcp@0/src/embed.js" data-pages='{"trees":"/trees","feed":"/feed","families":"/families","people":"/people","famous":"/famous","network":"/network","about":"/about"}'></script>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -260,7 +261,7 @@ export function treePage(ctx: Ctx, tree: Tree, role: Role, data: { stats: Record
 <div class="actions">${data.home ? `<a class="btn" href="/t/${tree.id}/pedigree/${data.home.id}">Pedigree</a><a class="btn" href="/t/${tree.id}/descendants/${data.home.id}">Descendants</a>` : ''}<a class="btn" href="/t/${tree.id}/relate">How are we related?</a><a class="btn" href="/t/${tree.id}/photos">Photos</a><a class="btn" href="/t/${tree.id}/businesses">Businesses</a><a class="btn" href="/t/${tree.id}/sources">Sources</a><a class="btn" href="/t/${tree.id}/export.ged">Export GEDCOM</a><a class="btn" href="/t/${tree.id}/plan">${data.plan ? 'Family plan ✓' : 'Family plan'}</a>${edit ? `<a class="btn" href="/t/${tree.id}/members#invite">Invite family</a>` : `<a class="btn" href="/t/${tree.id}/members">Members</a>`}</div></div>
 <p class="stats">${Object.entries(data.stats).map(([k, v]) => `<span><b>${v}</b> ${k}</span>`).join('')}</p>
 ${data.home ? `<p>Home person: ${personLink(tree.id, data.home)}</p>` : ''}
-<form class="search" method="get" action="/t/${tree.id}"><input name="q" value="${esc(data.query)}" placeholder="Search people and businesses: names, places, years" aria-label="Search people and businesses"><button>Search</button></form>
+<form class="search" method="get" action="/t/${tree.id}" toolname="search_people" tooldescription="Search people and businesses in this family tree by name, place or year." toolautosubmit><input name="q" value="${esc(data.query)}" placeholder="Search people and businesses: names, places, years" aria-label="Search people and businesses"><button>Search</button></form>
 ${data.surnames.length && !data.query ? `<p class="surnames">${data.surnames.slice(0, 40).map((s) => `<a href="/t/${tree.id}?q=${encodeURIComponent(s.surname)}">${esc(s.surname)} <span>${s.n}</span></a>`).join('')}</p>` : ''}
 ${businesses}${data.businesses?.length && !data.people.length ? '' : list}
 ${edit ? `<details class="panel"${data.people.length ? '' : ' open'}><summary>Add a person</summary>${personForm(ctx, `/t/${tree.id}/people`, null, 'Add person')}</details>
@@ -705,7 +706,7 @@ export function relatePage(ctx: Ctx, tree: Tree, everyone: Person[], a: Person |
     ctx,
     'How are we related?',
     `<h1>How are we related?</h1>
-<form method="get" action="/t/${tree.id}/relate" class="row relate"><select name="a" aria-label="First person">${opt(a)}</select><span>and</span><select name="b" aria-label="Second person">${opt(b)}</select><button>Find out</button></form>
+<form method="get" action="/t/${tree.id}/relate" class="row relate" toolname="how_related" tooldescription="Show how two people in this family tree are related, in words." toolautosubmit><select name="a" aria-label="First person">${opt(a)}</select><span>and</span><select name="b" aria-label="Second person">${opt(b)}</select><button>Find out</button></form>
 ${answer && a && b ? `<div class="answer"><p class="big">${personLink(tree.id, b)} is ${esc(fullName(a))}'s <b>${esc(answer.words)}</b>.</p>${answer.path ? `<ol class="path">${answer.path.map((s) => `<li>${s.step !== 'self' ? `<span class="muted">${stepWord[s.step]}</span> ` : ''}${personLink(tree.id, s.person)}</li>`).join('')}</ol>` : ''}</div>` : ''}`,
     { crumbs: [['/trees', 'Trees'], [`/t/${tree.id}`, tree.name], ['', 'Relationship']] },
   )

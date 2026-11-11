@@ -95,7 +95,7 @@ export function businessesPage(ctx: Ctx, tree: Tree, role: Role, list: { busines
     `Businesses · ${tree.name}`,
     `<h1>Family businesses</h1>
 <p class="muted">The companies, farms and shops your family started, owned and worked in. They sit beside the tree, never in a bloodline.</p>
-<form class="search" method="get" action="/t/${tree.id}/businesses"><input name="q" value="${esc(query)}" placeholder="Name, trade, town, year or person" aria-label="Search businesses"><button>Search</button></form>
+<form class="search" method="get" action="/t/${tree.id}/businesses" toolname="search_businesses" tooldescription="Search the family businesses in this tree by name, trade, town, year or person." toolautosubmit><input name="q" value="${esc(query)}" placeholder="Name, trade, town, year or person" aria-label="Search businesses"><button>Search</button></form>
 ${rows}
 ${canEdit(role) ? `<details class="panel"${list.length ? '' : ' open'}><summary>Add a business</summary><form method="post" action="/t/${tree.id}/businesses" class="pform">${csrf(ctx)}${businessFields()}<button>Add business</button></form></details>` : ''}`,
     { crumbs: [['/trees', 'Trees'], [`/t/${tree.id}`, tree.name], ['', 'Businesses']] },
