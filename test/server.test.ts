@@ -59,7 +59,7 @@ describe('server', () => {
     expect(inner).toMatch(/<main[^>]*>[\s\S]*class="ad-unit"[\s\S]*format=text_link[\s\S]*<\/main>/)
     const csp = home.headers.get('content-security-policy')!
     expect(csp).toContain("style-src 'self' 'unsafe-inline';")
-    expect(csp).toContain("script-src 'self' https://crawlproof.com;")
+    expect(csp).toContain("script-src 'self' https://crawlproof.com https://cdn.jsdelivr.net;")
     expect(csp).toContain("connect-src 'self' https://crawlproof.com;")
     expect(csp).toContain("default-src 'self';")
   })

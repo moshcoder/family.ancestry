@@ -309,7 +309,7 @@ export function peoplePage(ctx: Ctx, f: Filters, r: ReturnType<typeof search>): 
     'Find people',
     `<h1>Find people</h1>
 <p class="muted">People who made a public profile, businesses and families who chose to be listed. Free to search; nothing from inside a family tree is here.${ctx.user ? ' <a href="/settings/profile">Your public profile</a>.' : ''}</p>
-<form class="search" method="get" action="/people" role="search">${FACET_KEYS.filter((k) => f[k]).map((k) => `<input type="hidden" name="${k}" value="${esc(f[k]!)}">`).join('')}<input type="search" name="q" value="${esc(f.q)}" placeholder="A name, a town, a business" aria-label="Search people"><button>Search</button></form>
+<form class="search" method="get" action="/people" role="search" toolname="find_people" tooldescription="Find public family.ancestry profiles by name, with the current facet filters." toolautosubmit>${FACET_KEYS.filter((k) => f[k]).map((k) => `<input type="hidden" name="${k}" value="${esc(f[k]!)}">`).join('')}<input type="search" name="q" value="${esc(f.q)}" placeholder="A name, a town, a business" aria-label="Search people"><button>Search</button></form>
 ${chips}<div class="finder">${rail}<section><p class="muted small">${r.total} ${r.total === 1 ? 'result' : 'results'}</p>${list}</section></div>`,
     { crumbs: [['', 'People']], wide: true },
   )

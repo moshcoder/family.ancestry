@@ -189,7 +189,7 @@ export function localPage(ctx: Ctx, v: { results: Ranked[]; categories: { catego
     'Local',
     `<h1>Local businesses, from people you know</h1>
 <p class="muted">Who your family, neighbors and friends actually use. Only people who know each other see these: no strangers' reviews, nothing paid to the top.</p>
-<form class="search" method="get" action="/local"><input name="q" value="${esc(v.q)}" placeholder="plumber, dentist, a town…" aria-label="Search recommendations"><button>Search</button></form>
+<form class="search" method="get" action="/local" toolname="search_local" tooldescription="Search local recommendations from your network: a trade like plumber or dentist, or a town." toolautosubmit><input name="q" value="${esc(v.q)}" placeholder="plumber, dentist, a town…" aria-label="Search recommendations"><button>Search</button></form>
 ${v.categories.length ? `<p class="surnames">${v.categories.slice(0, 30).map((c) => `<a href="/local?category=${encodeURIComponent(c.category)}"${c.category.toLowerCase() === v.category.toLowerCase() ? ' aria-current="true"' : ''}>${esc(c.category)} <span>${c.n}</span></a>`).join('')}${v.category ? ' <a href="/local">all</a>' : ''}</p>` : ''}
 ${v.results.length ? `<ul class="plain">${v.results.map(result).join('')}</ul>` : `<p class="empty">${v.q || v.category ? 'Nobody you know has recommended one yet. Ask in the Inbox, then add the answer here.' : 'No recommendations yet. Add the plumber you trust, and invite your family and neighbors to add theirs.'}</p>`}
 <details class="panel"${v.results.length ? '' : ' open'}><summary>Recommend a business</summary>
